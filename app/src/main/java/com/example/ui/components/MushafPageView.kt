@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import android.graphics.Typeface
+import android.util.LruCache
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -80,6 +81,9 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+
+private val lineFontFitCache = LruCache<String, Float>(192)
+private val basmalahFontFitCache = LruCache<String, Float>(32)
 
 private fun toArabicIndicDigits(number: Int): String {
   val digits = charArrayOf('٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩')
@@ -355,6 +359,19 @@ private fun MushafPageContent(
             }
 
             is MushafLine.AyahWordsLine -> {
+              val lineVerseKeys = remember(line) {
+                line.words.asSequence().map { it.verseKey }.toHashSet()
+              }
+              val lineActivePlayingKey = if (activePlayingVerseKey != null && lineVerseKeys.contains(activePlayingVerseKey)) {
+                activePlayingVerseKey
+              } else {
+                null
+              }
+              val lineSelectedKey = if (selectedVerseKey != null && lineVerseKeys.contains(selectedVerseKey)) {
+                selectedVerseKey
+              } else {
+                null
+              }
               AyahLineRow(
                 pageNumber = pageData.pageNumber,
                 mushafEdition = mushafEdition,
@@ -365,8 +382,8 @@ private fun MushafPageContent(
                 baseTextColor = pageInkColor,
                 isDarkTheme = isDarkTheme,
                 isRecitationPlaying = isRecitationPlaying,
-                activePlayingVerseKey = activePlayingVerseKey,
-                selectedVerseKey = selectedVerseKey,
+                activePlayingVerseKey = lineActivePlayingKey,
+                selectedVerseKey = lineSelectedKey,
                 onPageTapped = onPageTapped,
                 onVerseLongPressed = onVerseLongPressed,
               )
@@ -530,34 +547,37 @@ private fun BasmalahRow(
       }
     }
 
-    val fittedSp = remember(line.codeV2Glyphs, qcfFont, maxWidthPx, maxHeightPx, maxSp) {
+    val fittedSp = remember(line.codeV2Glyphs, qcfFont, maxWidthPx, maxHeightPx, maxSp, density.density, density.fontScale) {
       if (maxWidthPx <= 0) {
         maxSp
       } else {
-        var candidate = maxSp
-        while (candidate > 10f) {
-          val measured = textMeasurer.measure(
-            text = AnnotatedString(line.codeV2Glyphs),
-            style = TextStyle(
-              fontFamily = qcfFont,
-              fontSize = candidate.sp,
-              lineHeight = TextUnit.Unspecified,
-              platformStyle = PlatformTextStyle(includeFontPadding = true),
-              textDirection = TextDirection.Rtl,
-            ),
-            overflow = TextOverflow.Visible,
-            softWrap = false,
-            maxLines = 1,
-            constraints = Constraints(maxWidth = maxWidthPx),
-          )
-          val fitsHeight = maxHeightPx <= 0 || maxHeightPx == Constraints.Infinity ||
-            measured.size.height <= (maxHeightPx * 1.05f).toInt()
-          if (!measured.hasVisualOverflow && measured.size.width <= maxWidthPx && fitsHeight) {
-            break
+        val cacheKey = "${line.codeV2Glyphs}_${maxWidthPx}_${maxHeightPx}_${density.density}_${density.fontScale}"
+        basmalahFontFitCache.get(cacheKey) ?: run {
+          var candidate = maxSp
+          while (candidate > 10f) {
+            val measured = textMeasurer.measure(
+              text = AnnotatedString(line.codeV2Glyphs),
+              style = TextStyle(
+                fontFamily = qcfFont,
+                fontSize = candidate.sp,
+                lineHeight = TextUnit.Unspecified,
+                platformStyle = PlatformTextStyle(includeFontPadding = true),
+                textDirection = TextDirection.Rtl,
+              ),
+              overflow = TextOverflow.Visible,
+              softWrap = false,
+              maxLines = 1,
+              constraints = Constraints(maxWidth = maxWidthPx),
+            )
+            val fitsHeight = maxHeightPx <= 0 || maxHeightPx == Constraints.Infinity ||
+              measured.size.height <= (maxHeightPx * 1.05f).toInt()
+            if (!measured.hasVisualOverflow && measured.size.width <= maxWidthPx && fitsHeight) {
+              break
+            }
+            candidate -= 0.5f
           }
-          candidate -= 0.5f
+          candidate.coerceAtLeast(10f).also { basmalahFontFitCache.put(cacheKey, it) }
         }
-        candidate.coerceAtLeast(10f)
       }
     }
 
@@ -673,72 +693,79 @@ private fun AyahLineRow(
 
     val fittedFontSp = remember(
       pageNumber,
+      mushafEdition,
+      usesTagFallbackTajweed,
       line.lineNumber,
-      wordTokens,
-      renderVectorTajweedMarkers,
       qcfFontFamily,
       maxWidthPx,
       maxHeightPx,
       maxFontSp,
+      density.density,
+      density.fontScale,
     ) {
       if (maxWidthPx <= 0) {
         maxFontSp
       } else {
-        val minSp = 8.5f
-        var lo = minSp
-        var hi = maxFontSp
+        val cacheKey = "${pageNumber}_${mushafEdition.name}_${usesTagFallbackTajweed}_${qcfFontFamily != null}_${line.lineNumber}_${maxWidthPx}_${maxHeightPx}_${density.density}_${density.fontScale}"
+        lineFontFitCache.get(cacheKey) ?: run {
+          val minSp = 8.5f
+          var lo = minSp
+          var hi = maxFontSp
 
-        fun fitsAt(candidateSp: Float): Boolean {
-          val fontSizePx = with(density) { candidateSp.sp.toPx() }
-          val minGapPx = (fontSizePx * 0.14f).coerceAtLeast(2f)
-          val style = TextStyle(
-            fontFamily = qcfFontFamily,
-            fontSize = candidateSp.sp,
-            lineHeight = TextUnit.Unspecified,
-            platformStyle = PlatformTextStyle(includeFontPadding = true),
-            textDirection = TextDirection.Rtl,
-          )
-          var sumW = 0f
-          var maxH = 0f
-          for (idx in words.indices) {
-            val w = words[idx]
-            if (renderVectorTajweedMarkers && w.isEndMarker) {
-              sumW += fontSizePx * 1.32f
-              val mh = fontSizePx * 1.18f
-              if (mh > maxH) maxH = mh
-            } else {
-              val measured = textMeasurer.measure(
-                text = AnnotatedString(wordTokens[idx]),
-                style = style,
-                overflow = TextOverflow.Visible,
-                softWrap = false,
-                maxLines = 1,
-                constraints = Constraints(),
-              )
-              sumW += measured.size.width.toFloat()
-              val mh = measured.size.height.toFloat()
-              if (mh > maxH) maxH = mh
+          fun fitsAt(candidateSp: Float): Boolean {
+            val fontSizePx = with(density) { candidateSp.sp.toPx() }
+            val minGapPx = (fontSizePx * 0.14f).coerceAtLeast(2f)
+            val style = TextStyle(
+              fontFamily = qcfFontFamily,
+              fontSize = candidateSp.sp,
+              lineHeight = TextUnit.Unspecified,
+              platformStyle = PlatformTextStyle(includeFontPadding = true),
+              textDirection = TextDirection.Rtl,
+            )
+            var sumW = 0f
+            var maxH = 0f
+            for (idx in words.indices) {
+              val w = words[idx]
+              if (renderVectorTajweedMarkers && w.isEndMarker) {
+                sumW += fontSizePx * 1.32f
+                val mh = fontSizePx * 1.18f
+                if (mh > maxH) maxH = mh
+              } else {
+                val measured = textMeasurer.measure(
+                  text = AnnotatedString(wordTokens[idx]),
+                  style = style,
+                  overflow = TextOverflow.Visible,
+                  softWrap = false,
+                  maxLines = 1,
+                  constraints = Constraints(),
+                )
+                sumW += measured.size.width.toFloat()
+                val mh = measured.size.height.toFloat()
+                if (mh > maxH) maxH = mh
+              }
             }
+            val totalMinWidth = sumW + minGapPx * (words.size - 1).coerceAtLeast(0)
+            val fitsWidth = totalMinWidth <= maxWidthPx.toFloat()
+            val fitsHeight = maxHeightPx <= 0 || maxHeightPx == Constraints.Infinity ||
+              maxH <= maxHeightPx.toFloat() * 1.05f
+            return fitsWidth && fitsHeight
           }
-          val totalMinWidth = sumW + minGapPx * (words.size - 1).coerceAtLeast(0)
-          val fitsWidth = totalMinWidth <= maxWidthPx.toFloat()
-          val fitsHeight = maxHeightPx <= 0 || maxHeightPx == Constraints.Infinity ||
-            maxH <= maxHeightPx.toFloat() * 1.05f
-          return fitsWidth && fitsHeight
-        }
 
-        if (fitsAt(hi)) {
-          hi
-        } else {
-          repeat(10) {
-            val mid = (lo + hi) * 0.5f
-            if (fitsAt(mid)) {
-              lo = mid
-            } else {
-              hi = mid
+          val resolved = if (fitsAt(hi)) {
+            hi
+          } else {
+            repeat(10) {
+              val mid = (lo + hi) * 0.5f
+              if (fitsAt(mid)) {
+                lo = mid
+              } else {
+                hi = mid
+              }
             }
+            lo.coerceAtLeast(minSp)
           }
-          lo.coerceAtLeast(minSp)
+          lineFontFitCache.put(cacheKey, resolved)
+          resolved
         }
       }
     }

@@ -29,10 +29,16 @@ import com.example.data.quran.VerseSearchHit
 import com.example.player.AudioPlaybackUiState
 import com.example.player.PlaybackController
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -67,6 +73,7 @@ data class ReaderUiState(
   val bookmarks: List<Int> = emptyList(),
   val surahs: List<SurahMeta> = emptyList(),
   val juzs: List<JuzMeta> = emptyList(),
+  val juzsLoading: Boolean = false,
   val pages: Map<Int, PageLoadState> = emptyMap(),
   val primaryReciters: List<VerifiedReciter> = emptyList(),
   val additionalReciters: List<VerifiedReciter> = emptyList(),
@@ -84,6 +91,10 @@ data class ReaderUiState(
 )
 
 class QabasatViewModel(application: Application) : AndroidViewModel(application) {
+  companion object {
+    private const val PAGE_CACHE_LIMIT = 6
+  }
+
   private val diskCache = VerifiedDiskCache(application)
   private val fontManager = PageFontManager(diskCache)
   private val quranRepository = QuranRepository(application, diskCache, fontManager)
@@ -104,11 +115,41 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
   val audioState: StateFlow<AudioPlaybackUiState> = playbackController.uiState
+
+  // Isolated audio slices so frequent positionMs ticks never recompose Mushaf pages or Index lists
+  val activePlayingVerseKeyFlow: StateFlow<String?> = playbackController.uiState
+    .map { it.activePlayingVerseKey }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+  val isAudioPlayingFlow: StateFlow<Boolean> = playbackController.uiState
+    .map { it.isPlaying }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+  val isAudioSessionActiveFlow: StateFlow<Boolean> = playbackController.uiState
+    .map { it.isPlaying || it.isBuffering || it.durationMs > 0L || it.activePlayingVerseKey != null }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+  val activeReciterFlow: StateFlow<VerifiedReciter?> = playbackController.uiState
+    .map { it.currentReciter }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
   val downloadedAudioKeys: StateFlow<Set<String>> = audioCacheManager.downloadedKeys
   val audioDownloadProgress: StateFlow<Map<String, Float>> = audioCacheManager.downloadProgress
 
   private val pageJobs = mutableMapOf<Int, Job>()
+  private val pageLruOrder = ArrayDeque<Int>()
   private var searchJob: Job? = null
+  private var hasReaderActivated: Boolean = false
+  private var juzsLoaded: Boolean = false
+  private var juzsJob: Job? = null
+  private var tajweedLegendLoaded: Boolean = false
+  private var tajweedLegendJob: Job? = null
+  private var creditsLoaded: Boolean = false
+  private var creditsJob: Job? = null
 
   init {
     playbackController.connect(
@@ -171,6 +212,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           val darkChanged = pref.isDarkMode != prevDark
           val activeEdition = _uiState.value.mushafEdition
           val activePage = _uiState.value.currentPage
+          if (darkChanged && activeEdition == MushafEdition.TAJWEED_V4) {
+            clearCachedPages()
+          }
           _uiState.update {
             it.copy(
               bookmarks = pref.bookmarks,
@@ -180,29 +224,15 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
               pages = if (darkChanged && activeEdition == MushafEdition.TAJWEED_V4) emptyMap() else it.pages,
             )
           }
-          if (darkChanged && activeEdition == MushafEdition.TAJWEED_V4) {
+          if (darkChanged && activeEdition == MushafEdition.TAJWEED_V4 && hasReaderActivated) {
             loadPageWindow(activePage, MushafEdition.TAJWEED_V4, useWhiteInk = pref.isDarkMode)
           }
         }
       }
 
-      launch {
-        val hashes = quranRepository.verifyBundledAssets()
-        val legend = quranRepository.loadTajweedLegend()
-        val credits = quranRepository.loadCredits()
-        _uiState.update {
-          it.copy(
-            assetHashes = hashes,
-            tajweedRules = legend,
-            credits = credits,
-          )
-        }
-      }
-
+      // First screen only needs Surah index; Juzs, Tajweed legend, Credits/Hashes & Mushaf pages are lazy-loaded on demand.
       val surahsRes = quranRepository.getSurahs()
-      val juzsRes = quranRepository.getJuzs()
       val surahs = surahsRes.getOrDefault(emptyList())
-      val juzs = juzsRes.getOrDefault(emptyList())
 
       if (surahs.isNotEmpty()) {
         playbackController.updateSurahNames(surahs.associate { it.id to it.nameArabic })
@@ -211,13 +241,60 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       _uiState.update {
         it.copy(
           surahs = surahs,
-          juzs = juzs,
           metadataError = surahsRes.exceptionOrNull()?.localizedMessage,
         )
       }
 
-      loadPageWindow(saved.lastPage, saved.mushafEdition, useWhiteInk = saved.isDarkMode)
       loadReciters(saved)
+    }
+  }
+
+  fun ensureCurrentPageLoaded() {
+    hasReaderActivated = true
+    val state = _uiState.value
+    loadPageWindow(state.currentPage, state.mushafEdition, state.isDarkMode)
+  }
+
+  fun ensureJuzsLoaded() {
+    if (juzsLoaded || juzsJob?.isActive == true) return
+    juzsJob = viewModelScope.launch {
+      _uiState.update { it.copy(juzsLoading = true) }
+      val juzsRes = quranRepository.getJuzs()
+      val juzs = juzsRes.getOrDefault(emptyList())
+      if (juzs.isNotEmpty()) {
+        juzsLoaded = true
+      }
+      _uiState.update { it.copy(juzs = juzs, juzsLoading = false) }
+    }
+  }
+
+  fun ensureTajweedLegendLoaded() {
+    if (tajweedLegendLoaded || tajweedLegendJob?.isActive == true) return
+    tajweedLegendJob = viewModelScope.launch {
+      val legend = quranRepository.loadTajweedLegend()
+      if (legend.isNotEmpty()) {
+        tajweedLegendLoaded = true
+      }
+      _uiState.update { it.copy(tajweedRules = legend) }
+    }
+  }
+
+  fun ensureCreditsLoaded() {
+    if (creditsLoaded || creditsJob?.isActive == true) return
+    creditsJob = viewModelScope.launch {
+      coroutineScope {
+        val hashesDeferred = async { quranRepository.verifyBundledAssets() }
+        val creditsDeferred = async { quranRepository.loadCredits() }
+        val hashes = hashesDeferred.await()
+        val credits = creditsDeferred.await()
+        creditsLoaded = true
+        _uiState.update {
+          it.copy(
+            assetHashes = hashes,
+            credits = credits,
+          )
+        }
+      }
     }
   }
 
@@ -262,7 +339,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   fun onPageChanged(page: Int) {
     val clamped = page.coerceIn(1, 604)
-    if (clamped == _uiState.value.currentPage) return
+    hasReaderActivated = true
+    if (clamped == _uiState.value.currentPage && _uiState.value.pages[clamped] is PageLoadState.Ready) {
+      return
+    }
     _uiState.update { it.copy(currentPage = clamped) }
     viewModelScope.launch { preferences.saveLastPage(clamped) }
     loadPageWindow(clamped, _uiState.value.mushafEdition, _uiState.value.isDarkMode)
@@ -270,6 +350,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   fun jumpToPage(page: Int) {
     val clamped = page.coerceIn(1, 604)
+    hasReaderActivated = true
     _uiState.update { it.copy(currentPage = clamped) }
     viewModelScope.launch { preferences.saveLastPage(clamped) }
     loadPageWindow(clamped, _uiState.value.mushafEdition, _uiState.value.isDarkMode)
@@ -282,9 +363,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   fun setMushafEdition(edition: MushafEdition) {
     if (edition == _uiState.value.mushafEdition) return
+    clearCachedPages()
     _uiState.update { it.copy(mushafEdition = edition, pages = emptyMap()) }
     viewModelScope.launch { preferences.setMushafEdition(edition) }
-    loadPageWindow(_uiState.value.currentPage, edition, _uiState.value.isDarkMode)
+    if (hasReaderActivated) {
+      loadPageWindow(_uiState.value.currentPage, edition, _uiState.value.isDarkMode)
+    }
   }
 
   fun toggleDarkMode() {
@@ -308,6 +392,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private fun applyThemeChange(nextDark: Boolean, nextBg: BackgroundTheme) {
     val state = _uiState.value
     val darkChanged = state.isDarkMode != nextDark
+    if (darkChanged && state.mushafEdition == MushafEdition.TAJWEED_V4) {
+      clearCachedPages()
+    }
     _uiState.update {
       it.copy(
         isDarkMode = nextDark,
@@ -315,7 +402,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         pages = if (darkChanged && it.mushafEdition == MushafEdition.TAJWEED_V4) emptyMap() else it.pages,
       )
     }
-    if (darkChanged && state.mushafEdition == MushafEdition.TAJWEED_V4) {
+    if (darkChanged && state.mushafEdition == MushafEdition.TAJWEED_V4 && hasReaderActivated) {
       loadPageWindow(state.currentPage, MushafEdition.TAJWEED_V4, useWhiteInk = nextDark)
     }
   }
@@ -329,6 +416,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun retryPage(page: Int) {
+    hasReaderActivated = true
     loadSinglePage(page, _uiState.value.mushafEdition, _uiState.value.isDarkMode, forceReload = true)
   }
 
@@ -357,17 +445,41 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
+  private fun clearCachedPages() {
+    pageJobs.values.forEach { it.cancel() }
+    pageJobs.clear()
+    pageLruOrder.clear()
+  }
+
+  private fun retainPageWindowLru(orderedTargets: List<Int>): Set<Int> {
+    for (p in orderedTargets.asReversed()) {
+      pageLruOrder.remove(p)
+      pageLruOrder.addLast(p)
+    }
+    while (pageLruOrder.size > PAGE_CACHE_LIMIT) {
+      val evicted = pageLruOrder.removeFirst()
+      pageJobs.remove(evicted)?.cancel()
+    }
+    return pageLruOrder.toSet()
+  }
+
   private fun loadPageWindow(
     centerPage: Int,
     edition: MushafEdition,
     useWhiteInk: Boolean = _uiState.value.isDarkMode,
   ) {
-    val window = ((centerPage - 1)..(centerPage + 2)).filter { it in 1..604 }.toSet()
+    val activeTargets = listOfNotNull(
+      centerPage.takeIf { it in 1..604 },
+      (centerPage + 1).takeIf { it in 1..604 },
+      (centerPage - 1).takeIf { it in 1..604 },
+      if (centerPage % 2 == 1 && (centerPage + 2) in 1..604) centerPage + 2 else null,
+    )
+    val retainedKeys = retainPageWindowLru(activeTargets)
     _uiState.update { state ->
-      val pruned = state.pages.filterKeys { it in window }
-      state.copy(pages = pruned)
+      val pruned = state.pages.filterKeys { it in retainedKeys }
+      if (pruned.size == state.pages.size) state else state.copy(pages = pruned)
     }
-    for (p in window) {
+    for (p in activeTargets) {
       loadSinglePage(p, edition, useWhiteInk = useWhiteInk, forceReload = false)
     }
   }
@@ -381,6 +493,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     if (page !in 1..604) return
     val existing = _uiState.value.pages[page]
     if (!forceReload && existing is PageLoadState.Ready) return
+    if (!forceReload && existing is PageLoadState.Loading && pageJobs[page]?.isActive == true) return
 
     pageJobs[page]?.cancel()
     pageJobs[page] = viewModelScope.launch {
@@ -403,11 +516,15 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
       val pageData = pageRes.getOrThrow()
       val fontEdition = if (needsTagFallbackTajweed) MushafEdition.MADINAH_1421 else edition
-      val pageTypeface = fontManager.loadPageFont(page, fontEdition, useWhiteInk = useWhiteInk)
-      val basmalahTypeface = fontManager.loadBasmalahFont(fontEdition, useWhiteInk = useWhiteInk)
+      val (pageTypeface, basmalahTypeface) = coroutineScope {
+        val pageFontDeferred = async { fontManager.loadPageFont(page, fontEdition, useWhiteInk = useWhiteInk) }
+        val basmalahFontDeferred = async { fontManager.loadBasmalahFont(fontEdition, useWhiteInk = useWhiteInk) }
+        pageFontDeferred.await() to basmalahFontDeferred.await()
+      }
 
       if (_uiState.value.mushafEdition != edition) return@launch
       if (edition == MushafEdition.TAJWEED_V4 && _uiState.value.isDarkMode != useWhiteInk) return@launch
+      if (!pageLruOrder.contains(page)) return@launch
 
       if (pageTypeface == null && !needsTagFallbackTajweed) {
         _uiState.update {

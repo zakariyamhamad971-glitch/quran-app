@@ -69,8 +69,13 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.audio.RecitationRange
+import com.example.data.audio.VerifiedReciter
 import com.example.data.prefs.PageViewMode
 import com.example.data.quran.MushafEdition
+import com.example.data.quran.MushafLine
+import com.example.data.quran.SurahMeta
+import com.example.player.AudioPlaybackUiState
 import com.example.ui.components.CreditsAndIntegrityDialog
 import com.example.ui.components.FullScreenQuranIndex
 import com.example.ui.components.MushafPageFrame
@@ -80,7 +85,9 @@ import com.example.ui.components.SettingsSheet
 import com.example.ui.components.TajweedLegendSheet
 import com.example.ui.components.VerseInsightsSheet
 import com.example.ui.theme.AmiriFontFamily
+import com.example.viewmodel.PageLoadState
 import com.example.viewmodel.QabasatViewModel
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -92,17 +99,29 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
   else -> null
 }
 
+private fun pageContainsVerse(pageState: PageLoadState?, verseKey: String?): String? {
+  if (verseKey == null || pageState !is PageLoadState.Ready) return null
+  val found = pageState.pageData.lines.any { line ->
+    line is MushafLine.AyahWordsLine && line.words.any { it.verseKey == verseKey }
+  }
+  return if (found) verseKey else null
+}
+
 @Composable
 fun ReaderScreen(
   viewModel: QabasatViewModel,
 ) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-  val audioState by viewModel.audioState.collectAsStateWithLifecycle()
   val downloadedKeys by viewModel.downloadedAudioKeys.collectAsStateWithLifecycle()
   val downloadProgress by viewModel.audioDownloadProgress.collectAsStateWithLifecycle()
+  val activePlayingVerseKey by viewModel.activePlayingVerseKeyFlow.collectAsStateWithLifecycle()
+  val isAudioPlaying by viewModel.isAudioPlayingFlow.collectAsStateWithLifecycle()
+  val isAudioSessionActive by viewModel.isAudioSessionActiveFlow.collectAsStateWithLifecycle()
+  val activeReciter by viewModel.activeReciterFlow.collectAsStateWithLifecycle()
 
   val isDarkTheme = uiState.isDarkMode
   val surahsById = remember(uiState.surahs) { uiState.surahs.associateBy { it.id } }
+  val bookmarkSet = remember(uiState.bookmarks) { uiState.bookmarks.toHashSet() }
 
   var isIndexOpen by rememberSaveable { mutableStateOf(true) }
   var hasSelectedSurah by rememberSaveable { mutableStateOf(false) }
@@ -116,6 +135,16 @@ fun ReaderScreen(
   var bottomBarHeightPx by remember { mutableIntStateOf(0) }
 
   val speeds = remember { listOf(0.75f, 1.0f, 1.15f, 1.25f) }
+  val onCycleSpeed: (Float) -> Unit = remember(viewModel, speeds) {
+    { currentSpeed ->
+      val curIdx = speeds.indexOfFirst { kotlin.math.abs(it - currentSpeed) < 0.05f }
+      val nextSpeed = speeds[(curIdx + 1) % speeds.size]
+      viewModel.playbackController.setSpeed(nextSpeed)
+    }
+  }
+  val onVerseLongPressed: (String, Int, String) -> Unit = remember(viewModel) {
+    { key, p, glyphs -> viewModel.onVerseTapped(key, p, glyphs) }
+  }
   val view = LocalView.current
   val density = LocalDensity.current
 
@@ -167,228 +196,250 @@ fun ReaderScreen(
       label = "chrome_bottom_padding",
     )
 
-    // Main Mushaf page area
-    BoxWithConstraints(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(top = topPadding, bottom = bottomPadding),
-    ) {
-      val availW = maxWidth
-      val availH = maxHeight
+    // Main Mushaf page area (deferred until the user opens a surah/page for fast startup)
+    if (!isIndexOpen || hasSelectedSurah) {
+      BoxWithConstraints(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(top = topPadding, bottom = bottomPadding),
+      ) {
+        val availW = maxWidth
+        val availH = maxHeight
 
-      if (effectiveTwoPageMode) {
-        // Two-Page Side-by-Side Spread (RTL: right = odd page, left = even page)
-        val spreadCount = 302
-        val targetSpreadIndex = ((uiState.currentPage - 1) / 2).coerceIn(0, spreadCount - 1)
-        val spreadPagerState = rememberPagerState(
-          initialPage = targetSpreadIndex,
-          pageCount = { spreadCount },
-        )
+        if (effectiveTwoPageMode) {
+          // Two-Page Side-by-Side Spread (RTL: right = odd page, left = even page)
+          val spreadCount = 302
+          val targetSpreadIndex = ((uiState.currentPage - 1) / 2).coerceIn(0, spreadCount - 1)
+          val spreadPagerState = rememberPagerState(
+            initialPage = targetSpreadIndex,
+            pageCount = { spreadCount },
+          )
 
-        LaunchedEffect(uiState.currentPage) {
-          val expectedSpread = ((uiState.currentPage - 1) / 2).coerceIn(0, spreadCount - 1)
-          if (spreadPagerState.currentPage != expectedSpread) {
-            spreadPagerState.scrollToPage(expectedSpread)
+          LaunchedEffect(uiState.currentPage) {
+            val expectedSpread = ((uiState.currentPage - 1) / 2).coerceIn(0, spreadCount - 1)
+            if (spreadPagerState.currentPage != expectedSpread) {
+              spreadPagerState.scrollToPage(expectedSpread)
+            }
           }
-        }
 
-        LaunchedEffect(spreadPagerState) {
-          snapshotFlow { spreadPagerState.currentPage }
-            .distinctUntilChanged()
-            .collect { spreadIdx ->
-              val oddPage = (spreadIdx * 2) + 1
-              if (uiState.currentPage !in oddPage..(oddPage + 1)) {
-                viewModel.onPageChanged(oddPage)
+          LaunchedEffect(spreadPagerState) {
+            snapshotFlow { spreadPagerState.currentPage }
+              .distinctUntilChanged()
+              .collect { spreadIdx ->
+                val oddPage = (spreadIdx * 2) + 1
+                if (uiState.currentPage !in oddPage..(oddPage + 1)) {
+                  viewModel.onPageChanged(oddPage)
+                }
+              }
+          }
+
+          val toggleChromeIfNotSwiping: () -> Unit = remember(spreadPagerState) {
+            {
+              if (!spreadPagerState.isScrollInProgress) {
+                isChromeVisible = !isChromeVisible
               }
             }
-        }
-
-        val toggleChromeIfNotSwiping: () -> Unit = {
-          if (!spreadPagerState.isScrollInProgress) {
-            isChromeVisible = !isChromeVisible
           }
-        }
 
-        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-          HorizontalPager(
-            state = spreadPagerState,
-            modifier = Modifier
-              .fillMaxSize()
-              .testTag("mushaf_spread_pager"),
-          ) { spreadIndex ->
-            val rightPage = (spreadIndex * 2) + 1
-            val leftPage = (rightPage + 1).coerceAtMost(604)
-            Row(
+          CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+            HorizontalPager(
+              state = spreadPagerState,
+              beyondViewportPageCount = 1,
+              key = { spreadIndex -> spreadIndex },
               modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 4.dp),
-            ) {
-              MushafPageFrame(
-                pageNumber = rightPage,
-                pageState = uiState.pages[rightPage],
-                mushafEdition = uiState.mushafEdition,
-                backgroundTheme = uiState.backgroundTheme,
-                surahsById = surahsById,
-                isBookmarked = uiState.bookmarks.contains(rightPage),
-                isDarkTheme = isDarkTheme,
-                isRecitationPlaying = audioState.isPlaying,
-                activePlayingVerseKey = audioState.activePlayingVerseKey,
-                selectedVerseKey = uiState.selectedVerseKey,
-                onToggleBookmark = { viewModel.toggleBookmark(rightPage) },
-                onRetry = { viewModel.retryPage(rightPage) },
-                onPageTapped = toggleChromeIfNotSwiping,
-                onVerseLongPressed = { key, p, glyphs -> viewModel.onVerseTapped(key, p, glyphs) },
+                .testTag("mushaf_spread_pager"),
+            ) { spreadIndex ->
+              val rightPage = (spreadIndex * 2) + 1
+              val leftPage = (rightPage + 1).coerceAtMost(604)
+              val rightState = uiState.pages[rightPage]
+              val leftState = uiState.pages[leftPage]
+              Row(
                 modifier = Modifier
-                  .weight(1f)
-                  .fillMaxHeight(),
-              )
-              if (leftPage != rightPage) {
+                  .fillMaxSize()
+                  .padding(horizontal = 4.dp),
+              ) {
                 MushafPageFrame(
-                  pageNumber = leftPage,
-                  pageState = uiState.pages[leftPage],
+                  pageNumber = rightPage,
+                  pageState = rightState,
                   mushafEdition = uiState.mushafEdition,
                   backgroundTheme = uiState.backgroundTheme,
                   surahsById = surahsById,
-                  isBookmarked = uiState.bookmarks.contains(leftPage),
+                  isBookmarked = bookmarkSet.contains(rightPage),
                   isDarkTheme = isDarkTheme,
-                  isRecitationPlaying = audioState.isPlaying,
-                  activePlayingVerseKey = audioState.activePlayingVerseKey,
-                  selectedVerseKey = uiState.selectedVerseKey,
-                  onToggleBookmark = { viewModel.toggleBookmark(leftPage) },
-                  onRetry = { viewModel.retryPage(leftPage) },
+                  isRecitationPlaying = isAudioPlaying,
+                  activePlayingVerseKey = pageContainsVerse(rightState, activePlayingVerseKey),
+                  selectedVerseKey = pageContainsVerse(rightState, uiState.selectedVerseKey),
+                  onToggleBookmark = remember(viewModel, rightPage) { { viewModel.toggleBookmark(rightPage) } },
+                  onRetry = remember(viewModel, rightPage) { { viewModel.retryPage(rightPage) } },
                   onPageTapped = toggleChromeIfNotSwiping,
-                  onVerseLongPressed = { key, p, glyphs -> viewModel.onVerseTapped(key, p, glyphs) },
+                  onVerseLongPressed = onVerseLongPressed,
                   modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
+                )
+                if (leftPage != rightPage) {
+                  MushafPageFrame(
+                    pageNumber = leftPage,
+                    pageState = leftState,
+                    mushafEdition = uiState.mushafEdition,
+                    backgroundTheme = uiState.backgroundTheme,
+                    surahsById = surahsById,
+                    isBookmarked = bookmarkSet.contains(leftPage),
+                    isDarkTheme = isDarkTheme,
+                    isRecitationPlaying = isAudioPlaying,
+                    activePlayingVerseKey = pageContainsVerse(leftState, activePlayingVerseKey),
+                    selectedVerseKey = pageContainsVerse(leftState, uiState.selectedVerseKey),
+                    onToggleBookmark = remember(viewModel, leftPage) { { viewModel.toggleBookmark(leftPage) } },
+                    onRetry = remember(viewModel, leftPage) { { viewModel.retryPage(leftPage) } },
+                    onPageTapped = toggleChromeIfNotSwiping,
+                    onVerseLongPressed = onVerseLongPressed,
+                    modifier = Modifier
+                      .weight(1f)
+                      .fillMaxHeight(),
+                  )
+                }
+              }
+            }
+          }
+        } else {
+          // Single-Page RTL Pager (Page 1..604), uniformly scaled (~0.62 aspect ratio), centered, never stretched
+          val singlePagerState = rememberPagerState(
+            initialPage = (uiState.currentPage - 1).coerceIn(0, 603),
+            pageCount = { 604 },
+          )
+
+          LaunchedEffect(uiState.currentPage) {
+            val targetIdx = (uiState.currentPage - 1).coerceIn(0, 603)
+            if (singlePagerState.currentPage != targetIdx) {
+              singlePagerState.scrollToPage(targetIdx)
+            }
+          }
+
+          LaunchedEffect(singlePagerState) {
+            snapshotFlow { singlePagerState.currentPage }
+              .distinctUntilChanged()
+              .collect { idx ->
+                viewModel.onPageChanged(idx + 1)
+              }
+          }
+
+          val toggleChromeIfNotSwiping: () -> Unit = remember(singlePagerState) {
+            {
+              if (!singlePagerState.isScrollInProgress) {
+                isChromeVisible = !isChromeVisible
+              }
+            }
+          }
+
+          val (pageWidth, pageHeight) = remember(availW, availH) {
+            if (availH > 0.dp && (availW / availH) > MUSHAF_PAGE_ASPECT_RATIO) {
+              (availH * MUSHAF_PAGE_ASPECT_RATIO) to availH
+            } else {
+              availW to (availW / MUSHAF_PAGE_ASPECT_RATIO)
+            }
+          }
+
+          CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+            HorizontalPager(
+              state = singlePagerState,
+              beyondViewportPageCount = 1,
+              key = { pageIdx -> pageIdx + 1 },
+              modifier = Modifier
+                .fillMaxSize()
+                .testTag("mushaf_single_pager"),
+            ) { pageIdx ->
+              val pageNum = pageIdx + 1
+              val pageState = uiState.pages[pageNum]
+              Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+              ) {
+                MushafPageFrame(
+                  pageNumber = pageNum,
+                  pageState = pageState,
+                  mushafEdition = uiState.mushafEdition,
+                  backgroundTheme = uiState.backgroundTheme,
+                  surahsById = surahsById,
+                  isBookmarked = bookmarkSet.contains(pageNum),
+                  isDarkTheme = isDarkTheme,
+                  isRecitationPlaying = isAudioPlaying,
+                  activePlayingVerseKey = pageContainsVerse(pageState, activePlayingVerseKey),
+                  selectedVerseKey = pageContainsVerse(pageState, uiState.selectedVerseKey),
+                  onToggleBookmark = remember(viewModel, pageNum) { { viewModel.toggleBookmark(pageNum) } },
+                  onRetry = remember(viewModel, pageNum) { { viewModel.retryPage(pageNum) } },
+                  onPageTapped = toggleChromeIfNotSwiping,
+                  onVerseLongPressed = onVerseLongPressed,
+                  modifier = Modifier.size(width = pageWidth, height = pageHeight),
                 )
               }
             }
           }
         }
-      } else {
-        // Single-Page RTL Pager (Page 1..604), uniformly scaled (~0.62 aspect ratio), centered, never stretched
-        val singlePagerState = rememberPagerState(
-          initialPage = (uiState.currentPage - 1).coerceIn(0, 603),
-          pageCount = { 604 },
-        )
-
-        LaunchedEffect(uiState.currentPage) {
-          val targetIdx = (uiState.currentPage - 1).coerceIn(0, 603)
-          if (singlePagerState.currentPage != targetIdx) {
-            singlePagerState.scrollToPage(targetIdx)
-          }
-        }
-
-        LaunchedEffect(singlePagerState) {
-          snapshotFlow { singlePagerState.currentPage }
-            .distinctUntilChanged()
-            .collect { idx ->
-              viewModel.onPageChanged(idx + 1)
-            }
-        }
-
-        val toggleChromeIfNotSwiping: () -> Unit = {
-          if (!singlePagerState.isScrollInProgress) {
-            isChromeVisible = !isChromeVisible
-          }
-        }
-
-        val (pageWidth, pageHeight) = if (availH > 0.dp && (availW / availH) > MUSHAF_PAGE_ASPECT_RATIO) {
-          (availH * MUSHAF_PAGE_ASPECT_RATIO) to availH
-        } else {
-          availW to (availW / MUSHAF_PAGE_ASPECT_RATIO)
-        }
-
-        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-          HorizontalPager(
-            state = singlePagerState,
-            modifier = Modifier
-              .fillMaxSize()
-              .testTag("mushaf_single_pager"),
-          ) { pageIdx ->
-            val pageNum = pageIdx + 1
-            Box(
-              modifier = Modifier.fillMaxSize(),
-              contentAlignment = Alignment.Center,
-            ) {
-              MushafPageFrame(
-                pageNumber = pageNum,
-                pageState = uiState.pages[pageNum],
-                mushafEdition = uiState.mushafEdition,
-                backgroundTheme = uiState.backgroundTheme,
-                surahsById = surahsById,
-                isBookmarked = uiState.bookmarks.contains(pageNum),
-                isDarkTheme = isDarkTheme,
-                isRecitationPlaying = audioState.isPlaying,
-                activePlayingVerseKey = audioState.activePlayingVerseKey,
-                selectedVerseKey = uiState.selectedVerseKey,
-                onToggleBookmark = { viewModel.toggleBookmark(pageNum) },
-                onRetry = { viewModel.retryPage(pageNum) },
-                onPageTapped = toggleChromeIfNotSwiping,
-                onVerseLongPressed = { key, p, glyphs -> viewModel.onVerseTapped(key, p, glyphs) },
-                modifier = Modifier.size(width = pageWidth, height = pageHeight),
-              )
-            }
-          }
-        }
       }
-    }
 
-    // Top chrome (fades 200ms)
-    AnimatedVisibility(
-      visible = isChromeVisible,
-      enter = fadeIn(animationSpec = tween(durationMillis = 200)),
-      exit = fadeOut(animationSpec = tween(durationMillis = 200)),
-      modifier = Modifier.align(Alignment.TopCenter),
-    ) {
-      QabasatTopBar(
-        mushafEdition = uiState.mushafEdition,
-        isDarkTheme = isDarkTheme,
-        effectiveTwoPageMode = effectiveTwoPageMode,
-        isCompactWidth = maxWidth < 560.dp,
-        onToggleEdition = { edition -> viewModel.setMushafEdition(edition) },
-        onSelectPageViewMode = { mode -> viewModel.setPageViewMode(mode) },
-        onOpenIndex = { isIndexOpen = true },
-        onOpenSettings = { showSettingsSheet = true },
-        onOpenTajweedLegend = { showTajweedLegend = true },
-        onToggleTheme = { viewModel.toggleDarkMode() },
-        onOpenCredits = { showCreditsDialog = true },
-        modifier = Modifier.onSizeChanged { topBarHeightPx = it.height },
-      )
-    }
+      // Top chrome (fades 200ms)
+      AnimatedVisibility(
+        visible = isChromeVisible && !isIndexOpen,
+        enter = fadeIn(animationSpec = tween(durationMillis = 200)),
+        exit = fadeOut(animationSpec = tween(durationMillis = 200)),
+        modifier = Modifier.align(Alignment.TopCenter),
+      ) {
+        QabasatTopBar(
+          mushafEdition = uiState.mushafEdition,
+          isDarkTheme = isDarkTheme,
+          effectiveTwoPageMode = effectiveTwoPageMode,
+          isCompactWidth = maxWidth < 560.dp,
+          onToggleEdition = { edition -> viewModel.setMushafEdition(edition) },
+          onSelectPageViewMode = { mode -> viewModel.setPageViewMode(mode) },
+          onOpenIndex = { isIndexOpen = true },
+          onOpenSettings = { showSettingsSheet = true },
+          onOpenTajweedLegend = {
+            viewModel.ensureTajweedLegendLoaded()
+            showTajweedLegend = true
+          },
+          onToggleTheme = { viewModel.toggleDarkMode() },
+          onOpenCredits = {
+            viewModel.ensureCreditsLoaded()
+            showCreditsDialog = true
+          },
+          modifier = Modifier.onSizeChanged { topBarHeightPx = it.height },
+        )
+      }
 
-    // Bottom audio player chrome (fades 200ms)
-    AnimatedVisibility(
-      visible = isChromeVisible,
-      enter = fadeIn(animationSpec = tween(durationMillis = 200)),
-      exit = fadeOut(animationSpec = tween(durationMillis = 200)),
-      modifier = Modifier.align(Alignment.BottomCenter),
-    ) {
-      PersistentAudioBar(
-        audioState = audioState,
-        onTogglePlayPause = { viewModel.playbackController.togglePlayPause() },
-        onSeekTo = { pos -> viewModel.playbackController.seekTo(pos) },
-        onSeekDelta = { delta -> viewModel.playbackController.seekByDelta(delta) },
-        onNextSurah = { viewModel.playbackController.nextSurah() },
-        onPrevSurah = { viewModel.playbackController.prevSurah() },
-        onCycleSpeed = {
-          val curIdx = speeds.indexOfFirst { kotlin.math.abs(it - audioState.playbackSpeed) < 0.05f }
-          val nextSpeed = speeds[(curIdx + 1) % speeds.size]
-          viewModel.playbackController.setSpeed(nextSpeed)
-        },
-        onOpenReciterPicker = { showReciterSheet = true },
-        modifier = Modifier.onSizeChanged { bottomBarHeightPx = it.height },
-      )
+      // Bottom audio player chrome (fades 200ms, isolated audio state host)
+      AnimatedVisibility(
+        visible = isChromeVisible && !isIndexOpen,
+        enter = fadeIn(animationSpec = tween(durationMillis = 200)),
+        exit = fadeOut(animationSpec = tween(durationMillis = 200)),
+        modifier = Modifier.align(Alignment.BottomCenter),
+      ) {
+        ReaderBottomAudioHost(
+          audioStateFlow = viewModel.audioState,
+          onTogglePlayPause = { viewModel.playbackController.togglePlayPause() },
+          onSeekTo = { pos -> viewModel.playbackController.seekTo(pos) },
+          onSeekDelta = { delta -> viewModel.playbackController.seekByDelta(delta) },
+          onNextSurah = { viewModel.playbackController.nextSurah() },
+          onPrevSurah = { viewModel.playbackController.prevSurah() },
+          onCycleSpeed = onCycleSpeed,
+          onOpenReciterPicker = { showReciterSheet = true },
+          modifier = Modifier.onSizeChanged { bottomBarHeightPx = it.height },
+        )
+      }
     }
 
     if (isIndexOpen) {
       FullScreenQuranIndex(
         surahs = uiState.surahs,
         juzs = uiState.juzs,
+        juzsLoading = uiState.juzsLoading,
         bookmarks = uiState.bookmarks,
         currentPage = uiState.currentPage,
-        activeReciter = audioState.currentReciter,
+        mushafEdition = uiState.mushafEdition,
+        isDarkTheme = isDarkTheme,
+        activeReciter = activeReciter,
+        audioStateFlow = viewModel.audioState,
+        isAudioSessionActive = isAudioSessionActive,
         downloadedKeys = downloadedKeys,
         downloadProgress = downloadProgress,
         verseSearchResults = uiState.verseSearchResults,
@@ -397,16 +448,17 @@ fun ReaderScreen(
         metadataError = uiState.metadataError,
         hasActiveReaderPage = hasSelectedSurah,
         onRetryMetadata = { viewModel.retryBootstrap() },
+        onSelectJuzTab = { viewModel.ensureJuzsLoaded() },
         onSearchVerses = { query -> viewModel.searchVerses(query) },
         onJumpToPage = { page ->
           hasSelectedSurah = true
           isIndexOpen = false
-          scope.launch { viewModel.jumpToPage(page) }
+          viewModel.jumpToPage(page)
         },
         onJumpToVerse = { key, page ->
           hasSelectedSurah = true
           isIndexOpen = false
-          scope.launch { viewModel.jumpToVerse(key, page) }
+          viewModel.jumpToVerse(key, page)
         },
         onPlaySurah = { surahId ->
           val targetPage = surahsById[surahId]?.startPage ?: uiState.currentPage
@@ -421,18 +473,31 @@ fun ReaderScreen(
         onOpenReader = {
           hasSelectedSurah = true
           isIndexOpen = false
+          viewModel.ensureCurrentPageLoaded()
+        },
+        onToggleEdition = { edition -> viewModel.setMushafEdition(edition) },
+        onToggleTheme = { viewModel.toggleDarkMode() },
+        onOpenSettings = { showSettingsSheet = true },
+        onOpenCredits = {
+          viewModel.ensureCreditsLoaded()
+          showCreditsDialog = true
         },
         onOpenRangePicker = { showReciterSheet = true },
+        onTogglePlayPause = { viewModel.playbackController.togglePlayPause() },
+        onSeekTo = { pos -> viewModel.playbackController.seekTo(pos) },
+        onSeekDelta = { delta -> viewModel.playbackController.seekByDelta(delta) },
+        onNextSurah = { viewModel.playbackController.nextSurah() },
+        onPrevSurah = { viewModel.playbackController.prevSurah() },
+        onCycleSpeed = onCycleSpeed,
+        onOpenReciterPicker = { showReciterSheet = true },
       )
     }
 
     if (showReciterSheet) {
-      ReciterPickerSheet(
+      ReaderReciterPickerHost(
+        audioStateFlow = viewModel.audioState,
         primaryReciters = uiState.primaryReciters,
         additionalReciters = uiState.additionalReciters,
-        activeReciter = audioState.currentReciter,
-        currentSurahId = audioState.currentSurahId,
-        activeRange = audioState.activeRange,
         surahs = uiState.surahs,
         isLoading = uiState.recitersLoading,
         errorMessage = uiState.recitersError,
@@ -462,8 +527,14 @@ fun ReaderScreen(
         onSelectBackgroundTheme = { theme -> viewModel.setBackgroundTheme(theme) },
         onSelectEdition = { edition -> viewModel.setMushafEdition(edition) },
         onSelectPageViewMode = { mode -> viewModel.setPageViewMode(mode) },
-        onOpenTajweedLegend = { showTajweedLegend = true },
-        onOpenCredits = { showCreditsDialog = true },
+        onOpenTajweedLegend = {
+          viewModel.ensureTajweedLegendLoaded()
+          showTajweedLegend = true
+        },
+        onOpenCredits = {
+          viewModel.ensureCreditsLoaded()
+          showCreditsDialog = true
+        },
         onDismiss = { showSettingsSheet = false },
       )
     }
@@ -493,6 +564,64 @@ fun ReaderScreen(
       onDismiss = { viewModel.dismissVerseInsights() },
     )
   }
+}
+
+@Composable
+private fun ReaderBottomAudioHost(
+  audioStateFlow: StateFlow<AudioPlaybackUiState>,
+  onTogglePlayPause: () -> Unit,
+  onSeekTo: (Long) -> Unit,
+  onSeekDelta: (Long) -> Unit,
+  onNextSurah: () -> Unit,
+  onPrevSurah: () -> Unit,
+  onCycleSpeed: (Float) -> Unit,
+  onOpenReciterPicker: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val audioState by audioStateFlow.collectAsStateWithLifecycle()
+  PersistentAudioBar(
+    audioState = audioState,
+    onTogglePlayPause = onTogglePlayPause,
+    onSeekTo = onSeekTo,
+    onSeekDelta = onSeekDelta,
+    onNextSurah = onNextSurah,
+    onPrevSurah = onPrevSurah,
+    onCycleSpeed = { onCycleSpeed(audioState.playbackSpeed) },
+    onOpenReciterPicker = onOpenReciterPicker,
+    modifier = modifier,
+  )
+}
+
+@Composable
+private fun ReaderReciterPickerHost(
+  audioStateFlow: StateFlow<AudioPlaybackUiState>,
+  primaryReciters: List<VerifiedReciter>,
+  additionalReciters: List<VerifiedReciter>,
+  surahs: List<SurahMeta>,
+  isLoading: Boolean,
+  errorMessage: String?,
+  onSelectReciter: (VerifiedReciter) -> Unit,
+  onPlayFromAyah: (Int, Int) -> Unit,
+  onPlayRange: (RecitationRange) -> Unit,
+  onClearRange: () -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val audioState by audioStateFlow.collectAsStateWithLifecycle()
+  ReciterPickerSheet(
+    primaryReciters = primaryReciters,
+    additionalReciters = additionalReciters,
+    activeReciter = audioState.currentReciter,
+    currentSurahId = audioState.currentSurahId,
+    activeRange = audioState.activeRange,
+    surahs = surahs,
+    isLoading = isLoading,
+    errorMessage = errorMessage,
+    onSelectReciter = onSelectReciter,
+    onPlayFromAyah = onPlayFromAyah,
+    onPlayRange = onPlayRange,
+    onClearRange = onClearRange,
+    onDismiss = onDismiss,
+  )
 }
 
 @Composable
