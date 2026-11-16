@@ -45,30 +45,26 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.Placeholder
-import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.PlatformTextStyle
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.quran.MushafEdition
@@ -80,7 +76,9 @@ import com.example.ui.theme.QabasatGold
 import com.example.ui.theme.QabasatNightGold
 import com.example.viewmodel.PageLoadState
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 private fun toArabicIndicDigits(number: Int): String {
@@ -104,7 +102,8 @@ fun MushafPageFrame(
   selectedVerseKey: String?,
   onToggleBookmark: () -> Unit,
   onRetry: () -> Unit,
-  onVerseTapped: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
+  onPageTapped: () -> Unit,
+  onVerseLongPressed: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val effectiveDark = isDarkTheme || backgroundTheme == BackgroundTheme.BLACK
@@ -121,8 +120,8 @@ fun MushafPageFrame(
   Surface(
     modifier = modifier
       .fillMaxSize()
-      .padding(horizontal = 8.dp, vertical = 4.dp),
-    shape = RoundedCornerShape(12.dp),
+      .padding(horizontal = 3.dp, vertical = 2.dp),
+    shape = RoundedCornerShape(10.dp),
     color = paperColor,
     tonalElevation = if (effectiveDark) 0.dp else 2.dp,
     shadowElevation = if (effectiveDark) 0.dp else 2.dp,
@@ -130,39 +129,42 @@ fun MushafPageFrame(
     Box(
       modifier = Modifier
         .fillMaxSize()
+        .pointerInput(onPageTapped) {
+          detectTapGestures(onTap = { onPageTapped() })
+        }
         .drawBehind {
           drawRoundRect(
             color = goldColor.copy(alpha = 0.85f),
-            topLeft = Offset(5.dp.toPx(), 5.dp.toPx()),
-            size = Size(size.width - 10.dp.toPx(), size.height - 10.dp.toPx()),
-            cornerRadius = CornerRadius(9.dp.toPx(), 9.dp.toPx()),
-            style = Stroke(width = 1.6.dp.toPx()),
+            topLeft = Offset(3.5.dp.toPx(), 3.5.dp.toPx()),
+            size = Size(size.width - 7.dp.toPx(), size.height - 7.dp.toPx()),
+            cornerRadius = CornerRadius(7.dp.toPx(), 7.dp.toPx()),
+            style = Stroke(width = 1.4.dp.toPx()),
           )
           drawRoundRect(
             color = frameAccent,
-            topLeft = Offset(9.dp.toPx(), 9.dp.toPx()),
-            size = Size(size.width - 18.dp.toPx(), size.height - 18.dp.toPx()),
-            cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
-            style = Stroke(width = 0.85.dp.toPx()),
+            topLeft = Offset(6.5.dp.toPx(), 6.5.dp.toPx()),
+            size = Size(size.width - 13.dp.toPx(), size.height - 13.dp.toPx()),
+            cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx()),
+            style = Stroke(width = 0.75.dp.toPx()),
           )
-          val cornerPad = 9.dp.toPx()
-          val accentLen = 14.dp.toPx()
+          val cornerPad = 6.5.dp.toPx()
+          val accentLen = 12.dp.toPx()
           listOf(
             Offset(cornerPad, cornerPad),
             Offset(size.width - cornerPad, cornerPad),
             Offset(cornerPad, size.height - cornerPad),
             Offset(size.width - cornerPad, size.height - cornerPad),
           ).forEach { pt ->
-            drawCircle(color = goldColor, radius = 2.6.dp.toPx(), center = pt)
+            drawCircle(color = goldColor, radius = 2.2.dp.toPx(), center = pt)
             drawCircle(
               color = outerBorderColor.copy(alpha = 0.45f),
-              radius = accentLen * 0.26f,
+              radius = accentLen * 0.24f,
               center = pt,
-              style = Stroke(width = 0.8.dp.toPx()),
+              style = Stroke(width = 0.75.dp.toPx()),
             )
           }
         }
-        .padding(horizontal = 14.dp, vertical = 10.dp),
+        .padding(horizontal = 9.dp, vertical = 7.dp),
     ) {
       when (pageState) {
         null, PageLoadState.Loading -> {
@@ -230,7 +232,8 @@ fun MushafPageFrame(
             activePlayingVerseKey = activePlayingVerseKey,
             selectedVerseKey = selectedVerseKey,
             onToggleBookmark = onToggleBookmark,
-            onVerseTapped = onVerseTapped,
+            onPageTapped = onPageTapped,
+            onVerseLongPressed = onVerseLongPressed,
           )
         }
       }
@@ -256,10 +259,21 @@ private fun MushafPageContent(
   activePlayingVerseKey: String?,
   selectedVerseKey: String?,
   onToggleBookmark: () -> Unit,
-  onVerseTapped: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
+  onPageTapped: () -> Unit,
+  onVerseLongPressed: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
 ) {
   val surahHeaderNames = remember(pageData.surahIds, surahsById) {
     pageData.surahIds.mapNotNull { surahsById[it]?.nameArabic }.joinToString(" • ")
+  }
+
+  // Pages 1 & 2 have 7 Quran lines (+ surah header) cleanly filling the page height;
+  // Normal pages (3..604) always render all 15 equal-height lines edge to edge.
+  val displayedLines = remember(pageData) {
+    if (pageData.pageNumber in 1..2) {
+      pageData.lines.dropLastWhile { it is MushafLine.EmptyLine }
+    } else {
+      pageData.lines
+    }
   }
 
   Column(
@@ -269,7 +283,7 @@ private fun MushafPageContent(
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(horizontal = 6.dp, vertical = 1.dp),
+        .padding(horizontal = 4.dp),
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -284,13 +298,13 @@ private fun MushafPageContent(
       )
       Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
         modifier = Modifier
           .background(
             color = goldColor.copy(alpha = if (isDarkTheme) 0.14f else 0.11f),
             shape = RoundedCornerShape(10.dp),
           )
-          .padding(horizontal = 9.dp, vertical = 1.dp),
+          .padding(horizontal = 8.dp, vertical = 1.dp),
       ) {
         Text(
           text = "الجزء ${toArabicIndicDigits(pageData.juzNumber)}",
@@ -315,9 +329,8 @@ private fun MushafPageContent(
         .fillMaxWidth()
         .weight(1f)
         .padding(vertical = 1.dp),
-      verticalArrangement = Arrangement.SpaceEvenly,
     ) {
-      for (line in pageData.lines) {
+      for (line in displayedLines) {
         Box(
           modifier = Modifier
             .fillMaxWidth()
@@ -354,7 +367,8 @@ private fun MushafPageContent(
                 isRecitationPlaying = isRecitationPlaying,
                 activePlayingVerseKey = activePlayingVerseKey,
                 selectedVerseKey = selectedVerseKey,
-                onVerseTapped = onVerseTapped,
+                onPageTapped = onPageTapped,
+                onVerseLongPressed = onVerseLongPressed,
               )
             }
 
@@ -367,9 +381,7 @@ private fun MushafPageContent(
     }
 
     Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(top = 1.dp),
+      modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -377,14 +389,14 @@ private fun MushafPageContent(
         onClick = onToggleBookmark,
         modifier = Modifier
           .minimumInteractiveComponentSize()
-          .size(34.dp)
+          .size(30.dp)
           .testTag("bookmark_page_${pageData.pageNumber}"),
       ) {
         Icon(
           imageVector = if (isBookmarked) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
           contentDescription = "علامة مرجعية للصفحة",
           tint = if (isBookmarked) goldColor else mutedInk,
-          modifier = Modifier.size(19.dp),
+          modifier = Modifier.size(18.dp),
         )
       }
 
@@ -399,7 +411,7 @@ private fun MushafPageContent(
             color = goldColor.copy(alpha = 0.55f),
             shape = RoundedCornerShape(16.dp),
           )
-          .padding(horizontal = 16.dp, vertical = 2.dp),
+          .padding(horizontal = 14.dp, vertical = 1.dp),
         contentAlignment = Alignment.Center,
       ) {
         Text(
@@ -413,7 +425,7 @@ private fun MushafPageContent(
       }
 
       Text(
-        text = "اضغط على الآية للتفسير",
+        text = "اضغط مطولاً على الآية للتفسير",
         style = MaterialTheme.typography.labelSmall,
         color = mutedInk.copy(alpha = 0.85f),
       )
@@ -430,7 +442,7 @@ private fun SurahHeaderBand(
   Box(
     modifier = Modifier
       .fillMaxWidth()
-      .padding(horizontal = 4.dp, vertical = 1.dp)
+      .padding(horizontal = 2.dp, vertical = 1.dp)
       .drawBehind {
         val h = size.height
         val w = size.width
@@ -458,7 +470,7 @@ private fun SurahHeaderBand(
         }
         drawPath(path = innerPath, color = goldColor.copy(alpha = 0.45f), style = Stroke(width = 0.6.dp.toPx()))
       }
-      .padding(horizontal = 18.dp, vertical = 2.dp),
+      .padding(horizontal = 16.dp, vertical = 2.dp),
   ) {
     Row(
       modifier = Modifier.fillMaxWidth(),
@@ -475,7 +487,7 @@ private fun SurahHeaderBand(
         style = MaterialTheme.typography.titleMedium.copy(
           fontFamily = AmiriFontFamily,
           fontWeight = FontWeight.Bold,
-          fontSize = 17.5.sp,
+          fontSize = 17.sp,
         ),
         color = textColor,
         maxLines = 1,
@@ -504,9 +516,7 @@ private fun BasmalahRow(
   val textMeasurer = rememberTextMeasurer()
 
   BoxWithConstraints(
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(horizontal = 2.dp),
+    modifier = Modifier.fillMaxWidth(),
     contentAlignment = Alignment.Center,
   ) {
     val density = LocalDensity.current
@@ -514,9 +524,9 @@ private fun BasmalahRow(
     val maxHeightPx = constraints.maxHeight
     val maxSp = remember(maxHeightPx, density) {
       if (maxHeightPx > 0 && maxHeightPx != Constraints.Infinity) {
-        with(density) { (maxHeightPx.toFloat() * 0.56f).toSp().value }.coerceIn(13f, 23f)
+        with(density) { (maxHeightPx.toFloat() * 0.68f).toSp().value }.coerceIn(13f, 38f)
       } else {
-        19f
+        22f
       }
     }
 
@@ -525,7 +535,7 @@ private fun BasmalahRow(
         maxSp
       } else {
         var candidate = maxSp
-        while (candidate > 11f) {
+        while (candidate > 10f) {
           val measured = textMeasurer.measure(
             text = AnnotatedString(line.codeV2Glyphs),
             style = TextStyle(
@@ -542,12 +552,12 @@ private fun BasmalahRow(
           )
           val fitsHeight = maxHeightPx <= 0 || maxHeightPx == Constraints.Infinity ||
             measured.size.height <= (maxHeightPx * 1.05f).toInt()
-          if (!measured.hasVisualOverflow && measured.size.width <= (maxWidthPx - 4) && fitsHeight) {
+          if (!measured.hasVisualOverflow && measured.size.width <= maxWidthPx && fitsHeight) {
             break
           }
           candidate -= 0.5f
         }
-        candidate.coerceAtLeast(11f)
+        candidate.coerceAtLeast(10f)
       }
     }
 
@@ -591,6 +601,14 @@ private fun verseHighlightColors(
   }
 }
 
+private data class WordPlacedBox(
+  val verseKey: String,
+  val left: Float,
+  val top: Float,
+  val right: Float,
+  val bottom: Float,
+)
+
 @Suppress("DEPRECATION")
 @Composable
 private fun AyahLineRow(
@@ -605,102 +623,40 @@ private fun AyahLineRow(
   isRecitationPlaying: Boolean,
   activePlayingVerseKey: String?,
   selectedVerseKey: String?,
-  onVerseTapped: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
+  onPageTapped: () -> Unit,
+  onVerseLongPressed: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
 ) {
   if (!usesTagFallbackTajweed && pageTypeface == null) {
     Spacer(Modifier.fillMaxSize())
     return
   }
 
-  val renderVectorTajweedMarkers = mushafEdition == MushafEdition.TAJWEED_V4
+  val words = line.words
+  if (words.isEmpty()) {
+    Spacer(Modifier.fillMaxSize())
+    return
+  }
 
+  val renderVectorTajweedMarkers = mushafEdition == MushafEdition.TAJWEED_V4
   val qcfFontFamily = remember(pageTypeface) {
     pageTypeface?.let { FontFamily(it) }
   }
-
-  val markerPlaceholder = remember {
-    Placeholder(
-      width = 1.36.em,
-      height = 1.20.em,
-      placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
-    )
-  }
-
-  val linePayload = remember(
-    line,
-    renderVectorTajweedMarkers,
-    usesTagFallbackTajweed,
-    baseTextColor,
-  ) {
-    val placeholderRanges = mutableListOf<AnnotatedString.Range<Placeholder>>()
-    val markers = mutableMapOf<String, AyahMarkerMeta>()
-    val verseRangesBuilder = linkedMapOf<String, MutableList<IntRange>>()
-
-    var openVerseKey: String? = null
-    var openStart = 0
-
-    val text = buildAnnotatedString {
-      line.words.forEachIndexed { idx, word ->
-        val tokenText = if (usesTagFallbackTajweed) word.textUthmani else word.codeV2
-        if (openVerseKey != word.verseKey) {
-          if (openVerseKey != null && length > openStart) {
-            verseRangesBuilder.getOrPut(openVerseKey!!) { mutableListOf() }.add(openStart until length)
-          }
-          openVerseKey = word.verseKey
-          openStart = length
-        }
-
-        pushStringAnnotation(tag = "verse", annotation = word.verseKey)
-        if (renderVectorTajweedMarkers && word.isEndMarker) {
-          val markerId = "ayah_end_${word.verseKey}_${word.id}"
-          val arabicDigits = toArabicIndicDigits(word.ayahNumber)
-          val startIdx = length
-          appendInlineContent(markerId, "\uFD3E$arabicDigits\uFD3F")
-          val endIdx = length
-          placeholderRanges.add(AnnotatedString.Range(markerPlaceholder, startIdx, endIdx))
-          markers[markerId] = AyahMarkerMeta(
-            arabicDigits = arabicDigits,
-            verseKey = word.verseKey,
-          )
-        } else {
-          withStyle(SpanStyle(color = baseTextColor)) {
-            append(tokenText)
-          }
-        }
-        pop()
-
-        if (idx < line.words.lastIndex) {
-          val nextVerseSame = line.words[idx + 1].verseKey == word.verseKey
-          if (!nextVerseSame && openVerseKey != null && length > openStart) {
-            verseRangesBuilder.getOrPut(openVerseKey!!) { mutableListOf() }.add(openStart until length)
-            openVerseKey = null
-          }
-          append(" ")
-        }
-      }
-      if (openVerseKey != null && length > openStart) {
-        verseRangesBuilder.getOrPut(openVerseKey!!) { mutableListOf() }.add(openStart until length)
-      }
-    }
-    PreparedLine(
-      annotated = text,
-      placeholderRanges = placeholderRanges,
-      markers = markers,
-      verseCharRanges = verseRangesBuilder,
-    )
-  }
-
   val codeV2ByVerse = remember(line) {
-    line.words.groupBy { it.verseKey }
+    words.groupBy { it.verseKey }
       .mapValues { (_, ws) -> ws.joinToString(" ") { it.codeV2 } }
   }
 
+  val wordTokens = remember(words, usesTagFallbackTajweed) {
+    words.map { w ->
+      if (usesTagFallbackTajweed) w.textUthmani else w.codeV2
+    }
+  }
+
   val textMeasurer = rememberTextMeasurer()
+  val haptic = LocalHapticFeedback.current
 
   BoxWithConstraints(
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(horizontal = 2.dp),
+    modifier = Modifier.fillMaxSize(),
     contentAlignment = Alignment.Center,
   ) {
     val density = LocalDensity.current
@@ -709,16 +665,17 @@ private fun AyahLineRow(
 
     val maxFontSp = remember(maxHeightPx, density) {
       if (maxHeightPx > 0 && maxHeightPx != Constraints.Infinity) {
-        with(density) { (maxHeightPx.toFloat() * 0.56f).toSp().value }.coerceIn(13f, 25f)
+        with(density) { (maxHeightPx.toFloat() * 0.72f).toSp().value }.coerceIn(12f, 40f)
       } else {
-        21f
+        24f
       }
     }
 
     val fittedFontSp = remember(
       pageNumber,
       line.lineNumber,
-      linePayload.annotated,
+      wordTokens,
+      renderVectorTajweedMarkers,
       qcfFontFamily,
       maxWidthPx,
       maxHeightPx,
@@ -727,184 +684,295 @@ private fun AyahLineRow(
       if (maxWidthPx <= 0) {
         maxFontSp
       } else {
-        var candidate = maxFontSp
-        while (candidate > 9.5f) {
-          val measured = textMeasurer.measure(
-            text = linePayload.annotated,
-            style = TextStyle(
-              fontFamily = qcfFontFamily,
-              fontSize = candidate.sp,
-              lineHeight = TextUnit.Unspecified,
-              platformStyle = PlatformTextStyle(includeFontPadding = true),
-              textDirection = TextDirection.Rtl,
-            ),
-            overflow = TextOverflow.Visible,
-            softWrap = false,
-            maxLines = 1,
-            placeholders = linePayload.placeholderRanges,
-            constraints = Constraints(maxWidth = maxWidthPx),
+        val minSp = 8.5f
+        var lo = minSp
+        var hi = maxFontSp
+
+        fun fitsAt(candidateSp: Float): Boolean {
+          val fontSizePx = with(density) { candidateSp.sp.toPx() }
+          val minGapPx = (fontSizePx * 0.14f).coerceAtLeast(2f)
+          val style = TextStyle(
+            fontFamily = qcfFontFamily,
+            fontSize = candidateSp.sp,
+            lineHeight = TextUnit.Unspecified,
+            platformStyle = PlatformTextStyle(includeFontPadding = true),
+            textDirection = TextDirection.Rtl,
           )
-          val fitsHeight = maxHeightPx <= 0 || maxHeightPx == Constraints.Infinity ||
-            measured.size.height <= (maxHeightPx * 1.06f).toInt()
-          if (!measured.hasVisualOverflow && measured.size.width <= (maxWidthPx - 6) && fitsHeight) {
-            break
+          var sumW = 0f
+          var maxH = 0f
+          for (idx in words.indices) {
+            val w = words[idx]
+            if (renderVectorTajweedMarkers && w.isEndMarker) {
+              sumW += fontSizePx * 1.32f
+              val mh = fontSizePx * 1.18f
+              if (mh > maxH) maxH = mh
+            } else {
+              val measured = textMeasurer.measure(
+                text = AnnotatedString(wordTokens[idx]),
+                style = style,
+                overflow = TextOverflow.Visible,
+                softWrap = false,
+                maxLines = 1,
+                constraints = Constraints(),
+              )
+              sumW += measured.size.width.toFloat()
+              val mh = measured.size.height.toFloat()
+              if (mh > maxH) maxH = mh
+            }
           }
-          candidate -= 0.5f
+          val totalMinWidth = sumW + minGapPx * (words.size - 1).coerceAtLeast(0)
+          val fitsWidth = totalMinWidth <= maxWidthPx.toFloat()
+          val fitsHeight = maxHeightPx <= 0 || maxHeightPx == Constraints.Infinity ||
+            maxH <= maxHeightPx.toFloat() * 1.05f
+          return fitsWidth && fitsHeight
         }
-        candidate.coerceAtLeast(9.5f)
-      }
-    }
 
-    val inlineContent = remember(
-      linePayload.markers,
-      markerPlaceholder,
-      fittedFontSp,
-      goldColor,
-      baseTextColor,
-      isDarkTheme,
-      activePlayingVerseKey,
-    ) {
-      linePayload.markers.mapValues { (_, meta) ->
-        InlineTextContent(markerPlaceholder) {
-          TajweedAyahNumberRosette(
-            arabicDigits = meta.arabicDigits,
-            lineFontSp = fittedFontSp,
-            goldColor = goldColor,
-            inkColor = baseTextColor,
-            isDarkTheme = isDarkTheme,
-            isActive = meta.verseKey == activePlayingVerseKey,
-          )
+        if (fitsAt(hi)) {
+          hi
+        } else {
+          repeat(10) {
+            val mid = (lo + hi) * 0.5f
+            if (fitsAt(mid)) {
+              lo = mid
+            } else {
+              hi = mid
+            }
+          }
+          lo.coerceAtLeast(minSp)
         }
       }
     }
 
-    var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val markerWidthDp = with(density) { (fittedFontSp * 1.32f).sp.toDp() }
+    val markerHeightDp = with(density) { (fittedFontSp * 1.18f).sp.toDp() }
 
-    val activeRangesOnLine = activePlayingVerseKey?.let { linePayload.verseCharRanges[it] }
-    val selectedRangesOnLine = if (selectedVerseKey != null && selectedVerseKey != activePlayingVerseKey) {
-      linePayload.verseCharRanges[selectedVerseKey]
-    } else {
-      null
+    val wordBoxes = remember(pageNumber, line.lineNumber, words.size) {
+      Array<WordPlacedBox?>(words.size) { null }
     }
 
-    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-      Text(
-        text = linePayload.annotated,
-        inlineContent = inlineContent,
-        style = TextStyle(
-          fontFamily = qcfFontFamily,
-          fontSize = fittedFontSp.sp,
-          lineHeight = TextUnit.Unspecified,
-          platformStyle = PlatformTextStyle(includeFontPadding = true),
-          textAlign = TextAlign.Center,
-          textDirection = TextDirection.Rtl,
-        ),
-        maxLines = 1,
-        softWrap = false,
-        overflow = TextOverflow.Visible,
-        onTextLayout = { layoutResult = it },
-        modifier = Modifier
-          .fillMaxWidth()
-          .drawBehind {
-            val lr = layoutResult ?: return@drawBehind
-            val plain = lr.layoutInput.text.text
-            if (plain.isEmpty()) return@drawBehind
+    Layout(
+      content = {
+        words.forEachIndexed { idx, word ->
+          if (renderVectorTajweedMarkers && word.isEndMarker) {
+            Box(
+              modifier = Modifier.size(width = markerWidthDp, height = markerHeightDp),
+              contentAlignment = Alignment.Center,
+            ) {
+              TajweedAyahNumberRosette(
+                arabicDigits = toArabicIndicDigits(word.ayahNumber),
+                lineFontSp = fittedFontSp,
+                goldColor = goldColor,
+                inkColor = baseTextColor,
+                isDarkTheme = isDarkTheme,
+                isActive = word.verseKey == activePlayingVerseKey,
+              )
+            }
+          } else {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+              Text(
+                text = wordTokens[idx],
+                style = TextStyle(
+                  fontFamily = qcfFontFamily,
+                  fontSize = fittedFontSp.sp,
+                  lineHeight = TextUnit.Unspecified,
+                  platformStyle = PlatformTextStyle(includeFontPadding = true),
+                  textDirection = TextDirection.Rtl,
+                ),
+                color = baseTextColor,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Visible,
+              )
+            }
+          }
+        }
+      },
+      modifier = Modifier
+        .fillMaxSize()
+        .drawBehind {
+          if (wordBoxes.isEmpty()) return@drawBehind
+          val padX = 2.5.dp.toPx()
+          val padY = 1.dp.toPx()
+          val corner = CornerRadius(6.dp.toPx(), 6.dp.toPx())
 
-            fun drawRanges(ranges: List<IntRange>, fillColor: Color, strokeColor: Color) {
-              val padX = 2.5.dp.toPx()
-              val padY = 1.dp.toPx()
-              val corner = CornerRadius(6.dp.toPx(), 6.dp.toPx())
-              for (range in ranges) {
-                var minLeft = Float.POSITIVE_INFINITY
-                var minTop = Float.POSITIVE_INFINITY
-                var maxRight = Float.NEGATIVE_INFINITY
-                var maxBottom = Float.NEGATIVE_INFINITY
-                var i = range.first.coerceAtLeast(0)
-                val end = range.last.coerceAtMost(plain.length - 1)
-                while (i <= end) {
-                  val cp = plain.codePointAt(i)
-                  val charLen = Character.charCount(cp)
-                  val box = runCatching { lr.getBoundingBox(i) }.getOrNull()
-                  if (box != null && (box.width > 0f || box.height > 0f)) {
-                    if (box.left < minLeft) minLeft = box.left
-                    if (box.top < minTop) minTop = box.top
-                    if (box.right > maxRight) maxRight = box.right
-                    if (box.bottom > maxBottom) maxBottom = box.bottom
-                  }
-                  i += charLen
+          fun drawVerseHighlight(targetKey: String, isRecitedActive: Boolean) {
+            val (fillColor, strokeColor) = verseHighlightColors(
+              isRecitedActive = isRecitedActive,
+              isDarkTheme = isDarkTheme,
+            )
+            var minLeft = Float.POSITIVE_INFINITY
+            var minTop = Float.POSITIVE_INFINITY
+            var maxRight = Float.NEGATIVE_INFINITY
+            var maxBottom = Float.NEGATIVE_INFINITY
+            var hasBox = false
+
+            for (i in wordBoxes.indices) {
+              val box = wordBoxes[i]
+              if (box != null && box.verseKey == targetKey) {
+                if (!hasBox) {
+                  minLeft = box.left
+                  minTop = box.top
+                  maxRight = box.right
+                  maxBottom = box.bottom
+                  hasBox = true
+                } else {
+                  if (box.left < minLeft) minLeft = box.left
+                  if (box.top < minTop) minTop = box.top
+                  if (box.right > maxRight) maxRight = box.right
+                  if (box.bottom > maxBottom) maxBottom = box.bottom
                 }
-                if (minLeft < maxRight && minTop < maxBottom) {
-                  val left = (minLeft - padX).coerceAtLeast(0f)
-                  val right = (maxRight + padX).coerceAtMost(size.width)
-                  val top = (minTop - padY).coerceAtLeast(0f)
-                  val bottom = (maxBottom + padY).coerceAtMost(size.height)
-                  val rectSize = Size((right - left).coerceAtLeast(1f), (bottom - top).coerceAtLeast(1f))
-                  drawRoundRect(
-                    color = fillColor,
-                    topLeft = Offset(left, top),
-                    size = rectSize,
-                    cornerRadius = corner,
-                  )
-                  drawRoundRect(
-                    color = strokeColor,
-                    topLeft = Offset(left, top),
-                    size = rectSize,
-                    cornerRadius = corner,
-                    style = Stroke(width = 1.dp.toPx()),
-                  )
-                }
+              } else if (hasBox) {
+                val left = (minLeft - padX).coerceAtLeast(0f)
+                val right = (maxRight + padX).coerceAtMost(size.width)
+                val top = (minTop - padY).coerceAtLeast(0f)
+                val bottom = (maxBottom + padY).coerceAtMost(size.height)
+                val rectSize = Size((right - left).coerceAtLeast(1f), (bottom - top).coerceAtLeast(1f))
+                drawRoundRect(
+                  color = fillColor,
+                  topLeft = Offset(left, top),
+                  size = rectSize,
+                  cornerRadius = corner,
+                )
+                drawRoundRect(
+                  color = strokeColor,
+                  topLeft = Offset(left, top),
+                  size = rectSize,
+                  cornerRadius = corner,
+                  style = Stroke(width = 1.dp.toPx()),
+                )
+                hasBox = false
+                minLeft = Float.POSITIVE_INFINITY
+                minTop = Float.POSITIVE_INFINITY
+                maxRight = Float.NEGATIVE_INFINITY
+                maxBottom = Float.NEGATIVE_INFINITY
               }
             }
-
-            if (!selectedRangesOnLine.isNullOrEmpty()) {
-              val (fill, stroke) = verseHighlightColors(isRecitedActive = false, isDarkTheme = isDarkTheme)
-              drawRanges(selectedRangesOnLine, fill, stroke)
-            }
-            if (!activeRangesOnLine.isNullOrEmpty()) {
-              val (fill, stroke) = verseHighlightColors(isRecitedActive = true, isDarkTheme = isDarkTheme)
-              drawRanges(activeRangesOnLine, fill, stroke)
+            if (hasBox) {
+              val left = (minLeft - padX).coerceAtLeast(0f)
+              val right = (maxRight + padX).coerceAtMost(size.width)
+              val top = (minTop - padY).coerceAtLeast(0f)
+              val bottom = (maxBottom + padY).coerceAtMost(size.height)
+              val rectSize = Size((right - left).coerceAtLeast(1f), (bottom - top).coerceAtLeast(1f))
+              drawRoundRect(
+                color = fillColor,
+                topLeft = Offset(left, top),
+                size = rectSize,
+                cornerRadius = corner,
+              )
+              drawRoundRect(
+                color = strokeColor,
+                topLeft = Offset(left, top),
+                size = rectSize,
+                cornerRadius = corner,
+                style = Stroke(width = 1.dp.toPx()),
+              )
             }
           }
-          .pointerInput(linePayload.annotated) {
-            detectTapGestures { tapOffset ->
-              val lr = layoutResult ?: return@detectTapGestures
-              val offset = lr.getOffsetForPosition(tapOffset)
-              val hit = linePayload.annotated
-                .getStringAnnotations(tag = "verse", start = offset, end = offset)
-                .firstOrNull()
-                ?: linePayload.annotated
-                  .getStringAnnotations(
-                    tag = "verse",
-                    start = (offset - 1).coerceAtLeast(0),
-                    end = (offset + 1).coerceAtMost(linePayload.annotated.length),
-                  )
-                  .firstOrNull()
+
+          if (selectedVerseKey != null && selectedVerseKey != activePlayingVerseKey) {
+            drawVerseHighlight(selectedVerseKey, isRecitedActive = false)
+          }
+          if (activePlayingVerseKey != null) {
+            drawVerseHighlight(activePlayingVerseKey, isRecitedActive = true)
+          }
+        }
+        .pointerInput(pageNumber, line.lineNumber, codeV2ByVerse, onPageTapped, onVerseLongPressed) {
+          detectTapGestures(
+            onTap = { onPageTapped() },
+            onLongPress = { tapOffset ->
+              val boxes = wordBoxes.filterNotNull()
+              val hit = boxes.firstOrNull { b ->
+                tapOffset.x in (b.left - 8f)..(b.right + 8f) &&
+                  tapOffset.y in (b.top - 12f)..(b.bottom + 12f)
+              } ?: boxes.minByOrNull { b ->
+                abs(tapOffset.x - (b.left + b.right) * 0.5f)
+              }
               if (hit != null) {
-                onVerseTapped(
-                  hit.item,
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onVerseLongPressed(
+                  hit.verseKey,
                   pageNumber,
-                  codeV2ByVerse[hit.item].orEmpty(),
+                  codeV2ByVerse[hit.verseKey].orEmpty(),
                 )
               }
-            }
+            },
+          )
+        }
+        .testTag("mushaf_page_${pageNumber}_line_${line.lineNumber}"),
+    ) { measurables, incomingConstraints ->
+      val childConstraints = Constraints()
+      val placeables = measurables.map { it.measure(childConstraints) }
+      val n = placeables.size
+      val sumW = placeables.sumOf { it.width }
+      val maxChildH = placeables.maxOfOrNull { it.height } ?: 0
+
+      val layoutW = if (incomingConstraints.hasBoundedWidth) {
+        incomingConstraints.maxWidth
+      } else {
+        sumW
+      }
+      val layoutH = if (incomingConstraints.hasBoundedHeight) {
+        incomingConstraints.maxHeight
+      } else {
+        maxChildH
+      }
+
+      // Justify edge-to-edge on full Mushaf lines (4+ words or >=45% line fill); center tiny stubs.
+      val justifyEdgeToEdge = n >= 4 || (n >= 2 && sumW >= (layoutW * 0.45f).toInt())
+
+      layout(layoutW, layoutH) {
+        if (n == 0) return@layout
+
+        if (justifyEdgeToEdge && n > 1 && layoutW >= sumW) {
+          val totalGap = layoutW - sumW
+          var rightCursor = layoutW
+          var prevCumGap = 0
+          for (i in 0 until n) {
+            val p = placeables[i]
+            val cumGap = if (i == 0) 0 else ((totalGap.toLong() * i) / (n - 1)).toInt()
+            val gapStep = cumGap - prevCumGap
+            prevCumGap = cumGap
+            rightCursor -= gapStep
+            val x = rightCursor - p.width
+            val y = (layoutH - p.height) / 2
+            rightCursor = x
+            p.place(x = x, y = y)
+            wordBoxes[i] = WordPlacedBox(
+              verseKey = words[i].verseKey,
+              left = x.toFloat(),
+              top = y.toFloat(),
+              right = (x + p.width).toFloat(),
+              bottom = (y + p.height).toFloat(),
+            )
           }
-          .testTag("mushaf_page_${pageNumber}_line_${line.lineNumber}"),
-      )
+        } else {
+          val defaultGapPx = with(density) { (fittedFontSp * 0.24f).sp.roundToPx() }.coerceAtLeast(4)
+          val blockW = sumW + defaultGapPx * (n - 1).coerceAtLeast(0)
+          var rightCursor = if (layoutW > blockW) {
+            layoutW - (layoutW - blockW) / 2
+          } else {
+            layoutW
+          }
+          for (i in 0 until n) {
+            val p = placeables[i]
+            if (i > 0) rightCursor -= defaultGapPx
+            val x = rightCursor - p.width
+            val y = (layoutH - p.height) / 2
+            rightCursor = x
+            p.place(x = x, y = y)
+            wordBoxes[i] = WordPlacedBox(
+              verseKey = words[i].verseKey,
+              left = x.toFloat(),
+              top = y.toFloat(),
+              right = (x + p.width).toFloat(),
+              bottom = (y + p.height).toFloat(),
+            )
+          }
+        }
+      }
     }
   }
 }
-
-private data class AyahMarkerMeta(
-  val arabicDigits: String,
-  val verseKey: String,
-)
-
-private data class PreparedLine(
-  val annotated: AnnotatedString,
-  val placeholderRanges: List<AnnotatedString.Range<Placeholder>>,
-  val markers: Map<String, AyahMarkerMeta>,
-  val verseCharRanges: Map<String, List<IntRange>>,
-)
 
 @Composable
 private fun TajweedAyahNumberRosette(
@@ -920,7 +988,7 @@ private fun TajweedAyahNumberRosette(
     2 -> 0.39f
     else -> 0.33f
   }
-  val numberFontSp = (lineFontSp * digitScale).coerceIn(7.5f, 12.5f)
+  val numberFontSp = (lineFontSp * digitScale).coerceIn(7.5f, 18f)
   val fillTint = when {
     isActive -> goldColor.copy(alpha = if (isDarkTheme) 0.44f else 0.36f)
     isDarkTheme -> goldColor.copy(alpha = 0.22f)

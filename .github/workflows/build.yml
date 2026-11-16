@@ -2,11 +2,7 @@ name: Build APK
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'signing/**'
   workflow_dispatch:
-permissions:
-  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,10 +12,8 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - name: Restore signing key
-        env:
-          KEY_PASS: ${{ secrets.KEYSTORE_PASSPHRASE }}
-        run: openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in signing/debug.keystore.enc -out debug.keystore -pass env:KEY_PASS
+      - name: Create debug keystore
+        run: keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
       - name: Read Gradle version
         id: gv
         run: echo "v=$(grep distributionUrl gradle/wrapper/gradle-wrapper.properties | sed -E 's/.*gradle-([0-9.]+)-.*/\1/')" >> "$GITHUB_OUTPUT"
@@ -31,11 +25,3 @@ jobs:
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/*.apk
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          APK=$(ls app/build/outputs/apk/debug/*.apk | head -n 1)
-          cp "$APK" quran-app.apk
-          gh release delete latest --yes --cleanup-tag || true
-          gh release create latest quran-app.apk --title "Latest build" --notes "Build ${{ github.run_number }}" --latest

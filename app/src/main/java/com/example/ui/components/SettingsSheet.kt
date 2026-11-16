@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.prefs.BackgroundTheme
+import com.example.data.prefs.PageViewMode
 import com.example.data.quran.MushafEdition
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -49,9 +50,11 @@ fun SettingsSheet(
   isDarkMode: Boolean,
   backgroundTheme: BackgroundTheme,
   mushafEdition: MushafEdition,
+  effectiveTwoPageMode: Boolean,
   onToggleDarkMode: () -> Unit,
   onSelectBackgroundTheme: (BackgroundTheme) -> Unit,
   onSelectEdition: (MushafEdition) -> Unit,
+  onSelectPageViewMode: (PageViewMode) -> Unit,
   onOpenTajweedLegend: () -> Unit,
   onOpenCredits: () -> Unit,
   onDismiss: () -> Unit,
@@ -177,6 +180,38 @@ fun SettingsSheet(
           selected = mushafEdition == MushafEdition.TAJWEED_V4,
           onClick = { onSelectEdition(MushafEdition.TAJWEED_V4) },
           modifier = Modifier.weight(1f),
+        )
+      }
+
+      Spacer(Modifier.height(16.dp))
+      Text(
+        text = "عرض الصفحات",
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.primary,
+      )
+      Spacer(Modifier.height(8.dp))
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        EditionChoiceCard(
+          title = "صفحة واحدة",
+          subtitle = "عرض صفحة كاملة متناسبة في المنتصف",
+          selected = !effectiveTwoPageMode,
+          onClick = { onSelectPageViewMode(PageViewMode.SINGLE) },
+          modifier = Modifier
+            .weight(1f)
+            .testTag("settings_page_mode_single"),
+        )
+        EditionChoiceCard(
+          title = "صفحتان",
+          subtitle = "عرض صفحتين متقابلتين كالمصحف المطبوع",
+          selected = effectiveTwoPageMode,
+          onClick = { onSelectPageViewMode(PageViewMode.TWO_PAGES) },
+          modifier = Modifier
+            .weight(1f)
+            .testTag("settings_page_mode_two"),
         )
       }
 

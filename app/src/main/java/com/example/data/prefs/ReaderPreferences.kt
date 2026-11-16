@@ -20,12 +20,19 @@ enum class BackgroundTheme {
   BLACK,
 }
 
+enum class PageViewMode {
+  AUTO,
+  SINGLE,
+  TWO_PAGES,
+}
+
 data class PersistedReaderState(
   val lastPage: Int = 1,
   val bookmarks: List<Int> = emptyList(),
   val mushafEdition: MushafEdition = MushafEdition.MADINAH_1421,
   val isDarkMode: Boolean = false,
   val backgroundTheme: BackgroundTheme = BackgroundTheme.WHITE,
+  val pageViewMode: PageViewMode = PageViewMode.AUTO,
   val selectedReciterKey: String? = null,
   val lastSurahId: Int = 1,
   val lastPositionMs: Long = 0L,
@@ -39,6 +46,7 @@ class ReaderPreferences(private val context: Context) {
     val MUSHAF_EDITION = stringPreferencesKey("mushaf_edition")
     val DARK_MODE = booleanPreferencesKey("dark_mode_override")
     val BACKGROUND_THEME = stringPreferencesKey("background_theme")
+    val PAGE_VIEW_MODE = stringPreferencesKey("page_view_mode")
     val SELECTED_RECITER_KEY = stringPreferencesKey("selected_reciter_key")
     val LAST_SURAH_ID = intPreferencesKey("last_surah_id")
     val LAST_POSITION_MS = longPreferencesKey("last_position_ms")
@@ -55,6 +63,10 @@ class ReaderPreferences(private val context: Context) {
     val bgTheme = runCatching { BackgroundTheme.valueOf(bgName) }
       .getOrDefault(if (isDark) BackgroundTheme.BLACK else BackgroundTheme.WHITE)
 
+    val pageModeName = prefs[Keys.PAGE_VIEW_MODE] ?: PageViewMode.AUTO.name
+    val pageViewMode = runCatching { PageViewMode.valueOf(pageModeName) }
+      .getOrDefault(PageViewMode.AUTO)
+
     val bookmarks = prefs[Keys.BOOKMARKS]
       .orEmpty()
       .mapNotNull { it.toIntOrNull() }
@@ -67,6 +79,7 @@ class ReaderPreferences(private val context: Context) {
       mushafEdition = edition,
       isDarkMode = isDark,
       backgroundTheme = bgTheme,
+      pageViewMode = pageViewMode,
       selectedReciterKey = prefs[Keys.SELECTED_RECITER_KEY],
       lastSurahId = (prefs[Keys.LAST_SURAH_ID] ?: 1).coerceIn(1, 114),
       lastPositionMs = (prefs[Keys.LAST_POSITION_MS] ?: 0L).coerceAtLeast(0L),
@@ -110,6 +123,12 @@ class ReaderPreferences(private val context: Context) {
     context.dataStore.edit {
       it[Keys.BACKGROUND_THEME] = theme.name
       it[Keys.DARK_MODE] = theme == BackgroundTheme.BLACK
+    }
+  }
+
+  suspend fun setPageViewMode(mode: PageViewMode) {
+    context.dataStore.edit {
+      it[Keys.PAGE_VIEW_MODE] = mode.name
     }
   }
 

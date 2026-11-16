@@ -12,6 +12,7 @@ import com.example.data.audio.VerifiedReciter
 import com.example.data.integrity.AssetHashStatus
 import com.example.data.integrity.VerifiedDiskCache
 import com.example.data.prefs.BackgroundTheme
+import com.example.data.prefs.PageViewMode
 import com.example.data.prefs.PersistedReaderState
 import com.example.data.prefs.ReaderPreferences
 import com.example.data.quran.CreditSourceInfo
@@ -62,6 +63,7 @@ data class ReaderUiState(
   val mushafEdition: MushafEdition = MushafEdition.MADINAH_1421,
   val isDarkMode: Boolean = false,
   val backgroundTheme: BackgroundTheme = BackgroundTheme.WHITE,
+  val pageViewMode: PageViewMode = PageViewMode.AUTO,
   val bookmarks: List<Int> = emptyList(),
   val surahs: List<SurahMeta> = emptyList(),
   val juzs: List<JuzMeta> = emptyList(),
@@ -158,6 +160,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           mushafEdition = saved.mushafEdition,
           isDarkMode = saved.isDarkMode,
           backgroundTheme = saved.backgroundTheme,
+          pageViewMode = saved.pageViewMode,
           bookmarks = saved.bookmarks,
         )
       }
@@ -173,6 +176,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
               bookmarks = pref.bookmarks,
               isDarkMode = pref.isDarkMode,
               backgroundTheme = pref.backgroundTheme,
+              pageViewMode = pref.pageViewMode,
               pages = if (darkChanged && activeEdition == MushafEdition.TAJWEED_V4) emptyMap() else it.pages,
             )
           }
@@ -294,6 +298,11 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     val nextDark = theme == BackgroundTheme.BLACK
     applyThemeChange(nextDark, theme)
     viewModelScope.launch { preferences.setBackgroundTheme(theme) }
+  }
+
+  fun setPageViewMode(mode: PageViewMode) {
+    _uiState.update { it.copy(pageViewMode = mode) }
+    viewModelScope.launch { preferences.setPageViewMode(mode) }
   }
 
   private fun applyThemeChange(nextDark: Boolean, nextBg: BackgroundTheme) {
