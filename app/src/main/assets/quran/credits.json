@@ -1,0 +1,44 @@
+{
+  "sources": [
+    {
+      "id": "kfgqpc_fonts",
+      "title": "خطوط مجمع الملك فهد لطباعة المصحف الشريف (QCF V2 & QCF V4 Tajweed)",
+      "organization": "مجمع الملك فهد لطباعة المصحف الشريف بالمدينة المنورة (KFGQPC)",
+      "url": "https://verses.quran.foundation/fonts/quran/",
+      "license": "تصريح استخدام مجاني للمواقع والتطبيقات الإسلامية مع عزو المصدر ومنع تعديل النص القرآني أو الخطوط",
+      "usage": "عرض صفحات مصحف المدينة ١٤٢١هـ (QCF V2) ومصحف التجويد الملون (QCF V4 COLRv1)"
+    },
+    {
+      "id": "qul_quran_api",
+      "title": "بيانات التخطيط العثماني ٦٠٤ صفحة × ١٥ سطرًا",
+      "organization": "Quranic Universal Library (Tarteel AI) / Quran Foundation API v4",
+      "url": "https://api.quran.com/api/v4",
+      "license": "MIT (البرمجيات والبيانات المهيكلة) مع الالتزام بشروط مجمع الملك فهد للنص القرآني",
+      "usage": "جلب تخطيط الصفحات والأسطر (1..15) وبيانات السور والأجزاء والأحزاب"
+    },
+    {
+      "id": "alquran_cloud",
+      "title": "واجهة القرآن الكريم السحابية (AlQuran Cloud — quran-tajweed)",
+      "organization": "AlQuran Cloud",
+      "url": "https://api.alquran.cloud/v1",
+      "license": "بيانات مفتوحة للمطورين مع حفظ النص القرآني دون تحريف",
+      "usage": "مصدر مساند لوسوم التجويد الملونة على الأجهزة دون أندرويد ١٣"
+    },
+    {
+      "id": "mp3quran_v3",
+      "title": "تلاوات القرآن الكريم برواية حفص عن عاصم - مرتل",
+      "organization": "MP3Quran.net API v3",
+      "url": "https://www.mp3quran.net/api/v3",
+      "license": "واجهة مجانية عامة للبث والتخزين المؤقت الشخصي مع نسبة المصدر",
+      "usage": "قوائم القراء والمصاحف المرتلة برواية حفص ونطاق صفحات السور وبث الصوتيات"
+    },
+    {
+      "id": "ui_fonts",
+      "title": "خطوط واجهة الاستخدام وأسماء السور (IBM Plex Sans Arabic & Amiri)",
+      "organization": "IBM / Khaled Hosny (Google Fonts)",
+      "url": "https://fonts.google.com",
+      "license": "SIL Open Font License 1.1",
+      "usage": "عناصر الواجهة والأزرار (IBM Plex Sans Arabic) وعناوين السور (Amiri) فقط دون المساس بنص القرآن"
+    }
+  ]
+}

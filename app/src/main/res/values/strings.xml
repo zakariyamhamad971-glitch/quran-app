@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">قبسات</string>
+    <string name="tab_surah">سورة</string>
+    <string name="tab_juz">الجزء</string>
+    <string name="tab_bookmarks">المرجعيات</string>
+    <string name="mushaf_madinah">مصحف المدينة ١٤٢١</string>
+    <string name="mushaf_tajweed">مصحف التجويد</string>
+    <string name="index_title">الفهرس والمرجعيات</string>
+    <string name="search_hint">ابحث عن سورة أو رقم صفحة (١ - ٦٠٤)</string>
+    <string name="tajweed_legend_title">دليل ألوان التجويد</string>
+    <string name="reciters_title">اختيار القارئ (حفص عن عاصم - مرتل)</string>
+    <string name="credits_title">المصادر والتراخيص والتحقق</string>
+    <string name="download_surah">تحميل السورة للاستماع بدون إنترنت</string>
+    <string name="downloaded_badge">محمل</string>
+    <string name="play_pause">تشغيل أو إيقاف مؤقت</string>
+    <string name="seek_forward_10">تقديم ١٠ ثوانٍ</string>
+    <string name="seek_back_10">تأخير ١٠ ثوانٍ</string>
+    <string name="next_surah">السورة التالية</string>
+    <string name="prev_surah">السورة السابقة</string>
+    <string name="toggle_theme">تبديل الوضع الليلي والنهاري</string>
+    <string name="toggle_bookmark">إضافة أو إزالة علامة مرجعية</string>
+</resources>

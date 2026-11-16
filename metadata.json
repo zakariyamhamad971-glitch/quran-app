@@ -1,0 +1,6 @@
+{
+  "name": "قبسات",
+  "description": "مصحف قبسات — قارئ قرآن كريم برواية حفص (مصحف المدينة ١٤٢١ ومصحف التجويد) ومشغل تلاوات",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
