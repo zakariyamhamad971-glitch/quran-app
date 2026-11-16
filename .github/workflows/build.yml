@@ -12,31 +12,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - name: Read Gradle version
-        id: gv
-        run: echo "v=$(grep distributionUrl gradle/wrapper/gradle-wrapper.properties | sed -E 's/.*gradle-([0-9.]+)-.*/\1/')" >> "$GITHUB_OUTPUT"
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: ${{ steps.gv.outputs.v }}
-      - run: gradle assembleDebug --stacktrace
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/*.apk
-name: Build APK
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
       - name: Create debug keystore
         run: keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
       - name: Read Gradle version
