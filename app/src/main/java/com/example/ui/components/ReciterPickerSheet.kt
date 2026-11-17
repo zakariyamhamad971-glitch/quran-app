@@ -350,7 +350,7 @@ fun ReciterPickerSheet(
             modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(bottom = 24.dp),
           ) {
-            items(displayed, key = { "${it.orderIndex}_${it.key}" }) { reciter ->
+            items(displayed, key = { "${it.orderIndex}_${it.key}" }, contentType = { "reciter_row" }) { reciter ->
               val isSelected = activeReciter?.key == reciter.key && reciter.isPlayable
               val enabled = reciter.isPlayable
               Row(
@@ -612,7 +612,7 @@ private fun SearchableSurahPickerDialog(
         )
         Spacer(Modifier.height(8.dp))
         LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
-          items(filtered, key = { it.id }) { surah ->
+          items(filtered, key = { it.id }, contentType = { "surah_picker_row" }) { surah ->
             val selected = surah.id == selectedSurahId
             Row(
               modifier = Modifier
@@ -667,7 +667,7 @@ private fun AyahGridPickerDialog(
           .fillMaxWidth()
           .heightIn(max = 320.dp),
       ) {
-        items(ayahs, key = { it }) { num ->
+        items(ayahs, key = { it }, contentType = { "ayah_grid_cell" }) { num ->
           val isSelected = num == selectedAyah
           Surface(
             shape = RoundedCornerShape(10.dp),

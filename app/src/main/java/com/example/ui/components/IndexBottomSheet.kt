@@ -92,10 +92,21 @@ import com.example.data.quran.JuzMeta
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.SurahMeta
 import com.example.data.quran.VerseSearchHit
+import com.example.player.AudioMiniUiState
 import com.example.player.AudioPlaybackUiState
 import com.example.ui.theme.AmiriFontFamily
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+
+private val INDEX_DIACRITICS_REGEX = Regex("[\\u064B-\\u065F\\u0670]")
+
+private fun padSurahId(surahId: Int): String = when {
+  surahId < 10 -> "00$surahId"
+  surahId < 100 -> "0$surahId"
+  else -> surahId.toString()
+}
 
 private fun toArabicIndicDigits(number: Int): String = toArabicIndicDigits(number.toString())
 
@@ -127,7 +138,7 @@ private fun normalizeArabicQuery(input: String): String {
     .replace("آ", "ا")
     .replace("ى", "ي")
     .replace("ة", "ه")
-    .replace(Regex("[\\u064B-\\u065F\\u0670]"), "")
+    .replace(INDEX_DIACRITICS_REGEX, "")
     .trim()
 }
 
@@ -141,9 +152,9 @@ fun FullScreenQuranIndex(
   currentPage: Int,
   mushafEdition: MushafEdition,
   isDarkTheme: Boolean,
-  activeReciter: VerifiedReciter?,
+  activeReciterFlow: StateFlow<VerifiedReciter?>,
+  miniAudioStateFlow: StateFlow<AudioMiniUiState>,
   audioStateFlow: StateFlow<AudioPlaybackUiState>,
-  isAudioSessionActive: Boolean,
   downloadedKeys: Set<String>,
   downloadProgress: Map<String, Float>,
   verseSearchResults: List<VerseSearchHit>,
@@ -182,6 +193,9 @@ fun FullScreenQuranIndex(
   var showFullPlayerSheet by remember { mutableStateOf(false) }
 
   val searchFocusRequester = remember { FocusRequester() }
+  val isMiniAudioVisible by remember(miniAudioStateFlow) {
+    miniAudioStateFlow.map { it.isActive }.distinctUntilChanged()
+  }.collectAsStateWithLifecycle(initialValue = miniAudioStateFlow.value.isActive)
 
   BackHandler(enabled = isSearchOpen) {
     isSearchOpen = false
@@ -197,8 +211,6 @@ fun FullScreenQuranIndex(
 
   val asciiQuery = remember(searchQuery) { arabicDigitsToAscii(searchQuery).trim() }
   val numericPageQuery = asciiQuery.toIntOrNull()?.takeIf { it in 1..604 }
-
-  val showMiniAudioBar = isAudioSessionActive
 
   Surface(
     modifier = modifier.fillMaxSize(),
@@ -418,33 +430,39 @@ fun FullScreenQuranIndex(
           }
         }
       } else {
-        QuranIndexContent(
+        QuranIndexContentHost(
           surahs = surahs,
           juzs = juzs,
           juzsLoading = juzsLoading,
           bookmarks = bookmarks,
           currentPage = currentPage,
-          activeReciter = activeReciter,
+          activeReciterFlow = activeReciterFlow,
           downloadedKeys = downloadedKeys,
           downloadProgress = downloadProgress,
           verseSearchResults = verseSearchResults,
           verseSearchLoading = verseSearchLoading,
           verseSearchError = verseSearchError,
           searchQuery = searchQuery,
-          bottomExtraPadding = if (showMiniAudioBar) 6.dp else 18.dp,
+          bottomExtraPadding = if (isMiniAudioVisible) 6.dp else 18.dp,
           onSelectJuzTab = onSelectJuzTab,
           onSearchVerses = onSearchVerses,
-          onJumpToPage = { page ->
-            onJumpToPage(page)
-            onOpenReader()
+          onJumpToPage = remember(onJumpToPage, onOpenReader) {
+            { page ->
+              onJumpToPage(page)
+              onOpenReader()
+            }
           },
-          onJumpToVerse = { key, page ->
-            onJumpToVerse(key, page)
-            onOpenReader()
+          onJumpToVerse = remember(onJumpToVerse, onOpenReader) {
+            { key, page ->
+              onJumpToVerse(key, page)
+              onOpenReader()
+            }
           },
-          onPlaySurah = { surahId ->
-            onPlaySurah(surahId)
-            onOpenReader()
+          onPlaySurah = remember(onPlaySurah, onOpenReader) {
+            { surahId ->
+              onPlaySurah(surahId)
+              onOpenReader()
+            }
           },
           onDownloadSurah = onDownloadSurah,
           onDeleteDownloadedSurah = onDeleteDownloadedSurah,
@@ -452,18 +470,16 @@ fun FullScreenQuranIndex(
           modifier = Modifier
             .weight(1f)
             .let { mod ->
-              if (showMiniAudioBar) mod else mod.windowInsetsPadding(WindowInsets.navigationBars)
+              if (isMiniAudioVisible) mod else mod.windowInsetsPadding(WindowInsets.navigationBars)
             },
         )
       }
 
-      if (showMiniAudioBar) {
-        IndexMiniAudioHost(
-          audioStateFlow = audioStateFlow,
-          onTogglePlayPause = onTogglePlayPause,
-          onOpenFullPlayer = { showFullPlayerSheet = true },
-        )
-      }
+      IndexMiniAudioHost(
+        miniAudioStateFlow = miniAudioStateFlow,
+        onTogglePlayPause = onTogglePlayPause,
+        onOpenFullPlayer = remember { { showFullPlayerSheet = true } },
+      )
     }
   }
 
@@ -498,17 +514,71 @@ fun FullScreenQuranIndex(
 }
 
 @Composable
+private fun QuranIndexContentHost(
+  surahs: List<SurahMeta>,
+  juzs: List<JuzMeta>,
+  juzsLoading: Boolean,
+  bookmarks: List<Int>,
+  currentPage: Int,
+  activeReciterFlow: StateFlow<VerifiedReciter?>,
+  downloadedKeys: Set<String>,
+  downloadProgress: Map<String, Float>,
+  verseSearchResults: List<VerseSearchHit>,
+  verseSearchLoading: Boolean,
+  verseSearchError: String?,
+  searchQuery: String,
+  bottomExtraPadding: androidx.compose.ui.unit.Dp,
+  onSelectJuzTab: () -> Unit,
+  onSearchVerses: (String) -> Unit,
+  onJumpToPage: (Int) -> Unit,
+  onJumpToVerse: (verseKey: String, pageNumber: Int) -> Unit,
+  onPlaySurah: (Int) -> Unit,
+  onDownloadSurah: (Int) -> Unit,
+  onDeleteDownloadedSurah: (Int) -> Unit,
+  onRemoveBookmark: (Int) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val activeReciter by activeReciterFlow.collectAsStateWithLifecycle()
+  QuranIndexContent(
+    surahs = surahs,
+    juzs = juzs,
+    bookmarks = bookmarks,
+    currentPage = currentPage,
+    activeReciter = activeReciter,
+    downloadedKeys = downloadedKeys,
+    downloadProgress = downloadProgress,
+    verseSearchResults = verseSearchResults,
+    verseSearchLoading = verseSearchLoading,
+    verseSearchError = verseSearchError,
+    searchQuery = searchQuery,
+    bottomExtraPadding = bottomExtraPadding,
+    onSearchVerses = onSearchVerses,
+    onJumpToPage = onJumpToPage,
+    onJumpToVerse = onJumpToVerse,
+    onPlaySurah = onPlaySurah,
+    onDownloadSurah = onDownloadSurah,
+    onDeleteDownloadedSurah = onDeleteDownloadedSurah,
+    onRemoveBookmark = onRemoveBookmark,
+    modifier = modifier,
+    juzsLoading = juzsLoading,
+    onSelectJuzTab = onSelectJuzTab,
+  )
+}
+
+@Composable
 private fun IndexMiniAudioHost(
-  audioStateFlow: StateFlow<AudioPlaybackUiState>,
+  miniAudioStateFlow: StateFlow<AudioMiniUiState>,
   onTogglePlayPause: () -> Unit,
   onOpenFullPlayer: () -> Unit,
 ) {
-  val miniAudioState by audioStateFlow.collectAsStateWithLifecycle()
-  IndexMiniAudioBar(
-    audioState = miniAudioState,
-    onTogglePlayPause = onTogglePlayPause,
-    onOpenFullPlayer = onOpenFullPlayer,
-  )
+  val miniAudioState by miniAudioStateFlow.collectAsStateWithLifecycle()
+  if (miniAudioState.isActive) {
+    IndexMiniAudioBar(
+      miniState = miniAudioState,
+      onTogglePlayPause = onTogglePlayPause,
+      onOpenFullPlayer = onOpenFullPlayer,
+    )
+  }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -682,16 +752,16 @@ private fun CompactSegmentPill(
 
 @Composable
 private fun IndexMiniAudioBar(
-  audioState: AudioPlaybackUiState,
+  miniState: AudioMiniUiState,
   onTogglePlayPause: () -> Unit,
   onOpenFullPlayer: () -> Unit,
 ) {
-  val surahLabel = if (audioState.currentSurahName.isNotBlank()) {
-    "سورة ${audioState.currentSurahName}"
+  val surahLabel = if (miniState.currentSurahName.isNotBlank()) {
+    "سورة ${miniState.currentSurahName}"
   } else {
-    "سورة ${toArabicIndicDigits(audioState.currentSurahId)}"
+    "سورة ${toArabicIndicDigits(miniState.currentSurahId)}"
   }
-  val reciterLabel = audioState.currentReciter?.displayName ?: "اختر القارئ"
+  val reciterLabel = miniState.reciterName
 
   Surface(
     color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -744,14 +814,14 @@ private fun IndexMiniAudioBar(
             .size(40.dp)
             .testTag("index_mini_play_pause"),
         ) {
-          if (audioState.isBuffering) {
+          if (miniState.isBuffering) {
             CircularProgressIndicator(
               strokeWidth = 2.dp,
               modifier = Modifier.size(18.dp),
             )
           } else {
             Icon(
-              imageVector = if (audioState.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+              imageVector = if (miniState.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
               contentDescription = "تشغيل أو إيقاف مؤقت",
               tint = MaterialTheme.colorScheme.primary,
             )
@@ -943,12 +1013,16 @@ private fun QuranIndexContent(
     }
   }
 
-  val filteredSurahs = remember(surahs, normalizedQuery) {
+  val normalizedSurahNames = remember(surahs) {
+    surahs.associate { it.id to normalizeArabicQuery(it.nameArabic) }
+  }
+  val filteredSurahs = remember(surahs, normalizedSurahNames, normalizedQuery) {
     if (normalizedQuery.isBlank()) {
       surahs
     } else {
       surahs.filter { s ->
-        normalizeArabicQuery(s.nameArabic).contains(normalizedQuery, ignoreCase = true) ||
+        val norm = normalizedSurahNames[s.id].orEmpty()
+        norm.contains(normalizedQuery, ignoreCase = true) ||
           s.id.toString() == normalizedQuery
       }
     }
@@ -958,9 +1032,10 @@ private fun QuranIndexContent(
   val availableSurahSet = remember(activeReciter) {
     activeReciter?.availableSurahs?.toHashSet() ?: emptySet()
   }
+  val onOpenSurahPage = remember(onJumpToPage) { { startPage: Int -> onJumpToPage(startPage) } }
 
   Column(modifier = modifier.fillMaxWidth()) {
-    val tabs = listOf("سورة", "الجزء", "المرجعيات")
+    val tabs = remember { listOf("سورة", "الجزء", "المرجعيات") }
     PrimaryTabRow(
       selectedTabIndex = selectedTab,
       containerColor = MaterialTheme.colorScheme.surface,
@@ -1012,7 +1087,7 @@ private fun QuranIndexContent(
         contentPadding = PaddingValues(bottom = bottomExtraPadding),
       ) {
         if (filteredSurahs.isNotEmpty()) {
-          item {
+          item(key = "header_matching_surahs", contentType = "section_header") {
             Text(
               text = "السور المطابقة",
               style = MaterialTheme.typography.labelMedium,
@@ -1020,24 +1095,24 @@ private fun QuranIndexContent(
               modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             )
           }
-          items(filteredSurahs, key = { "s_${it.id}" }) { surah ->
+          items(filteredSurahs, key = { "s_${it.id}" }, contentType = { "surah_row" }) { surah ->
             val reciterKey = activeReciter?.key
-            val dlKey = reciterKey?.let { "${it}_${"%03d".format(surah.id)}" }
+            val dlKey = reciterKey?.let { "${it}_${padSurahId(surah.id)}" }
             SurahIndexRow(
               surah = surah,
               isAvailableForReciter = availableSurahSet.contains(surah.id),
               isDownloaded = dlKey != null && downloadedKeys.contains(dlKey),
               downloadProgress = dlKey?.let { downloadProgress[it] },
-              onOpen = { onJumpToPage(surah.startPage) },
-              onPlay = { onPlaySurah(surah.id) },
-              onDownload = { onDownloadSurah(surah.id) },
-              onDeleteDownload = { onDeleteDownloadedSurah(surah.id) },
+              onOpenPage = onOpenSurahPage,
+              onPlay = onPlaySurah,
+              onDownload = onDownloadSurah,
+              onDeleteDownload = onDeleteDownloadedSurah,
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
           }
         }
 
-        item {
+        item(key = "header_verse_hits", contentType = "section_header") {
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1055,7 +1130,7 @@ private fun QuranIndexContent(
         }
 
         if (verseSearchError != null) {
-          item {
+          item(key = "verse_search_error", contentType = "status_banner") {
             Text(
               text = verseSearchError,
               style = MaterialTheme.typography.bodySmall,
@@ -1065,7 +1140,7 @@ private fun QuranIndexContent(
           }
         }
 
-        items(verseSearchResults, key = { "v_${it.verseKey}" }) { hit ->
+        items(verseSearchResults, key = { "v_${it.verseKey}" }, contentType = { "verse_hit" }) { hit ->
           val surahName = surahsById[hit.surahId]?.nameArabic.orEmpty()
           Surface(
             shape = RoundedCornerShape(10.dp),
@@ -1114,9 +1189,9 @@ private fun QuranIndexContent(
             modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(bottom = bottomExtraPadding),
           ) {
-            items(filteredSurahs, key = { it.id }) { surah ->
+            items(filteredSurahs, key = { it.id }, contentType = { "surah_row" }) { surah ->
               val reciterKey = activeReciter?.key
-              val dlKey = reciterKey?.let { "${it}_${"%03d".format(surah.id)}" }
+              val dlKey = reciterKey?.let { "${it}_${padSurahId(surah.id)}" }
               val isDownloaded = dlKey != null && downloadedKeys.contains(dlKey)
               val progress = dlKey?.let { downloadProgress[it] }
               val isAvailableForReciter = availableSurahSet.contains(surah.id)
@@ -1126,10 +1201,10 @@ private fun QuranIndexContent(
                 isAvailableForReciter = isAvailableForReciter,
                 isDownloaded = isDownloaded,
                 downloadProgress = progress,
-                onOpen = { onJumpToPage(surah.startPage) },
-                onPlay = { onPlaySurah(surah.id) },
-                onDownload = { onDownloadSurah(surah.id) },
-                onDeleteDownload = { onDeleteDownloadedSurah(surah.id) },
+                onOpenPage = onOpenSurahPage,
+                onPlay = onPlaySurah,
+                onDownload = onDownloadSurah,
+                onDeleteDownload = onDeleteDownloadedSurah,
               )
               HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
             }
@@ -1151,58 +1226,58 @@ private fun QuranIndexContent(
               modifier = Modifier.weight(1f),
               contentPadding = PaddingValues(bottom = bottomExtraPadding),
             ) {
-              items(juzs, key = { it.juzNumber }) { juz ->
-              val startSurahName = surahsById[juz.firstSurahId]?.nameArabic.orEmpty()
-              Row(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .heightIn(min = 58.dp)
-                  .clickable { onJumpToPage(juz.startPage) }
-                  .padding(horizontal = 12.dp, vertical = 6.dp)
-                  .testTag("juz_row_${juz.juzNumber}"),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
+              items(juzs, key = { it.juzNumber }, contentType = { "juz_row" }) { juz ->
+                val startSurahName = surahsById[juz.firstSurahId]?.nameArabic.orEmpty()
                 Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 58.dp)
+                    .clickable { onJumpToPage(juz.startPage) }
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .testTag("juz_row_${juz.juzNumber}"),
+                  horizontalArrangement = Arrangement.SpaceBetween,
                   verticalAlignment = Alignment.CenterVertically,
-                  modifier = Modifier.weight(1f),
                 ) {
-                  Box(
-                    modifier = Modifier
-                      .size(32.dp)
-                      .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-                    contentAlignment = Alignment.Center,
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f),
                   ) {
-                    Text(
-                      text = toArabicIndicDigits(juz.juzNumber),
-                      style = MaterialTheme.typography.labelLarge,
-                      color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                  }
-                  Spacer(Modifier.width(10.dp))
-                  Column {
-                    Text(
-                      text = "الجزء ${toArabicIndicDigits(juz.juzNumber)}",
-                      style = MaterialTheme.typography.titleSmall.copy(fontFamily = AmiriFontFamily),
-                    )
-                    if (startSurahName.isNotBlank()) {
+                    Box(
+                      modifier = Modifier
+                        .size(32.dp)
+                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                      contentAlignment = Alignment.Center,
+                    ) {
                       Text(
-                        text = "يبدأ من سورة $startSurahName (آية ${toArabicIndicDigits(juz.firstAyah)})",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        text = toArabicIndicDigits(juz.juzNumber),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                       )
                     }
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                      Text(
+                        text = "الجزء ${toArabicIndicDigits(juz.juzNumber)}",
+                        style = MaterialTheme.typography.titleSmall.copy(fontFamily = AmiriFontFamily),
+                      )
+                      if (startSurahName.isNotBlank()) {
+                        Text(
+                          text = "يبدأ من سورة $startSurahName (آية ${toArabicIndicDigits(juz.firstAyah)})",
+                          style = MaterialTheme.typography.bodySmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis,
+                        )
+                      }
+                    }
                   }
+                  Text(
+                    text = "ص ${toArabicIndicDigits(juz.startPage)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                  )
                 }
-                Text(
-                  text = "ص ${toArabicIndicDigits(juz.startPage)}",
-                  style = MaterialTheme.typography.labelMedium,
-                  color = MaterialTheme.colorScheme.primary,
-                )
-              }
-              HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
               }
             }
           }
@@ -1213,7 +1288,7 @@ private fun QuranIndexContent(
             modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(bottom = bottomExtraPadding),
           ) {
-            item {
+            item(key = "last_read_banner", contentType = "banner") {
               Surface(
                 modifier = Modifier
                   .fillMaxWidth()
@@ -1251,7 +1326,7 @@ private fun QuranIndexContent(
             }
 
             if (bookmarks.isEmpty()) {
-              item {
+              item(key = "empty_bookmarks", contentType = "empty_state") {
                 Box(
                   modifier = Modifier
                     .fillMaxWidth()
@@ -1266,7 +1341,7 @@ private fun QuranIndexContent(
                 }
               }
             } else {
-              items(bookmarks, key = { it }) { page ->
+              items(bookmarks, key = { it }, contentType = { "bookmark_row" }) { page ->
                 val surahsOnPage = remember(page, surahs) {
                   surahs.filter { page in it.startPage..it.endPage }
                     .joinToString(" • ") { it.nameArabic }
@@ -1335,16 +1410,16 @@ private fun SurahIndexRow(
   isAvailableForReciter: Boolean,
   isDownloaded: Boolean,
   downloadProgress: Float?,
-  onOpen: () -> Unit,
-  onPlay: () -> Unit,
-  onDownload: () -> Unit,
-  onDeleteDownload: () -> Unit,
+  onOpenPage: (Int) -> Unit,
+  onPlay: (Int) -> Unit,
+  onDownload: (Int) -> Unit,
+  onDeleteDownload: (Int) -> Unit,
 ) {
   Row(
     modifier = Modifier
       .fillMaxWidth()
       .height(62.dp)
-      .clickable(onClick = onOpen)
+      .clickable { onOpenPage(surah.startPage) }
       .padding(horizontal = 10.dp)
       .testTag("surah_row_${surah.id}"),
     verticalAlignment = Alignment.CenterVertically,
@@ -1389,7 +1464,7 @@ private fun SurahIndexRow(
 
     Row(verticalAlignment = Alignment.CenterVertically) {
       IconButton(
-        onClick = onPlay,
+        onClick = { onPlay(surah.id) },
         enabled = isAvailableForReciter,
         modifier = Modifier
           .size(38.dp)
@@ -1420,7 +1495,7 @@ private fun SurahIndexRow(
         }
       } else if (isDownloaded) {
         IconButton(
-          onClick = onDeleteDownload,
+          onClick = { onDeleteDownload(surah.id) },
           modifier = Modifier
             .size(38.dp)
             .testTag("delete_download_surah_${surah.id}"),
@@ -1434,7 +1509,7 @@ private fun SurahIndexRow(
         }
       } else {
         IconButton(
-          onClick = onDownload,
+          onClick = { onDownload(surah.id) },
           enabled = isAvailableForReciter,
           modifier = Modifier
             .size(38.dp)

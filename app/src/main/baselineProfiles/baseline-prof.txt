@@ -1,0 +1,9 @@
+Lcom/example/MainActivity;
+Lcom/example/MainActivityKt**;
+Lcom/example/viewmodel/QabasatViewModel**;
+Lcom/example/ui/ReaderScreenKt**;
+Lcom/example/ui/components/IndexBottomSheetKt**;
+Lcom/example/ui/components/MushafPageViewKt**;
+Lcom/example/data/quran/**;
+Lcom/example/data/prefs/**;
+Lcom/example/data/integrity/**;

@@ -1,5 +1,6 @@
 package com.example.data.quran
 
+import androidx.compose.runtime.Immutable
 import com.squareup.moshi.JsonClass
 
 enum class MushafEdition {
@@ -97,6 +98,7 @@ data class AlQuranCloudSurahRef(
   val number: Int,
 )
 
+@Immutable
 data class SurahMeta(
   val id: Int,
   val nameArabic: String,
@@ -108,6 +110,7 @@ data class SurahMeta(
   val makki: Boolean,
 )
 
+@Immutable
 data class JuzMeta(
   val juzNumber: Int,
   val startPage: Int,
@@ -115,6 +118,7 @@ data class JuzMeta(
   val firstAyah: Int,
 )
 
+@Immutable
 data class MushafWord(
   val id: Int,
   val verseKey: String,
@@ -126,30 +130,36 @@ data class MushafWord(
   val textUthmani: String,
 )
 
+@Immutable
 sealed interface MushafLine {
   val lineNumber: Int
 
+  @Immutable
   data class SurahHeaderLine(
     override val lineNumber: Int,
     val surah: SurahMeta,
   ) : MushafLine
 
+  @Immutable
   data class BasmalahLine(
     override val lineNumber: Int,
     val codeV2Glyphs: String,
     val textUthmani: String,
   ) : MushafLine
 
+  @Immutable
   data class AyahWordsLine(
     override val lineNumber: Int,
     val words: List<MushafWord>,
   ) : MushafLine
 
+  @Immutable
   data class EmptyLine(
     override val lineNumber: Int,
   ) : MushafLine
 }
 
+@Immutable
 data class MushafPageData(
   val pageNumber: Int,
   val juzNumber: Int,
@@ -159,6 +169,7 @@ data class MushafPageData(
   val tajweedAyahTexts: Map<String, String> = emptyMap(),
 )
 
+@Immutable
 data class TajweedRuleInfo(
   val id: String,
   val nameAr: String,
@@ -166,6 +177,7 @@ data class TajweedRuleInfo(
   val colorHex: String,
 )
 
+@Immutable
 data class CreditSourceInfo(
   val id: String,
   val title: String,
@@ -234,6 +246,7 @@ data class TafsirContentDto(
   val text: String? = null,
 )
 
+@Immutable
 data class VerseTranslationEntry(
   val languageCode: String,
   val languageLabelAr: String,
@@ -241,6 +254,7 @@ data class VerseTranslationEntry(
   val text: String,
 )
 
+@Immutable
 data class VerseInsightsData(
   val verseKey: String,
   val surahId: Int,
@@ -273,6 +287,7 @@ data class QuranSearchResultDto(
   val text: String = "",
 )
 
+@Immutable
 data class VerseSearchHit(
   val verseKey: String,
   val surahId: Int,

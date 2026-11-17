@@ -18,12 +18,13 @@ android {
     applicationId = "com.example"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    val buildNum = (project.findProperty("buildNumber")?.toString()?.toIntOrNull()) ?: 0
+    val safeVersionCode = buildNum.coerceAtLeast(1)
+    versionCode = safeVersionCode
+    versionName = "1.0.$buildNum"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-    val buildNum = (project.findProperty("buildNumber")?.toString()?.toIntOrNull()) ?: 0
     buildConfigField("int", "BUILD_NUMBER", buildNum.toString())
   }
 
@@ -109,6 +110,7 @@ dependencies {
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation(libs.androidx.media3.common)
   implementation(libs.androidx.media3.exoplayer)
+  implementation(libs.androidx.profileinstaller)
   // implementation(libs.androidx.media3.session)
   // implementation(libs.androidx.navigation.compose)
   // implementation(libs.androidx.room.ktx)

@@ -20,12 +20,12 @@ class MainActivity : ComponentActivity() {
     enableEdgeToEdge()
     setContent {
       val qabasatViewModel: QabasatViewModel = viewModel()
-      val uiState by qabasatViewModel.uiState.collectAsStateWithLifecycle()
+      val themeState by qabasatViewModel.themeStateFlow.collectAsStateWithLifecycle()
 
       CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         QabasatTheme(
-          backgroundTheme = uiState.backgroundTheme,
-          darkTheme = uiState.isDarkMode,
+          backgroundTheme = themeState.first,
+          darkTheme = themeState.second,
         ) {
           ReaderScreen(viewModel = qabasatViewModel)
         }

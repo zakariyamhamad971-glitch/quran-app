@@ -3,6 +3,7 @@ package com.example.viewmodel
 import android.app.Application
 import android.graphics.Typeface
 import android.os.Build
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.audio.AudioCacheManager
@@ -18,6 +19,7 @@ import com.example.data.prefs.ReaderPreferences
 import com.example.data.quran.CreditSourceInfo
 import com.example.data.quran.JuzMeta
 import com.example.data.quran.MushafEdition
+import com.example.data.quran.MushafLine
 import com.example.data.quran.MushafPageData
 import com.example.data.quran.PageFontManager
 import com.example.data.quran.QuranRepository
@@ -26,6 +28,7 @@ import com.example.data.quran.TajweedRuleInfo
 import com.example.data.quran.VerseInsightsData
 import com.example.data.quran.VerseInsightsRepository
 import com.example.data.quran.VerseSearchHit
+import com.example.player.AudioMiniUiState
 import com.example.player.AudioPlaybackUiState
 import com.example.player.PlaybackController
 import com.example.update.AppUpdateManager
@@ -43,26 +46,41 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
+@Immutable
 sealed interface PageLoadState {
+  @Immutable
   data object Loading : PageLoadState
+
+  @Immutable
   data class Ready(
     val pageData: MushafPageData,
     val pageTypeface: Typeface?,
     val basmalahTypeface: Typeface?,
     val usesTagFallbackTajweed: Boolean,
   ) : PageLoadState
+
+  @Immutable
   data class Error(val message: String) : PageLoadState
 }
 
+@Immutable
 sealed interface VerseInsightsUiState {
+  @Immutable
   data object Hidden : VerseInsightsUiState
+
+  @Immutable
   data class Loading(val verseKey: String, val surahName: String, val ayahNumber: Int) : VerseInsightsUiState
+
+  @Immutable
   data class Ready(
     val insights: VerseInsightsData,
     val surahName: String,
     val pageTypeface: Typeface?,
   ) : VerseInsightsUiState
+
+  @Immutable
   data class Error(val verseKey: String, val message: String) : VerseInsightsUiState
 }
 
@@ -76,7 +94,6 @@ data class ReaderUiState(
   val surahs: List<SurahMeta> = emptyList(),
   val juzs: List<JuzMeta> = emptyList(),
   val juzsLoading: Boolean = false,
-  val pages: Map<Int, PageLoadState> = emptyMap(),
   val primaryReciters: List<VerifiedReciter> = emptyList(),
   val additionalReciters: List<VerifiedReciter> = emptyList(),
   val recitersLoading: Boolean = true,
@@ -85,7 +102,6 @@ data class ReaderUiState(
   val credits: List<CreditSourceInfo> = emptyList(),
   val assetHashes: List<AssetHashStatus> = emptyList(),
   val selectedVerseKey: String? = null,
-  val verseInsights: VerseInsightsUiState = VerseInsightsUiState.Hidden,
   val verseSearchResults: List<VerseSearchHit> = emptyList(),
   val verseSearchLoading: Boolean = false,
   val verseSearchError: String? = null,
@@ -121,10 +137,28 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private val _uiState = MutableStateFlow(ReaderUiState())
   val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
+  // Isolated page states so adjacent page loading & LRU eviction never recompose root/chrome/index
+  private val _pagesState = MutableStateFlow<Map<Int, PageLoadState>>(emptyMap())
+  val pagesState: StateFlow<Map<Int, PageLoadState>> = _pagesState.asStateFlow()
+
+  // Isolated verse insights state so opening/loading tafsir never recomposes the Mushaf pager
+  private val _verseInsightsState = MutableStateFlow<VerseInsightsUiState>(VerseInsightsUiState.Hidden)
+  val verseInsightsState: StateFlow<VerseInsightsUiState> = _verseInsightsState.asStateFlow()
+
+  val themeStateFlow: StateFlow<Pair<BackgroundTheme, Boolean>> = _uiState
+    .map { it.backgroundTheme to it.isDarkMode }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, BackgroundTheme.WHITE to false)
+
+  val selectedVerseKeyFlow: StateFlow<String?> = _uiState
+    .map { it.selectedVerseKey }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
   val updateState: StateFlow<AppUpdateState> = appUpdateManager.state
   val audioState: StateFlow<AudioPlaybackUiState> = playbackController.uiState
 
-  // Isolated audio slices so frequent positionMs ticks never recompose Mushaf pages or Index lists
+  // Isolated audio slices so frequent positionMs ticks never recompose Mushaf pages, Index, or MiniBar
   val activePlayingVerseKeyFlow: StateFlow<String?> = playbackController.uiState
     .map { it.activePlayingVerseKey }
     .distinctUntilChanged()
@@ -139,6 +173,20 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     .map { it.isPlaying || it.isBuffering || it.durationMs > 0L || it.activePlayingVerseKey != null }
     .distinctUntilChanged()
     .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+  val miniAudioStateFlow: StateFlow<AudioMiniUiState> = playbackController.uiState
+    .map { s ->
+      AudioMiniUiState(
+        isActive = s.isPlaying || s.isBuffering || s.durationMs > 0L || s.activePlayingVerseKey != null,
+        isPlaying = s.isPlaying,
+        isBuffering = s.isBuffering,
+        currentSurahId = s.currentSurahId,
+        currentSurahName = s.currentSurahName,
+        reciterName = s.currentReciter?.displayName ?: "اختر القارئ",
+      )
+    }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, AudioMiniUiState())
 
   val activeReciterFlow: StateFlow<VerifiedReciter?> = playbackController.uiState
     .map { it.currentReciter }
@@ -160,6 +208,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private var creditsJob: Job? = null
 
   init {
+    bootstrap()
+  }
+
+  private fun ensurePlaybackConnected() {
     playbackController.connect(
       onSurahEnded = { playbackController.nextSurah() },
       onActiveVerseChanged = { verseKey ->
@@ -168,23 +220,22 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         }
       },
     )
-    bootstrap()
   }
 
   private fun followPlayingVersePage(verseKey: String) {
-    val pagesMap = _uiState.value.pages
+    val pagesMap = _pagesState.value
     val currentPageNum = _uiState.value.currentPage
     val loadedCurrent = pagesMap[currentPageNum]
     if (loadedCurrent is PageLoadState.Ready) {
       val onCurrentPage = loadedCurrent.pageData.lines.any { line ->
-        line is com.example.data.quran.MushafLine.AyahWordsLine &&
+        line is MushafLine.AyahWordsLine &&
           line.words.any { it.verseKey == verseKey }
       }
       if (onCurrentPage) return
     }
     val cachedTargetPage = pagesMap.entries.firstOrNull { (_, state) ->
       state is PageLoadState.Ready && state.pageData.lines.any { line ->
-        line is com.example.data.quran.MushafLine.AyahWordsLine &&
+        line is MushafLine.AyahWordsLine &&
           line.words.any { it.verseKey == verseKey }
       }
     }?.key
@@ -222,6 +273,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           val activePage = _uiState.value.currentPage
           if (darkChanged && activeEdition == MushafEdition.TAJWEED_V4) {
             clearCachedPages()
+            _pagesState.value = emptyMap()
           }
           _uiState.update {
             it.copy(
@@ -229,7 +281,6 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
               isDarkMode = pref.isDarkMode,
               backgroundTheme = pref.backgroundTheme,
               pageViewMode = pref.pageViewMode,
-              pages = if (darkChanged && activeEdition == MushafEdition.TAJWEED_V4) emptyMap() else it.pages,
             )
           }
           if (darkChanged && activeEdition == MushafEdition.TAJWEED_V4 && hasReaderActivated) {
@@ -238,13 +289,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         }
       }
 
-      // First screen only needs Surah index; Juzs, Tajweed legend, Credits/Hashes & Mushaf pages are lazy-loaded on demand.
+      // First screen only needs Surah index; defer playback binding, downloaded keys scan & reciters until after first draw.
       val surahsRes = quranRepository.getSurahs()
       val surahs = surahsRes.getOrDefault(emptyList())
-
-      if (surahs.isNotEmpty()) {
-        playbackController.updateSurahNames(surahs.associate { it.id to it.nameArabic })
-      }
 
       _uiState.update {
         it.copy(
@@ -253,6 +300,14 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         )
       }
 
+      // Yield so Compose can commit the first frame of the Surah index before background init runs.
+      yield()
+
+      if (surahs.isNotEmpty()) {
+        playbackController.updateSurahNames(surahs.associate { it.id to it.nameArabic })
+      }
+      ensurePlaybackConnected()
+      launch { audioCacheManager.refreshDownloadedKeys() }
       loadReciters(saved)
     }
   }
@@ -348,7 +403,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   fun onPageChanged(page: Int) {
     val clamped = page.coerceIn(1, 604)
     hasReaderActivated = true
-    if (clamped == _uiState.value.currentPage && _uiState.value.pages[clamped] is PageLoadState.Ready) {
+    if (clamped == _uiState.value.currentPage && _pagesState.value[clamped] is PageLoadState.Ready) {
       return
     }
     _uiState.update { it.copy(currentPage = clamped) }
@@ -372,7 +427,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   fun setMushafEdition(edition: MushafEdition) {
     if (edition == _uiState.value.mushafEdition) return
     clearCachedPages()
-    _uiState.update { it.copy(mushafEdition = edition, pages = emptyMap()) }
+    _pagesState.value = emptyMap()
+    _uiState.update { it.copy(mushafEdition = edition) }
     viewModelScope.launch { preferences.setMushafEdition(edition) }
     if (hasReaderActivated) {
       loadPageWindow(_uiState.value.currentPage, edition, _uiState.value.isDarkMode)
@@ -402,12 +458,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     val darkChanged = state.isDarkMode != nextDark
     if (darkChanged && state.mushafEdition == MushafEdition.TAJWEED_V4) {
       clearCachedPages()
+      _pagesState.value = emptyMap()
     }
     _uiState.update {
       it.copy(
         isDarkMode = nextDark,
         backgroundTheme = nextBg,
-        pages = if (darkChanged && it.mushafEdition == MushafEdition.TAJWEED_V4) emptyMap() else it.pages,
       )
     }
     if (darkChanged && state.mushafEdition == MushafEdition.TAJWEED_V4 && hasReaderActivated) {
@@ -483,9 +539,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       if (centerPage % 2 == 1 && (centerPage + 2) in 1..604) centerPage + 2 else null,
     )
     val retainedKeys = retainPageWindowLru(activeTargets)
-    _uiState.update { state ->
-      val pruned = state.pages.filterKeys { it in retainedKeys }
-      if (pruned.size == state.pages.size) state else state.copy(pages = pruned)
+    _pagesState.update { currentMap ->
+      val pruned = currentMap.filterKeys { it in retainedKeys }
+      if (pruned.size == currentMap.size) currentMap else pruned
     }
     for (p in activeTargets) {
       loadSinglePage(p, edition, useWhiteInk = useWhiteInk, forceReload = false)
@@ -499,25 +555,23 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     forceReload: Boolean,
   ) {
     if (page !in 1..604) return
-    val existing = _uiState.value.pages[page]
+    val existing = _pagesState.value[page]
     if (!forceReload && existing is PageLoadState.Ready) return
     if (!forceReload && existing is PageLoadState.Loading && pageJobs[page]?.isActive == true) return
 
     pageJobs[page]?.cancel()
     pageJobs[page] = viewModelScope.launch {
-      _uiState.update { it.copy(pages = it.pages + (page to PageLoadState.Loading)) }
+      _pagesState.update { it + (page to PageLoadState.Loading) }
 
       val needsTagFallbackTajweed =
         edition == MushafEdition.TAJWEED_V4 && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
 
       val pageRes = quranRepository.getPage(page, includeTajweedFallback = needsTagFallbackTajweed)
       if (pageRes.isFailure) {
-        _uiState.update {
-          it.copy(
-            pages = it.pages + (page to PageLoadState.Error(
-              pageRes.exceptionOrNull()?.localizedMessage ?: "تعذر تحميل الصفحة $page",
-            )),
-          )
+        _pagesState.update {
+          it + (page to PageLoadState.Error(
+            pageRes.exceptionOrNull()?.localizedMessage ?: "تعذر تحميل الصفحة $page",
+          ))
         }
         return@launch
       }
@@ -535,23 +589,19 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       if (!pageLruOrder.contains(page)) return@launch
 
       if (pageTypeface == null && !needsTagFallbackTajweed) {
-        _uiState.update {
-          it.copy(
-            pages = it.pages + (page to PageLoadState.Error("تعذر تحميل خط الصفحة العثماني")),
-          )
+        _pagesState.update {
+          it + (page to PageLoadState.Error("تعذر تحميل خط الصفحة العثماني"))
         }
         return@launch
       }
 
-      _uiState.update {
-        it.copy(
-          pages = it.pages + (page to PageLoadState.Ready(
-            pageData = pageData,
-            pageTypeface = pageTypeface,
-            basmalahTypeface = basmalahTypeface,
-            usesTagFallbackTajweed = needsTagFallbackTajweed,
-          )),
-        )
+      _pagesState.update {
+        it + (page to PageLoadState.Ready(
+          pageData = pageData,
+          pageTypeface = pageTypeface,
+          basmalahTypeface = basmalahTypeface,
+          usesTagFallbackTajweed = needsTagFallbackTajweed,
+        ))
       }
     }
   }
@@ -564,12 +614,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     val edition = _uiState.value.mushafEdition
     val useWhiteInk = _uiState.value.isDarkMode
 
-    _uiState.update {
-      it.copy(
-        selectedVerseKey = verseKey,
-        verseInsights = VerseInsightsUiState.Loading(verseKey, surahName, ayahNumber),
-      )
-    }
+    _uiState.update { it.copy(selectedVerseKey = verseKey) }
+    _verseInsightsState.value = VerseInsightsUiState.Loading(verseKey, surahName, ayahNumber)
 
     viewModelScope.launch {
       val pageFont = fontManager.loadPageFont(pageNumber, edition, useWhiteInk = useWhiteInk)
@@ -580,39 +626,28 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         codeV2Line = verseCodeV2Line,
       )
       res.onSuccess { insights ->
-        _uiState.update {
-          it.copy(
-            verseInsights = VerseInsightsUiState.Ready(
-              insights = insights,
-              surahName = surahName,
-              pageTypeface = pageFont,
-            ),
-          )
-        }
+        _verseInsightsState.value = VerseInsightsUiState.Ready(
+          insights = insights,
+          surahName = surahName,
+          pageTypeface = pageFont,
+        )
       }.onFailure { err ->
-        _uiState.update {
-          it.copy(
-            verseInsights = VerseInsightsUiState.Error(
-              verseKey = verseKey,
-              message = err.localizedMessage ?: "تعذر تحميل التفسير والترجمات",
-            ),
-          )
-        }
+        _verseInsightsState.value = VerseInsightsUiState.Error(
+          verseKey = verseKey,
+          message = err.localizedMessage ?: "تعذر تحميل التفسير والترجمات",
+        )
       }
     }
   }
 
   fun dismissVerseInsights() {
-    _uiState.update {
-      it.copy(
-        selectedVerseKey = null,
-        verseInsights = VerseInsightsUiState.Hidden,
-      )
-    }
+    _uiState.update { it.copy(selectedVerseKey = null) }
+    _verseInsightsState.value = VerseInsightsUiState.Hidden
   }
 
   fun selectReciter(reciter: VerifiedReciter) {
     if (!reciter.isPlayable) return
+    ensurePlaybackConnected()
     val currentSurah = audioState.value.currentSurahId
     val surahToPlay = if (reciter.availableSurahs.contains(currentSurah)) {
       currentSurah
@@ -623,6 +658,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun playSurah(surahId: Int) {
+    ensurePlaybackConnected()
     val reciter = audioState.value.currentReciter
       ?: (_uiState.value.primaryReciters + _uiState.value.additionalReciters).firstOrNull { it.isPlayable }
       ?: return
@@ -630,6 +666,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun playAyahRange(range: RecitationRange) {
+    ensurePlaybackConnected()
     val startSurah = minOf(range.startSurah, range.endSurah)
     val startAyah = if (range.startSurah <= range.endSurah) {
       if (range.startSurah == range.endSurah) minOf(range.startAyah, range.endAyah) else range.startAyah
@@ -641,11 +678,13 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun playSingleAyah(surahId: Int, ayahNumber: Int) {
+    ensurePlaybackConnected()
     followPlayingVersePage("$surahId:$ayahNumber")
     playbackController.playFromAyah(surahId, ayahNumber, endAyahNumber = ayahNumber)
   }
 
   fun playFromAyah(surahId: Int, ayahNumber: Int) {
+    ensurePlaybackConnected()
     followPlayingVersePage("$surahId:$ayahNumber")
     playbackController.playFromAyah(surahId, ayahNumber, endAyahNumber = null)
   }

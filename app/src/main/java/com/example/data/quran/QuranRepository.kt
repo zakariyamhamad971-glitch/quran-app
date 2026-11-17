@@ -28,6 +28,12 @@ class QuranRepository(
   private var cachedJuzs: List<JuzMeta>? = null
   @Volatile
   private var cachedBasmalahWords: List<WordDto>? = null
+  @Volatile
+  private var cachedTajweedLegend: List<TajweedRuleInfo>? = null
+  @Volatile
+  private var cachedCredits: List<CreditSourceInfo>? = null
+  @Volatile
+  private var cachedAssetHashes: List<AssetHashStatus>? = null
 
   // Compute each page layout once and keep up to 6 pages in memory
   private val pageMemoryCache = LruCache<String, MushafPageData>(6)
@@ -215,40 +221,54 @@ class QuranRepository(
     }.getOrDefault(emptyMap())
   }
 
-  suspend fun loadTajweedLegend(): List<TajweedRuleInfo> = withContext(Dispatchers.IO) {
-    val text = context.assets.open("quran/tajweed_legend.json").bufferedReader().use { it.readText() }
-    val root = JSONObject(text)
-    val arr = root.getJSONArray("rules")
-    (0 until arr.length()).map { i ->
-      val o = arr.getJSONObject(i)
-      TajweedRuleInfo(
-        id = o.getString("id"),
-        nameAr = o.getString("nameAr"),
-        descriptionAr = o.getString("descriptionAr"),
-        colorHex = o.getString("colorHex"),
-      )
+  suspend fun loadTajweedLegend(): List<TajweedRuleInfo> {
+    cachedTajweedLegend?.let { return it }
+    return withContext(Dispatchers.IO) {
+      cachedTajweedLegend?.let { return@withContext it }
+      val text = context.assets.open("quran/tajweed_legend.json").bufferedReader().use { it.readText() }
+      val root = JSONObject(text)
+      val arr = root.getJSONArray("rules")
+      val list = (0 until arr.length()).map { i ->
+        val o = arr.getJSONObject(i)
+        TajweedRuleInfo(
+          id = o.getString("id"),
+          nameAr = o.getString("nameAr"),
+          descriptionAr = o.getString("descriptionAr"),
+          colorHex = o.getString("colorHex"),
+        )
+      }
+      cachedTajweedLegend = list
+      list
     }
   }
 
-  suspend fun loadCredits(): List<CreditSourceInfo> = withContext(Dispatchers.IO) {
-    val text = context.assets.open("quran/credits.json").bufferedReader().use { it.readText() }
-    val root = JSONObject(text)
-    val arr = root.getJSONArray("sources")
-    (0 until arr.length()).map { i ->
-      val o = arr.getJSONObject(i)
-      CreditSourceInfo(
-        id = o.getString("id"),
-        title = o.getString("title"),
-        organization = o.getString("organization"),
-        url = o.getString("url"),
-        license = o.getString("license"),
-        usage = o.getString("usage"),
-      )
+  suspend fun loadCredits(): List<CreditSourceInfo> {
+    cachedCredits?.let { return it }
+    return withContext(Dispatchers.IO) {
+      cachedCredits?.let { return@withContext it }
+      val text = context.assets.open("quran/credits.json").bufferedReader().use { it.readText() }
+      val root = JSONObject(text)
+      val arr = root.getJSONArray("sources")
+      val list = (0 until arr.length()).map { i ->
+        val o = arr.getJSONObject(i)
+        CreditSourceInfo(
+          id = o.getString("id"),
+          title = o.getString("title"),
+          organization = o.getString("organization"),
+          url = o.getString("url"),
+          license = o.getString("license"),
+          usage = o.getString("usage"),
+        )
+      }
+      cachedCredits = list
+      list
     }
   }
 
-  suspend fun verifyBundledAssets(): List<AssetHashStatus> =
-    diskCache.verifyBundledAssetsManifest()
+  suspend fun verifyBundledAssets(): List<AssetHashStatus> {
+    cachedAssetHashes?.let { return it }
+    return diskCache.verifyBundledAssetsManifest().also { cachedAssetHashes = it }
+  }
 
   suspend fun getVersePageNumber(verseKey: String): Int? = withContext(Dispatchers.IO) {
     val safeKey = verseKey.replace(":", "_")

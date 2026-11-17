@@ -29,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -64,9 +65,12 @@ fun TajweedLegendSheet(
       )
       Spacer(Modifier.height(10.dp))
       for (rule in rules) {
-        val swatch = runCatching {
-          Color(android.graphics.Color.parseColor(rule.colorHex))
-        }.getOrDefault(MaterialTheme.colorScheme.primary)
+        val fallbackColor = MaterialTheme.colorScheme.primary
+        val swatch = remember(rule.colorHex, fallbackColor) {
+          runCatching {
+            Color(android.graphics.Color.parseColor(rule.colorHex))
+          }.getOrDefault(fallbackColor)
+        }
 
         Row(
           modifier = Modifier

@@ -1,12 +1,14 @@
 package com.example.data.integrity
 
 import android.content.Context
+import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 
+@Immutable
 data class AssetHashStatus(
   val path: String,
   val expectedSha256: String,

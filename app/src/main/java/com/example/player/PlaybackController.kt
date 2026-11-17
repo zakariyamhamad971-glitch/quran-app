@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.net.Uri
 import android.os.IBinder
+import androidx.compose.runtime.Immutable
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+@Immutable
 data class AudioPlaybackUiState(
   val isConnected: Boolean = false,
   val isPlaying: Boolean = false,
@@ -42,6 +44,16 @@ data class AudioPlaybackUiState(
   val hasAyahTiming: Boolean = false,
   val activeRange: RecitationRange? = null,
   val errorMessage: String? = null,
+)
+
+@Immutable
+data class AudioMiniUiState(
+  val isActive: Boolean = false,
+  val isPlaying: Boolean = false,
+  val isBuffering: Boolean = false,
+  val currentSurahId: Int = 1,
+  val currentSurahName: String = "",
+  val reciterName: String = "",
 )
 
 class PlaybackController(
@@ -75,10 +87,19 @@ class PlaybackController(
     val artist: String,
   )
 
+  companion object {
+    private const val PROGRESS_TICK_MS = 350L
+  }
+
   private val playerListener = object : Player.Listener {
     override fun onIsPlayingChanged(isPlaying: Boolean) {
-      _uiState.update { it.copy(isPlaying = isPlaying) }
-      if (!isPlaying) {
+      val pos = player?.currentPosition?.coerceAtLeast(0L) ?: _uiState.value.positionMs
+      val dur = player?.duration?.takeIf { it > 0L } ?: _uiState.value.durationMs
+      _uiState.update { it.copy(isPlaying = isPlaying, positionMs = pos, durationMs = dur) }
+      if (isPlaying) {
+        startPositionTicker()
+      } else {
+        stopPositionTickerIfIdle()
         persistCurrentPosition()
       }
     }
@@ -96,11 +117,18 @@ class PlaybackController(
     override fun onPlaybackStateChanged(playbackState: Int) {
       val buffering = playbackState == Player.STATE_BUFFERING
       val duration = player?.duration?.takeIf { it > 0L } ?: _uiState.value.durationMs
+      val pos = player?.currentPosition?.coerceAtLeast(0L) ?: _uiState.value.positionMs
       _uiState.update {
         it.copy(
           isBuffering = buffering,
           durationMs = duration,
+          positionMs = pos,
         )
+      }
+      if (buffering || player?.isPlaying == true) {
+        startPositionTicker()
+      } else {
+        stopPositionTickerIfIdle()
       }
       if (playbackState == Player.STATE_ENDED) {
         handleSurahEnded(_uiState.value.currentSurahId)
@@ -108,6 +136,7 @@ class PlaybackController(
     }
 
     override fun onPlayerError(error: PlaybackException) {
+      stopPositionTicker()
       _uiState.update {
         it.copy(
           isPlaying = false,
@@ -148,7 +177,9 @@ class PlaybackController(
           updateActiveVerseFromPlaylist(exo)
         }
       }
-      startPositionTicker()
+      if (exo.isPlaying || exo.playbackState == Player.STATE_BUFFERING) {
+        startPositionTicker()
+      }
     }
 
     override fun onServiceDisconnected(name: ComponentName?) {
@@ -550,16 +581,35 @@ class PlaybackController(
     _uiState.update { it.copy(errorMessage = null) }
   }
 
-  private fun startPositionTicker() {
+  private fun stopPositionTicker() {
     tickerJob?.cancel()
+    tickerJob = null
+  }
+
+  private fun stopPositionTickerIfIdle() {
+    val active = player
+    if (active == null || (!active.isPlaying && active.playbackState != Player.STATE_BUFFERING)) {
+      stopPositionTicker()
+    }
+  }
+
+  private fun startPositionTicker() {
+    if (tickerJob?.isActive == true) return
     tickerJob = scope.launch(Dispatchers.Main) {
       var saveCounter = 0
       while (true) {
-        val activePlayer = player
-        if (activePlayer != null && activePlayer.mediaItemCount > 0) {
+        val activePlayer = player ?: break
+        val isActivePlayback = activePlayer.isPlaying || activePlayer.playbackState == Player.STATE_BUFFERING
+        if (!isActivePlayback) {
+          break
+        }
+        if (activePlayer.mediaItemCount > 0) {
           val pos = activePlayer.currentPosition.coerceAtLeast(0L)
           val dur = activePlayer.duration.takeIf { it > 0L } ?: _uiState.value.durationMs
-          _uiState.update { it.copy(positionMs = pos, durationMs = dur) }
+          val cur = _uiState.value
+          if (pos != cur.positionMs || dur != cur.durationMs) {
+            _uiState.update { it.copy(positionMs = pos, durationMs = dur) }
+          }
           if (isVerseByVerseMode) {
             updateActiveVerseFromPlaylist(activePlayer)
             checkVersePlaylistRangeBoundary(activePlayer)
@@ -570,14 +620,15 @@ class PlaybackController(
 
           if (activePlayer.isPlaying) {
             saveCounter++
-            if (saveCounter >= 20) {
+            if (saveCounter >= 8) {
               saveCounter = 0
               persistCurrentPosition()
             }
           }
         }
-        delay(120L)
+        delay(PROGRESS_TICK_MS)
       }
+      tickerJob = null
     }
   }
 

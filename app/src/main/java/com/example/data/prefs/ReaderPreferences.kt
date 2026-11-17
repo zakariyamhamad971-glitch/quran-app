@@ -1,6 +1,7 @@
 package com.example.data.prefs
 
 import android.content.Context
+import androidx.compose.runtime.Immutable
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -26,6 +27,7 @@ enum class PageViewMode {
   TWO_PAGES,
 }
 
+@Immutable
 data class PersistedReaderState(
   val lastPage: Int = 1,
   val bookmarks: List<Int> = emptyList(),

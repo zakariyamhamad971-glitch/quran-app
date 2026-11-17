@@ -59,11 +59,21 @@ class AudioRepository(
   private val alQuranSurahAudioAdapter = QuranApiClient.moshi.adapter(AlQuranCloudSurahAudioResponse::class.java)
 
   private val urlAuditCache = ConcurrentHashMap<String, SurahUrlAudit>()
+  @Volatile
   private var timingReadsCache: List<TimingReadDto>? = null
+  @Volatile
   private var alQuranAudioEditionsCache: List<AlQuranCloudAudioEditionDto>? = null
+  @Volatile
+  private var cachedRecitersCatalog: Pair<List<VerifiedReciter>, List<VerifiedReciter>>? = null
+  @Volatile
+  private var cachedSuwarRanges: Map<Int, Mp3QuranSurahDto>? = null
+  @Volatile
+  private var quranComRecitersCache: List<QuranComReciterDto>? = null
 
   companion object {
     const val TARGET_MOSHAF_NAME = "حفص عن عاصم - مرتل"
+    private val DIACRITICS_REGEX = Regex("[\\u064B-\\u065F\\u0670]")
+    private val WHITESPACE_REGEX = Regex("\\s+")
 
     val ORDERED_REQUESTED_RECITERS = listOf(
       "مصطفى إسماعيل",
@@ -104,8 +114,8 @@ class AudioRepository(
         .replace("آ", "ا")
         .replace("ى", "ي")
         .replace("ة", "ه")
-        .replace(Regex("[\\u064B-\\u065F\\u0670]"), "")
-        .replace(Regex("\\s+"), " ")
+        .replace(DIACRITICS_REGEX, "")
+        .replace(WHITESPACE_REGEX, " ")
         .replace("عبد ", "عبد")
         .replace("ابو ", "ابو")
         .trim()
@@ -185,20 +195,25 @@ class AudioRepository(
   }
 
   suspend fun getVerifiedRecitersCatalog(): Result<Pair<List<VerifiedReciter>, List<VerifiedReciter>>> = runCatching {
-    val bytes = diskCache.readVerifiedBytes("api/mp3quran_reciters_ar_r1.json") ?: run {
-      val resp = api.getRecitersRaw("ar", 1)
-      if (!resp.isSuccessful) error("فشل جلب قائمة القراء (${resp.code()})")
-      val body = resp.body()?.bytes() ?: error("استجابة القراء فارغة")
-      diskCache.writeVerifiedBytes("api/mp3quran_reciters_ar_r1.json", body)
-      body
-    }
-    val parsed = recitersAdapter.fromJson(bytes.decodeToString())
-      ?: error("تعذر تحليل بيانات القراء")
+    cachedRecitersCatalog?.let { return@runCatching it }
+    withContext(Dispatchers.IO) {
+      cachedRecitersCatalog?.let { return@withContext it }
+      val bytes = diskCache.readVerifiedBytes("api/mp3quran_reciters_ar_r1.json") ?: run {
+        val resp = api.getRecitersRaw("ar", 1)
+        if (!resp.isSuccessful) error("فشل جلب قائمة القراء (${resp.code()})")
+        val body = resp.body()?.bytes() ?: error("استجابة القراء فارغة")
+        diskCache.writeVerifiedBytes("api/mp3quran_reciters_ar_r1.json", body)
+        body
+      }
+      val parsed = recitersAdapter.fromJson(bytes.decodeToString())
+        ?: error("تعذر تحليل بيانات القراء")
+
+      val normTargetMoshaf = normalizeArabicForSearch(TARGET_MOSHAF_NAME)
 
     // Only keep reciters that have a moshaf strictly matching "حفص عن عاصم - مرتل"
     val allHafsMurattal = parsed.reciters.mapNotNull { reciter ->
       val exactMoshafs = reciter.moshaf.filter { m ->
-        normalizeArabicForSearch(m.name) == normalizeArabicForSearch(TARGET_MOSHAF_NAME)
+        normalizeArabicForSearch(m.name) == normTargetMoshaf
       }
       if (exactMoshafs.isEmpty()) return@mapNotNull null
       val pickedMoshaf = exactMoshafs.maxByOrNull { parseSurahList(it.surah_list).size } ?: return@mapNotNull null
@@ -245,6 +260,7 @@ class AudioRepository(
           if (exact.size == 1) {
             val (rec, moshaf) = exact.first()
             usedReciterIds.add(rec.id)
+            val surahs = parseSurahList(moshaf.surah_list)
             VerifiedReciter(
               orderIndex = idx,
               requestedName = requested,
@@ -253,9 +269,9 @@ class AudioRepository(
               moshafId = moshaf.id,
               moshafName = moshaf.name,
               serverUrl = normalizeHttpsServer(moshaf.server),
-              availableSurahs = parseSurahList(moshaf.surah_list),
+              availableSurahs = surahs,
               status = ReciterMatchStatus.VERIFIED,
-              statusNote = "متوفر (${parseSurahList(moshaf.surah_list).size} سورة)",
+              statusNote = "متوفر (${surahs.size} سورة)",
               isPrimaryOrdered = true,
             )
           } else {
@@ -314,19 +330,28 @@ class AudioRepository(
         )
       }
 
-    Pair(orderedPrimary, additionalVerified)
+      val catalog = Pair(orderedPrimary, additionalVerified)
+      cachedRecitersCatalog = catalog
+      catalog
+    }
   }
 
   suspend fun getSuwarPageRanges(): Result<Map<Int, Mp3QuranSurahDto>> = runCatching {
-    val bytes = diskCache.readVerifiedBytes("api/mp3quran_suwar_ar.json") ?: run {
-      val resp = api.getSuwarRaw("ar")
-      if (!resp.isSuccessful) error("فشل جلب نطاق صفحات السور")
-      val body = resp.body()?.bytes() ?: error("بيانات السور فارغة")
-      diskCache.writeVerifiedBytes("api/mp3quran_suwar_ar.json", body)
-      body
+    cachedSuwarRanges?.let { return@runCatching it }
+    withContext(Dispatchers.IO) {
+      cachedSuwarRanges?.let { return@withContext it }
+      val bytes = diskCache.readVerifiedBytes("api/mp3quran_suwar_ar.json") ?: run {
+        val resp = api.getSuwarRaw("ar")
+        if (!resp.isSuccessful) error("فشل جلب نطاق صفحات السور")
+        val body = resp.body()?.bytes() ?: error("بيانات السور فارغة")
+        diskCache.writeVerifiedBytes("api/mp3quran_suwar_ar.json", body)
+        body
+      }
+      val parsed = suwarAdapter.fromJson(bytes.decodeToString()) ?: error("تعذر قراءة السور")
+      val map = parsed.suwar.associateBy { it.id }
+      cachedSuwarRanges = map
+      map
     }
-    val parsed = suwarAdapter.fromJson(bytes.decodeToString()) ?: error("تعذر قراءة السور")
-    parsed.suwar.associateBy { it.id }
   }
 
   fun buildSurahMp3Url(reciter: VerifiedReciter, surahId: Int): String? {
@@ -635,6 +660,10 @@ class AudioRepository(
   }
 
   private suspend fun findMatchingQuranComReciterId(reciterDisplayName: String): Int? {
+    val cached = quranComRecitersCache
+    if (cached != null) {
+      return findMatchingQuranComReciterIdFromList(reciterDisplayName, cached)
+    }
     val recitersCache = "api/qcom_chapter_reciters_ar.json"
     val adapter = QuranApiClient.moshi.adapter(QuranComChapterRecitersResponse::class.java)
     val bytes = diskCache.readVerifiedBytes(recitersCache) ?: run {
@@ -646,6 +675,9 @@ class AudioRepository(
 
     val list = runCatching { adapter.fromJson(bytes.decodeToString())?.reciters.orEmpty() }
       .getOrDefault(emptyList())
+    if (list.isNotEmpty()) {
+      quranComRecitersCache = list
+    }
     return findMatchingQuranComReciterIdFromList(reciterDisplayName, list)
   }
 }

@@ -11,6 +11,9 @@ import kotlinx.coroutines.sync.withLock
 class VerseInsightsRepository(
   private val diskCache: VerifiedDiskCache,
 ) {
+  companion object {
+    private val SUP_REGEX = Regex("<sup[^>]*>.*?</sup>", RegexOption.IGNORE_CASE)
+  }
   private val translationResourcesAdapter =
     QuranApiClient.moshi.adapter(TranslationResourcesResponse::class.java)
   private val tafsirResourcesAdapter =
@@ -223,7 +226,7 @@ class VerseInsightsRepository(
   private fun cleanHtml(raw: String): String {
     if (raw.isBlank()) return ""
     // Remove footnote <sup> markers that reference numeric footnotes cleanly
-    val withoutSups = raw.replace(Regex("<sup[^>]*>.*?</sup>", RegexOption.IGNORE_CASE), "")
+    val withoutSups = raw.replace(SUP_REGEX, "")
     return HtmlCompat.fromHtml(withoutSups, HtmlCompat.FROM_HTML_MODE_COMPACT)
       .toString()
       .trim()

@@ -1,5 +1,6 @@
 package com.example.data.audio
 
+import androidx.compose.runtime.Immutable
 import com.squareup.moshi.JsonClass
 
 @JsonClass(generateAdapter = true)
@@ -63,6 +64,7 @@ enum class ReciterMatchStatus {
   AMBIGUOUS,
 }
 
+@Immutable
 data class VerifiedReciter(
   val orderIndex: Int,
   val requestedName: String,
@@ -164,6 +166,7 @@ data class AlQuranCloudAyahAudioDto(
   val audio: String = "",
 )
 
+@Immutable
 data class RecitationRange(
   val startSurah: Int,
   val startAyah: Int,

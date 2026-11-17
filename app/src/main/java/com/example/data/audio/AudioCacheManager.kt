@@ -18,16 +18,33 @@ class AudioCacheManager(context: Context) {
   private val _downloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
   val downloadProgress: StateFlow<Map<String, Float>> = _downloadProgress.asStateFlow()
 
-  private val _downloadedKeys = MutableStateFlow<Set<String>>(scanExistingKeys())
+  private val _downloadedKeys = MutableStateFlow<Set<String>>(emptySet())
   val downloadedKeys: StateFlow<Set<String>> = _downloadedKeys.asStateFlow()
 
-  fun cacheKey(reciterKey: String, surahId: Int): String = "${reciterKey}_${"%03d".format(surahId)}"
+  @Volatile
+  private var keysWarmed: Boolean = false
+
+  suspend fun refreshDownloadedKeys() {
+    if (keysWarmed) return
+    val scanned = withContext(Dispatchers.IO) { scanExistingKeys() }
+    _downloadedKeys.value = scanned
+    keysWarmed = true
+  }
+
+  fun cacheKey(reciterKey: String, surahId: Int): String =
+    "${reciterKey}_${padSurahId(surahId)}"
+
+  private fun padSurahId(surahId: Int): String = when {
+    surahId < 10 -> "00$surahId"
+    surahId < 100 -> "0$surahId"
+    else -> surahId.toString()
+  }
 
   private fun audioFile(reciterKey: String, surahId: Int): File =
-    File(File(audioRoot, reciterKey).apply { mkdirs() }, "${"%03d".format(surahId)}.mp3")
+    File(File(audioRoot, reciterKey).apply { mkdirs() }, "${padSurahId(surahId)}.mp3")
 
   private fun shaFile(reciterKey: String, surahId: Int): File =
-    File(File(audioRoot, reciterKey).apply { mkdirs() }, "${"%03d".format(surahId)}.mp3.sha256")
+    File(File(audioRoot, reciterKey).apply { mkdirs() }, "${padSurahId(surahId)}.mp3.sha256")
 
   private fun scanExistingKeys(): Set<String> {
     val keys = mutableSetOf<String>()
@@ -45,10 +62,10 @@ class AudioCacheManager(context: Context) {
     return keys
   }
 
-  fun getLocalAudioFileIfValid(reciterKey: String, surahId: Int): File? {
+  suspend fun getLocalAudioFileIfValid(reciterKey: String, surahId: Int): File? = withContext(Dispatchers.IO) {
     val file = audioFile(reciterKey, surahId)
     val hashF = shaFile(reciterKey, surahId)
-    if (!file.exists() || file.length() <= 1024L) return null
+    if (!file.exists() || file.length() <= 1024L) return@withContext null
     if (hashF.exists()) {
       val expected = runCatching { hashF.readText().trim().lowercase() }.getOrNull()
       val actual = runCatching { Sha256Integrity.sha256Hex(file) }.getOrNull()
@@ -56,10 +73,10 @@ class AudioCacheManager(context: Context) {
         file.delete()
         hashF.delete()
         _downloadedKeys.value = _downloadedKeys.value - cacheKey(reciterKey, surahId)
-        return null
+        return@withContext null
       }
     }
-    return file
+    file
   }
 
   suspend fun downloadSurah(
@@ -82,6 +99,7 @@ class AudioCacheManager(context: Context) {
         val dest = audioFile(reciterKey, surahId)
         val tmp = File(dest.parentFile, "${dest.name}.tmp")
         var copied = 0L
+        var lastReportedProgress = 0.01f
         body.byteStream().use { input ->
           FileOutputStream(tmp).use { output ->
             val buf = ByteArray(16 * 1024)
@@ -91,7 +109,11 @@ class AudioCacheManager(context: Context) {
               output.write(buf, 0, read)
               copied += read
               if (total > 0L) {
-                updateProgress(key, (copied.toFloat() / total.toFloat()).coerceIn(0.01f, 0.99f))
+                val pct = (copied.toFloat() / total.toFloat()).coerceIn(0.01f, 0.99f)
+                if (pct - lastReportedProgress >= 0.04f) {
+                  lastReportedProgress = pct
+                  updateProgress(key, pct)
+                }
               }
             }
           }

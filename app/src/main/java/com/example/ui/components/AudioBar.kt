@@ -77,16 +77,26 @@ fun PersistentAudioBar(
   onOpenReciterPicker: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  val speeds = listOf(0.75f, 1.0f, 1.15f, 1.25f)
-  var isDragging by remember { mutableStateOf(false) }
-  var dragFraction by remember { mutableFloatStateOf(0f) }
-
-  val currentFraction = if (audioState.durationMs > 0L) {
-    (audioState.positionMs.toFloat() / audioState.durationMs.toFloat()).coerceIn(0f, 1f)
-  } else {
-    0f
+  val subtitleText = remember(
+    audioState.currentReciter,
+    audioState.activeRange,
+    audioState.activePlayingVerseKey,
+    audioState.isPlaying,
+    audioState.hasAyahTiming,
+  ) {
+    buildString {
+      append(audioState.currentReciter?.displayName ?: "اختر القارئ")
+      audioState.activeRange?.let { r ->
+        append(" • نطاق ${r.startSurah}:${r.startAyah}-${r.endSurah}:${r.endAyah}")
+      }
+      val activeKey = audioState.activePlayingVerseKey
+      if (activeKey != null) {
+        append(" • الآية ${activeKey.substringAfter(":")}")
+      } else if (audioState.isPlaying && !audioState.hasAyahTiming) {
+        append(" • بدون توقيت آيات")
+      }
+    }
   }
-  val displayedFraction = if (isDragging) dragFraction else currentFraction
 
   Surface(
     modifier = modifier
@@ -149,18 +159,7 @@ fun PersistentAudioBar(
               }
             }
             Text(
-              text = buildString {
-                append(audioState.currentReciter?.displayName ?: "اختر القارئ")
-                audioState.activeRange?.let { r ->
-                  append(" • نطاق ${r.startSurah}:${r.startAyah}-${r.endSurah}:${r.endAyah}")
-                }
-                val activeKey = audioState.activePlayingVerseKey
-                if (activeKey != null) {
-                  append(" • الآية ${activeKey.substringAfter(":")}")
-                } else if (audioState.isPlaying && !audioState.hasAyahTiming) {
-                  append(" • بدون توقيت آيات")
-                }
-              },
+              text = subtitleText,
               style = MaterialTheme.typography.labelMedium,
               color = if (audioState.activePlayingVerseKey != null) {
                 MaterialTheme.colorScheme.primary
@@ -240,47 +239,11 @@ fun PersistentAudioBar(
         )
       }
 
-      // Seek bar + duration labels
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Text(
-          text = formatDurationMs(
-            if (isDragging) (dragFraction * audioState.durationMs).toLong() else audioState.positionMs,
-          ),
-          style = MaterialTheme.typography.labelSmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Slider(
-          value = displayedFraction,
-          onValueChange = { f ->
-            isDragging = true
-            dragFraction = f
-          },
-          onValueChangeFinished = {
-            isDragging = false
-            if (audioState.durationMs > 0L) {
-              onSeekTo((dragFraction * audioState.durationMs).toLong())
-            }
-          },
-          enabled = audioState.durationMs > 0L,
-          colors = SliderDefaults.colors(
-            thumbColor = MaterialTheme.colorScheme.secondary,
-            activeTrackColor = MaterialTheme.colorScheme.primary,
-          ),
-          modifier = Modifier
-            .weight(1f)
-            .height(28.dp)
-            .padding(horizontal = 6.dp)
-            .testTag("audio_seek_slider"),
-        )
-        Text(
-          text = formatDurationMs(audioState.durationMs),
-          style = MaterialTheme.typography.labelSmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-      }
+      AudioSeekBarSection(
+        positionMs = audioState.positionMs,
+        durationMs = audioState.durationMs,
+        onSeekTo = onSeekTo,
+      )
 
       // Playback controls row: Prev Surah, -10s, Play/Pause, +10s, Next Surah
       Row(
@@ -366,5 +329,63 @@ fun PersistentAudioBar(
         }
       }
     }
+  }
+}
+
+@Composable
+private fun AudioSeekBarSection(
+  positionMs: Long,
+  durationMs: Long,
+  onSeekTo: (Long) -> Unit,
+) {
+  var isDragging by remember { mutableStateOf(false) }
+  var dragFraction by remember { mutableFloatStateOf(0f) }
+
+  val currentFraction = if (durationMs > 0L) {
+    (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+  } else {
+    0f
+  }
+  val displayedFraction = if (isDragging) dragFraction else currentFraction
+
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(
+      text = formatDurationMs(
+        if (isDragging) (dragFraction * durationMs).toLong() else positionMs,
+      ),
+      style = MaterialTheme.typography.labelSmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Slider(
+      value = displayedFraction,
+      onValueChange = { f ->
+        isDragging = true
+        dragFraction = f
+      },
+      onValueChangeFinished = {
+        isDragging = false
+        if (durationMs > 0L) {
+          onSeekTo((dragFraction * durationMs).toLong())
+        }
+      },
+      enabled = durationMs > 0L,
+      colors = SliderDefaults.colors(
+        thumbColor = MaterialTheme.colorScheme.secondary,
+        activeTrackColor = MaterialTheme.colorScheme.primary,
+      ),
+      modifier = Modifier
+        .weight(1f)
+        .height(28.dp)
+        .padding(horizontal = 6.dp)
+        .testTag("audio_seek_slider"),
+    )
+    Text(
+      text = formatDurationMs(durationMs),
+      style = MaterialTheme.typography.labelSmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
   }
 }
