@@ -35,8 +35,8 @@ class QuranRepository(
   @Volatile
   private var cachedAssetHashes: List<AssetHashStatus>? = null
 
-  // Compute each page layout once and keep up to 6 pages in memory
-  private val pageMemoryCache = LruCache<String, MushafPageData>(6)
+  // Compute each page layout once and keep up to 10 pages (covering +-2 prefetch + 8 bitmap pages)
+  private val pageMemoryCache = LruCache<String, MushafPageData>(10)
 
   suspend fun getSurahs(): Result<List<SurahMeta>> = runCatching {
     cachedSurahs?.let { return@runCatching it }

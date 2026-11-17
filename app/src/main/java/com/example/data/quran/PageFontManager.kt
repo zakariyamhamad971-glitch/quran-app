@@ -13,8 +13,8 @@ import java.util.concurrent.ConcurrentHashMap
 class PageFontManager(
   private val diskCache: VerifiedDiskCache,
 ) {
-  // Keeps ONLY active and adjacent pages' fonts (~6 pages + p1 Basmalah) in memory
-  private val memoryCache = LruCache<String, Typeface>(8)
+  // Keeps active, +-2 prefetch window, and p1 Basmalah fonts in memory without thrashing
+  private val memoryCache = LruCache<String, Typeface>(10)
   private val inFlightLoads = ConcurrentHashMap<String, Deferred<Typeface?>>()
 
   private fun cacheKey(page: Int, edition: MushafEdition, useWhiteInk: Boolean): String =

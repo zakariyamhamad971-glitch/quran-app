@@ -66,6 +66,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -186,13 +187,21 @@ fun ReaderScreen(
       PageViewMode.SINGLE -> false
       PageViewMode.TWO_PAGES -> true
     }
+    val topBarDp = with(density) { topBarHeightPx.toDp() }
+    val bottomBarDp = with(density) { bottomBarHeightPx.toDp() }
+    val targetTopPadding = if (isChromeVisible) topBarDp else 0.dp
+    val targetBottomPadding = if (isChromeVisible) bottomBarDp else 0.dp
+    val chromeBoundsReady = !isChromeVisible || (topBarHeightPx > 0 && bottomBarHeightPx > 0)
+    val settledAvailWidthDp = maxWidth
+    val settledAvailHeightDp = (maxHeight - targetTopPadding - targetBottomPadding).coerceAtLeast(1.dp)
+
     val topPadding by animateDpAsState(
-      targetValue = if (isChromeVisible) with(density) { topBarHeightPx.toDp() } else 0.dp,
+      targetValue = targetTopPadding,
       animationSpec = tween(durationMillis = 200),
       label = "chrome_top_padding",
     )
     val bottomPadding by animateDpAsState(
-      targetValue = if (isChromeVisible) with(density) { bottomBarHeightPx.toDp() } else 0.dp,
+      targetValue = targetBottomPadding,
       animationSpec = tween(durationMillis = 200),
       label = "chrome_bottom_padding",
     )
@@ -202,14 +211,16 @@ fun ReaderScreen(
       ReaderPagerHost(
         currentPage = uiState.currentPage,
         effectiveTwoPageMode = effectiveTwoPageMode,
-        mushafEdition = uiState.mushafEdition,
         backgroundTheme = uiState.backgroundTheme,
-        surahsById = surahsById,
         bookmarkSet = bookmarkSet,
         isDarkTheme = isDarkTheme,
+        settledAvailWidthDp = settledAvailWidthDp,
+        settledAvailHeightDp = settledAvailHeightDp,
+        chromeBoundsReady = chromeBoundsReady,
         pagesStateFlow = viewModel.pagesState,
         activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
         selectedVerseKeyProvider = selectedVerseKeyProvider,
+        onUpdateRenderSpec = remember(viewModel) { { w, h, d, fs -> viewModel.updatePageRenderSpec(w, h, d, fs) } },
         onPageChanged = onPageChangedCallback,
         onToggleBookmark = onToggleBookmark,
         onRetry = onRetryPage,
@@ -415,14 +426,16 @@ fun ReaderScreen(
 private fun ReaderPagerHost(
   currentPage: Int,
   effectiveTwoPageMode: Boolean,
-  mushafEdition: MushafEdition,
   backgroundTheme: BackgroundTheme,
-  surahsById: Map<Int, SurahMeta>,
   bookmarkSet: Set<Int>,
   isDarkTheme: Boolean,
+  settledAvailWidthDp: Dp,
+  settledAvailHeightDp: Dp,
+  chromeBoundsReady: Boolean,
   pagesStateFlow: StateFlow<Map<Int, PageLoadState>>,
   activePlayingVerseKeyProvider: () -> String?,
   selectedVerseKeyProvider: () -> String?,
+  onUpdateRenderSpec: (widthPx: Int, heightPx: Int, density: Float, fontScale: Float) -> Unit,
   onPageChanged: (Int) -> Unit,
   onToggleBookmark: (Int) -> Unit,
   onRetry: (Int) -> Unit,
@@ -431,6 +444,25 @@ private fun ReaderPagerHost(
   modifier: Modifier = Modifier,
 ) {
   val pages by pagesStateFlow.collectAsStateWithLifecycle()
+  val density = LocalDensity.current
+
+  val (settledSlotW, settledSlotH) = remember(effectiveTwoPageMode, settledAvailWidthDp, settledAvailHeightDp) {
+    if (effectiveTwoPageMode) {
+      ((settledAvailWidthDp - 8.dp) / 2f).coerceAtLeast(1.dp) to settledAvailHeightDp.coerceAtLeast(1.dp)
+    } else if (settledAvailHeightDp > 0.dp && (settledAvailWidthDp / settledAvailHeightDp) > MUSHAF_PAGE_ASPECT_RATIO) {
+      (settledAvailHeightDp * MUSHAF_PAGE_ASPECT_RATIO) to settledAvailHeightDp
+    } else {
+      settledAvailWidthDp to (settledAvailWidthDp / MUSHAF_PAGE_ASPECT_RATIO)
+    }
+  }
+  val bitmapWidthPx = with(density) { (settledSlotW - 6.dp).coerceAtLeast(1.dp).roundToPx() }
+  val bitmapHeightPx = with(density) { (settledSlotH - 4.dp).coerceAtLeast(1.dp).roundToPx() }
+
+  LaunchedEffect(chromeBoundsReady, bitmapWidthPx, bitmapHeightPx, density.density, density.fontScale) {
+    if (chromeBoundsReady) {
+      onUpdateRenderSpec(bitmapWidthPx, bitmapHeightPx, density.density, density.fontScale)
+    }
+  }
 
   BoxWithConstraints(modifier = modifier) {
     val availW = maxWidth
@@ -491,9 +523,7 @@ private fun ReaderPagerHost(
             MushafPageFrame(
               pageNumber = rightPage,
               pageState = rightState,
-              mushafEdition = mushafEdition,
               backgroundTheme = backgroundTheme,
-              surahsById = surahsById,
               isBookmarked = bookmarkSet.contains(rightPage),
               isDarkTheme = isDarkTheme,
               activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
@@ -510,9 +540,7 @@ private fun ReaderPagerHost(
               MushafPageFrame(
                 pageNumber = leftPage,
                 pageState = leftState,
-                mushafEdition = mushafEdition,
                 backgroundTheme = backgroundTheme,
-                surahsById = surahsById,
                 isBookmarked = bookmarkSet.contains(leftPage),
                 isDarkTheme = isDarkTheme,
                 activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
@@ -584,9 +612,7 @@ private fun ReaderPagerHost(
             MushafPageFrame(
               pageNumber = pageNum,
               pageState = pageState,
-              mushafEdition = mushafEdition,
               backgroundTheme = backgroundTheme,
-              surahsById = surahsById,
               isBookmarked = bookmarkSet.contains(pageNum),
               isDarkTheme = isDarkTheme,
               activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
@@ -845,7 +871,7 @@ private fun QabasatTopBar(
 ) {
   Surface(
     color = MaterialTheme.colorScheme.background,
-    tonalElevation = 1.dp,
+    tonalElevation = 0.dp,
     modifier = modifier
       .fillMaxWidth()
       .windowInsetsPadding(WindowInsets.statusBars),
