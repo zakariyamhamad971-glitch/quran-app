@@ -113,4 +113,62 @@ class ExampleRobolectricTest {
     assertTrue(manager.state.value is com.example.update.AppUpdateState.Error)
     manager.release()
   }
+
+  @Test
+  fun `page bitmap renderer uses uniform font size across long and short lines and justifies shorter lines`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val renderer = MushafPageBitmapRenderer(context)
+    val surahs = mapOf(
+      2 to SurahMeta(2, "البقرة", 2, 286, false, 2, 5, true),
+    )
+    // Line 2 is long (10 words), Line 3 is shorter (5 words) — both must share one uniform page font size
+    // and line 3 must justify edge-to-edge across the page width.
+    val longLineWords = (1..10).map { idx ->
+      WordDto(idx, 2, if (idx == 10) "end" else "word", 2, 1, "كلمة", "كلمة$idx")
+    }
+    val shortLineWords = (11..15).map { idx ->
+      WordDto(idx, 3, if (idx == 15) "end" else "word", 2, 2, "قصير", "قصير$idx")
+    }
+    val page2 = MushafPageBuilder.buildPage(
+      pageNumber = 2,
+      versesResponse = VersesByPageResponse(
+        verses = listOf(
+          VerseDto(2, "2:1", 2, 1, 1, words = longLineWords),
+          VerseDto(3, "2:2", 2, 1, 1, words = shortLineWords),
+        ),
+      ),
+      chaptersById = surahs,
+      basmalahTokens = emptyList(),
+    )
+
+    val spec = PageRenderSpec(
+      widthPx = 720,
+      heightPx = 1200,
+      density = 2.0f,
+      fontScale = 1.0f,
+      edition = MushafEdition.MADINAH_1421,
+      isDarkTheme = false,
+      backgroundTheme = BackgroundTheme.WHITE,
+    )
+
+    val rendered = renderer.renderOrGet(
+      pageData = page2,
+      spec = spec,
+      pageTypeface = Typeface.SERIF,
+      basmalahTypeface = Typeface.SERIF,
+      usesTagFallbackTajweed = false,
+      surahsById = surahs,
+    )
+
+    assertEquals(15, rendered.wordHitBoxes.count)
+    val rectLong = rendered.verseHighlightRects["2:1"]!!
+    val rectShort = rendered.verseHighlightRects["2:2"]!!
+    val longHeight = rectLong[3] - rectLong[1]
+    val shortHeight = rectShort[3] - rectShort[1]
+    val shortWidth = rectShort[2] - rectShort[0]
+    // Uniform font size yields matching vertical text box heights across long and short lines.
+    assertEquals(longHeight, shortHeight, 1.0f)
+    // Shorter line of 5 words justifies across the majority of the inner line width.
+    assertTrue(shortWidth > spec.widthPx * 0.65f)
+  }
 }

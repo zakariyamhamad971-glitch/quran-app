@@ -456,6 +456,17 @@ class MushafPageBitmapRenderer(
       color = headerTintInt
     }
 
+    val uniformPageSp = computeUniformPageFontSp(
+      displayedLines = displayedLines,
+      paint = lineTextPaint,
+      renderVectorTajweedMarkers = renderVectorTajweedMarkers,
+      usesTagFallbackTajweed = usesTagFallbackTajweed,
+      widthPx = bodyWidthInt,
+      slotHeightPx = slotHeight,
+      density = d,
+      fontScale = fs,
+    )
+
     for (slotIndex in displayedLines.indices) {
       val line = displayedLines[slotIndex]
       val slotTop = bodyTop + slotIndex * slotHeight
@@ -503,6 +514,7 @@ class MushafPageBitmapRenderer(
           hitCursor = drawAyahLineWithStaticLayout(
             canvas = canvas,
             line = line,
+            uniformPageSp = uniformPageSp,
             paint = lineTextPaint,
             rosetteNumPaint = rosetteNumPaint,
             renderVectorTajweedMarkers = renderVectorTajweedMarkers,
@@ -677,9 +689,101 @@ class MushafPageBitmapRenderer(
     canvas.restore()
   }
 
+  private fun computeUniformPageFontSp(
+    displayedLines: List<MushafLine>,
+    paint: TextPaint,
+    renderVectorTajweedMarkers: Boolean,
+    usesTagFallbackTajweed: Boolean,
+    widthPx: Int,
+    slotHeightPx: Float,
+    density: Float,
+    fontScale: Float,
+  ): Float {
+    val ayahLines = displayedLines.filterIsInstance<MushafLine.AyahWordsLine>().filter { it.words.isNotEmpty() }
+    val maxSp = ((slotHeightPx * 1.45f) / (density * fontScale)).coerceIn(12f, 84f)
+    val minSp = 8.5f
+    if (ayahLines.isEmpty()) return maxSp.coerceAtMost(28f)
+
+    val lineTokens = Array(ayahLines.size) { lineIdx ->
+      val words = ayahLines[lineIdx].words
+      Array(words.size) { wordIdx ->
+        val w = words[wordIdx]
+        if (usesTagFallbackTajweed) w.textUthmani else w.codeV2
+      }
+    }
+    val tokenBounds = Rect()
+
+    fun allLinesFitAt(candidateSp: Float): Boolean {
+      val fontSizePx = candidateSp * density * fontScale
+      paint.textSize = fontSizePx
+      val minGapPx = (fontSizePx * 0.14f).coerceAtLeast(2.5f)
+      val fm = paint.fontMetrics
+      val layoutLineH = fm.bottom - fm.top
+      val baselineInSlot = (slotHeightPx - layoutLineH) * 0.5f - fm.top
+
+      var inkMinTop = Int.MAX_VALUE
+      var inkMaxBottom = Int.MIN_VALUE
+      var hasMeasuredInk = false
+      var maxMarkerH = 0f
+
+      for (lineIdx in ayahLines.indices) {
+        val words = ayahLines[lineIdx].words
+        val tokens = lineTokens[lineIdx]
+        val n = words.size
+        var sumW = 0f
+
+        for (i in 0 until n) {
+          val w = words[i]
+          if (renderVectorTajweedMarkers && w.isEndMarker) {
+            sumW += fontSizePx * 1.32f
+            val mh = fontSizePx * 1.18f
+            if (mh > maxMarkerH) maxMarkerH = mh
+          } else {
+            val tok = tokens[i]
+            sumW += paint.measureText(tok)
+            if (tok.isNotEmpty()) {
+              paint.getTextBounds(tok, 0, tok.length, tokenBounds)
+              if (tokenBounds.top < inkMinTop) inkMinTop = tokenBounds.top
+              if (tokenBounds.bottom > inkMaxBottom) inkMaxBottom = tokenBounds.bottom
+              hasMeasuredInk = true
+            }
+          }
+        }
+
+        val totalMinW = sumW + minGapPx * (n - 1).coerceAtLeast(0)
+        if (totalMinW > widthPx.toFloat()) return false
+      }
+
+      if (maxMarkerH > slotHeightPx * 0.95f) return false
+      if (hasMeasuredInk) {
+        val inkH = (inkMaxBottom - inkMinTop).toFloat()
+        if (inkH > slotHeightPx * 0.90f) return false
+        val inkTopInSlot = baselineInSlot + inkMinTop.toFloat()
+        val inkBottomInSlot = baselineInSlot + inkMaxBottom.toFloat()
+        if (inkTopInSlot < slotHeightPx * 0.02f || inkBottomInSlot > slotHeightPx * 0.98f) {
+          return false
+        }
+      } else {
+        if ((fm.descent - fm.ascent) > slotHeightPx * 1.05f) return false
+      }
+      return true
+    }
+
+    if (allLinesFitAt(maxSp)) return maxSp
+
+    var lo = minSp
+    var hi = maxSp
+    repeat(12) {
+      val mid = (lo + hi) * 0.5f
+      if (allLinesFitAt(mid)) lo = mid else hi = mid
+    }
+    return lo.coerceAtLeast(minSp)
+  }
+
   private fun drawAyahLineWithStaticLayout(
     canvas: Canvas,
     line: MushafLine.AyahWordsLine,
+    uniformPageSp: Float,
     paint: TextPaint,
     rosetteNumPaint: Paint,
     renderVectorTajweedMarkers: Boolean,
@@ -710,72 +814,7 @@ class MushafPageBitmapRenderer(
       if (usesTagFallbackTajweed) w.textUthmani else w.codeV2
     }
 
-    val maxSp = ((slotHeightPx * 1.45f) / (density * fontScale)).coerceIn(12f, 84f)
-    val minSp = 8.5f
-    var lo = minSp
-    var hi = maxSp
-    val tokenBounds = Rect()
-
-    fun fitsAt(candidateSp: Float): Boolean {
-      val fontSizePx = candidateSp * density * fontScale
-      paint.textSize = fontSizePx
-      val minGapPx = (fontSizePx * 0.14f).coerceAtLeast(2.5f)
-      val fm = paint.fontMetrics
-      val layoutLineH = fm.bottom - fm.top
-      val baselineInSlot = (slotHeightPx - layoutLineH) * 0.5f - fm.top
-
-      var sumW = 0f
-      var inkMinTop = Int.MAX_VALUE
-      var inkMaxBottom = Int.MIN_VALUE
-      var hasMeasuredInk = false
-      var maxMarkerH = 0f
-
-      for (i in 0 until n) {
-        val w = words[i]
-        if (renderVectorTajweedMarkers && w.isEndMarker) {
-          sumW += fontSizePx * 1.32f
-          val mh = fontSizePx * 1.18f
-          if (mh > maxMarkerH) maxMarkerH = mh
-        } else {
-          val tok = tokens[i]
-          sumW += paint.measureText(tok)
-          if (tok.isNotEmpty()) {
-            paint.getTextBounds(tok, 0, tok.length, tokenBounds)
-            if (tokenBounds.top < inkMinTop) inkMinTop = tokenBounds.top
-            if (tokenBounds.bottom > inkMaxBottom) inkMaxBottom = tokenBounds.bottom
-            hasMeasuredInk = true
-          }
-        }
-      }
-
-      val totalMinW = sumW + minGapPx * (n - 1).coerceAtLeast(0)
-      if (totalMinW > widthPx.toFloat()) return false
-      if (maxMarkerH > slotHeightPx * 0.95f) return false
-
-      if (hasMeasuredInk) {
-        val inkH = (inkMaxBottom - inkMinTop).toFloat()
-        if (inkH > slotHeightPx * 0.90f) return false
-        val inkTopInSlot = baselineInSlot + inkMinTop.toFloat()
-        val inkBottomInSlot = baselineInSlot + inkMaxBottom.toFloat()
-        if (inkTopInSlot < slotHeightPx * 0.02f || inkBottomInSlot > slotHeightPx * 0.98f) {
-          return false
-        }
-      } else {
-        if ((fm.descent - fm.ascent) > slotHeightPx * 1.05f) return false
-      }
-      return true
-    }
-
-    val fittedSp = if (fitsAt(hi)) {
-      hi
-    } else {
-      repeat(10) {
-        val mid = (lo + hi) * 0.5f
-        if (fitsAt(mid)) lo = mid else hi = mid
-      }
-      lo.coerceAtLeast(minSp)
-    }
-
+    val fittedSp = uniformPageSp
     val fontSizePx = fittedSp * density * fontScale
     paint.textSize = fontSizePx
 
@@ -794,16 +833,12 @@ class MushafPageBitmapRenderer(
       sumWordWidths += ww
     }
 
-    val defaultGapPx = (fontSizePx * 0.18f).roundToInt().coerceAtLeast(3)
+    val defaultGapPx = (fontSizePx * 0.20f).roundToInt().coerceAtLeast(3)
     val leftoverWidth = (widthPx.toFloat() - sumWordWidths).coerceAtLeast(0f)
-    val avgEvenGap = if (n > 1) leftoverWidth / (n - 1).toFloat() else 0f
-    val maxNaturalGapPx = (fontSizePx * 0.72f).coerceAtLeast(18f)
-    val justifyEdgeToEdge = n >= 2 &&
-      widthPx.toFloat() >= sumWordWidths &&
-      ((n >= 4 && avgEvenGap <= maxNaturalGapPx) || sumWordWidths >= widthPx.toFloat() * 0.60f)
+    val justifyEdgeToEdge = n >= 4 || (n >= 2 && sumWordWidths >= widthPx.toFloat() * 0.45f)
 
     val gaps = IntArray((n - 1).coerceAtLeast(0))
-    if (justifyEdgeToEdge) {
+    if (justifyEdgeToEdge && n > 1 && widthPx.toFloat() >= sumWordWidths) {
       val totalGap = leftoverWidth.toDouble()
       var prevCum = 0
       for (i in 0 until n - 1) {
