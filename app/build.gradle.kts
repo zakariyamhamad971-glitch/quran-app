@@ -22,6 +22,9 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    val buildNum = (project.findProperty("buildNumber")?.toString()?.toIntOrNull()) ?: 0
+    buildConfigField("int", "BUILD_NUMBER", buildNum.toString())
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,

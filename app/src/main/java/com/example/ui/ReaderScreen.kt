@@ -37,11 +37,14 @@ import androidx.compose.material.icons.filled.Brightness7
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -68,6 +71,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.audio.RecitationRange
 import com.example.data.audio.VerifiedReciter
@@ -85,6 +91,7 @@ import com.example.ui.components.SettingsSheet
 import com.example.ui.components.TajweedLegendSheet
 import com.example.ui.components.VerseInsightsSheet
 import com.example.ui.theme.AmiriFontFamily
+import com.example.update.AppUpdateState
 import com.example.viewmodel.PageLoadState
 import com.example.viewmodel.QabasatViewModel
 import kotlinx.coroutines.flow.StateFlow
@@ -518,15 +525,12 @@ fun ReaderScreen(
     }
 
     if (showSettingsSheet) {
-      SettingsSheet(
+      ReaderSettingsHost(
+        viewModel = viewModel,
         isDarkMode = isDarkTheme,
         backgroundTheme = uiState.backgroundTheme,
         mushafEdition = uiState.mushafEdition,
         effectiveTwoPageMode = effectiveTwoPageMode,
-        onToggleDarkMode = { viewModel.toggleDarkMode() },
-        onSelectBackgroundTheme = { theme -> viewModel.setBackgroundTheme(theme) },
-        onSelectEdition = { edition -> viewModel.setMushafEdition(edition) },
-        onSelectPageViewMode = { mode -> viewModel.setPageViewMode(mode) },
         onOpenTajweedLegend = {
           viewModel.ensureTajweedLegendLoaded()
           showTajweedLegend = true
@@ -563,6 +567,152 @@ fun ReaderScreen(
       onOpenRangePicker = { showReciterSheet = true },
       onDismiss = { viewModel.dismissVerseInsights() },
     )
+
+    AppUpdateDialogHost(viewModel = viewModel)
+  }
+}
+
+@Composable
+private fun ReaderSettingsHost(
+  viewModel: QabasatViewModel,
+  isDarkMode: Boolean,
+  backgroundTheme: com.example.data.prefs.BackgroundTheme,
+  mushafEdition: MushafEdition,
+  effectiveTwoPageMode: Boolean,
+  onOpenTajweedLegend: () -> Unit,
+  onOpenCredits: () -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+  SettingsSheet(
+    isDarkMode = isDarkMode,
+    backgroundTheme = backgroundTheme,
+    mushafEdition = mushafEdition,
+    effectiveTwoPageMode = effectiveTwoPageMode,
+    onToggleDarkMode = { viewModel.toggleDarkMode() },
+    onSelectBackgroundTheme = { theme -> viewModel.setBackgroundTheme(theme) },
+    onSelectEdition = { edition -> viewModel.setMushafEdition(edition) },
+    onSelectPageViewMode = { mode -> viewModel.setPageViewMode(mode) },
+    onOpenTajweedLegend = onOpenTajweedLegend,
+    onOpenCredits = onOpenCredits,
+    onDismiss = onDismiss,
+    isCheckingUpdate = updateState is AppUpdateState.Checking,
+    onCheckForUpdate = { viewModel.checkForUpdates() },
+  )
+}
+
+@Composable
+private fun AppUpdateDialogHost(
+  viewModel: QabasatViewModel,
+) {
+  val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+  val lifecycleOwner = LocalLifecycleOwner.current
+
+  DisposableEffect(lifecycleOwner, updateState is AppUpdateState.NeedsInstallPermission) {
+    val observer = LifecycleEventObserver { _, event ->
+      if (event == Lifecycle.Event.ON_RESUME && updateState is AppUpdateState.NeedsInstallPermission) {
+        viewModel.retryPendingUpdateInstall()
+      }
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose {
+      lifecycleOwner.lifecycle.removeObserver(observer)
+    }
+  }
+
+  when (val state = updateState) {
+    AppUpdateState.Idle, AppUpdateState.Checking -> Unit
+
+    is AppUpdateState.UpdateAvailable -> {
+      AlertDialog(
+        onDismissRequest = { viewModel.dismissUpdateDialog() },
+        title = { Text("يوجد تحديث") },
+        text = { Text("يتوفر إصدار جديد (Build ${state.remoteBuildNumber}).") },
+        confirmButton = {
+          TextButton(
+            onClick = { viewModel.downloadUpdate(state) },
+            modifier = Modifier.testTag("update_download_button"),
+          ) {
+            Text("تحميل")
+          }
+        },
+        dismissButton = {
+          TextButton(
+            onClick = { viewModel.dismissUpdateDialog() },
+            modifier = Modifier.testTag("update_later_button"),
+          ) {
+            Text("لاحقًا")
+          }
+        },
+      )
+    }
+
+    AppUpdateState.UpToDate -> {
+      AlertDialog(
+        onDismissRequest = { viewModel.dismissUpdateDialog() },
+        title = { Text("تحديث التطبيق") },
+        text = { Text("أنت على آخر نسخة") },
+        confirmButton = {
+          TextButton(onClick = { viewModel.dismissUpdateDialog() }) {
+            Text("حسناً")
+          }
+        },
+      )
+    }
+
+    is AppUpdateState.Downloading -> {
+      AlertDialog(
+        onDismissRequest = { viewModel.dismissUpdateDialog() },
+        title = { Text("جاري تحميل التحديث") },
+        text = {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+          ) {
+            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
+            Text(
+              text = state.progressPercent?.let { "جاري التنزيل ($it%)" } ?: "جاري التنزيل...",
+            )
+          }
+        },
+        confirmButton = {
+          TextButton(onClick = { viewModel.dismissUpdateDialog() }) {
+            Text("إخفاء")
+          }
+        },
+      )
+    }
+
+    AppUpdateState.NeedsInstallPermission -> {
+      AlertDialog(
+        onDismissRequest = { viewModel.dismissUpdateDialog() },
+        title = { Text("إذن التثبيت") },
+        text = { Text("يرجى السماح بالتثبيت من مصدر غير معروف لتثبيت التحديث.") },
+        confirmButton = {
+          TextButton(onClick = { viewModel.openUnknownSourcesSettings() }) {
+            Text("فتح الإعدادات")
+          }
+        },
+        dismissButton = {
+          TextButton(onClick = { viewModel.dismissUpdateDialog() }) {
+            Text("إلغاء")
+          }
+        },
+      )
+    }
+
+    is AppUpdateState.Error -> {
+      AlertDialog(
+        onDismissRequest = { viewModel.dismissUpdateDialog() },
+        title = { Text("تحديث التطبيق") },
+        text = { Text(state.message) },
+        confirmButton = {
+          TextButton(onClick = { viewModel.dismissUpdateDialog() }) {
+            Text("حسناً")
+          }
+        },
+      )
+    }
   }
 }
 

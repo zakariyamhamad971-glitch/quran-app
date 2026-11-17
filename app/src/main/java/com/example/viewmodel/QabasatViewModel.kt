@@ -28,6 +28,8 @@ import com.example.data.quran.VerseInsightsRepository
 import com.example.data.quran.VerseSearchHit
 import com.example.player.AudioPlaybackUiState
 import com.example.player.PlaybackController
+import com.example.update.AppUpdateManager
+import com.example.update.AppUpdateState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -111,9 +113,15 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     scope = viewModelScope,
   )
 
+  private val appUpdateManager = AppUpdateManager(
+    context = application,
+    scope = viewModelScope,
+  )
+
   private val _uiState = MutableStateFlow(ReaderUiState())
   val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
+  val updateState: StateFlow<AppUpdateState> = appUpdateManager.state
   val audioState: StateFlow<AudioPlaybackUiState> = playbackController.uiState
 
   // Isolated audio slices so frequent positionMs ticks never recompose Mushaf pages or Index lists
@@ -661,7 +669,28 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
+  fun checkForUpdates() {
+    appUpdateManager.checkForUpdates()
+  }
+
+  fun downloadUpdate(update: AppUpdateState.UpdateAvailable) {
+    appUpdateManager.startDownloadAndInstall(update)
+  }
+
+  fun openUnknownSourcesSettings() {
+    appUpdateManager.openUnknownSourcesSettings()
+  }
+
+  fun retryPendingUpdateInstall() {
+    appUpdateManager.retryPendingInstallIfPermitted()
+  }
+
+  fun dismissUpdateDialog() {
+    appUpdateManager.dismiss()
+  }
+
   override fun onCleared() {
+    appUpdateManager.release()
     playbackController.release()
     super.onCleared()
   }

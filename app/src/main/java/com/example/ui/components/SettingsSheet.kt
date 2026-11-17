@@ -23,6 +23,8 @@ import androidx.compose.material.icons.filled.Brightness7
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -58,6 +60,8 @@ fun SettingsSheet(
   onOpenTajweedLegend: () -> Unit,
   onOpenCredits: () -> Unit,
   onDismiss: () -> Unit,
+  isCheckingUpdate: Boolean = false,
+  onCheckForUpdate: () -> Unit = {},
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -241,6 +245,28 @@ fun SettingsSheet(
           Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(18.dp))
           Spacer(Modifier.width(6.dp))
           Text("المصادر والتحقق")
+        }
+      }
+
+      Spacer(Modifier.height(10.dp))
+      OutlinedButton(
+        onClick = onCheckForUpdate,
+        enabled = !isCheckingUpdate,
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("check_update_button"),
+      ) {
+        if (isCheckingUpdate) {
+          CircularProgressIndicator(
+            strokeWidth = 2.dp,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(Modifier.width(8.dp))
+          Text("جاري التحقق من التحديث...")
+        } else {
+          Icon(Icons.Filled.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(8.dp))
+          Text("تحقق من التحديث")
         }
       }
 
