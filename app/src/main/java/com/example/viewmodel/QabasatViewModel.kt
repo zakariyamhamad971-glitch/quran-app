@@ -360,6 +360,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       ensurePlaybackConnected()
       launch { audioCacheManager.refreshDownloadedKeys() }
       loadReciters(saved)
+      appUpdateManager.checkForUpdatesInBackground()
     }
   }
 
@@ -813,6 +814,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   fun downloadUpdate(update: AppUpdateState.UpdateAvailable) {
     appUpdateManager.startDownloadAndInstall(update)
+  }
+
+  fun cancelUpdateDownload() {
+    appUpdateManager.cancelDownload()
   }
 
   fun openUnknownSourcesSettings() {

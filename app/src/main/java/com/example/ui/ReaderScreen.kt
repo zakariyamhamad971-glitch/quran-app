@@ -5,12 +5,15 @@ import android.content.Context
 import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -38,9 +41,9 @@ import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -52,7 +55,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -61,7 +63,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
@@ -83,6 +85,7 @@ import com.example.data.prefs.PageViewMode
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.SurahMeta
 import com.example.player.AudioPlaybackUiState
+import com.example.ui.components.AudioPickerSheetMode
 import com.example.ui.components.CreditsAndIntegrityDialog
 import com.example.ui.components.FullScreenQuranIndex
 import com.example.ui.components.MushafPageFrame
@@ -126,13 +129,10 @@ fun ReaderScreen(
   var isIndexOpen by rememberSaveable { mutableStateOf(true) }
   var hasSelectedSurah by rememberSaveable { mutableStateOf(false) }
   var isChromeVisible by rememberSaveable { mutableStateOf(true) }
-  var showReciterSheet by remember { mutableStateOf(false) }
+  var audioSheetMode by remember { mutableStateOf<AudioPickerSheetMode?>(null) }
   var showSettingsSheet by remember { mutableStateOf(false) }
   var showTajweedLegend by remember { mutableStateOf(false) }
   var showCreditsDialog by remember { mutableStateOf(false) }
-
-  var topBarHeightPx by remember { mutableIntStateOf(0) }
-  var bottomBarHeightPx by remember { mutableIntStateOf(0) }
 
   val speeds = remember { listOf(0.75f, 1.0f, 1.15f, 1.25f) }
   val onCycleSpeed: (Float) -> Unit = remember(viewModel, speeds) {
@@ -150,7 +150,6 @@ fun ReaderScreen(
   val onPageChangedCallback: (Int) -> Unit = remember(viewModel) { { p -> viewModel.onPageChanged(p) } }
   val onToggleChrome: () -> Unit = remember { { isChromeVisible = !isChromeVisible } }
   val view = LocalView.current
-  val density = LocalDensity.current
 
   LaunchedEffect(isChromeVisible, isIndexOpen) {
     val activity = view.context.findActivity() ?: return@LaunchedEffect
@@ -187,26 +186,8 @@ fun ReaderScreen(
       PageViewMode.SINGLE -> false
       PageViewMode.TWO_PAGES -> true
     }
-    val topBarDp = with(density) { topBarHeightPx.toDp() }
-    val bottomBarDp = with(density) { bottomBarHeightPx.toDp() }
-    val targetTopPadding = if (isChromeVisible) topBarDp else 0.dp
-    val targetBottomPadding = if (isChromeVisible) bottomBarDp else 0.dp
-    val chromeBoundsReady = !isChromeVisible || (topBarHeightPx > 0 && bottomBarHeightPx > 0)
-    val settledAvailWidthDp = maxWidth
-    val settledAvailHeightDp = (maxHeight - targetTopPadding - targetBottomPadding).coerceAtLeast(1.dp)
 
-    val topPadding by animateDpAsState(
-      targetValue = targetTopPadding,
-      animationSpec = tween(durationMillis = 200),
-      label = "chrome_top_padding",
-    )
-    val bottomPadding by animateDpAsState(
-      targetValue = targetBottomPadding,
-      animationSpec = tween(durationMillis = 200),
-      label = "chrome_bottom_padding",
-    )
-
-    // Main Mushaf page area (deferred until the user opens a surah/page for fast startup)
+    // Main Mushaf page area stays strictly fixed in size and position; top & bottom bars slide over it as overlays
     if (!isIndexOpen || hasSelectedSurah) {
       ReaderPagerHost(
         currentPage = uiState.currentPage,
@@ -214,9 +195,8 @@ fun ReaderScreen(
         backgroundTheme = uiState.backgroundTheme,
         bookmarkSet = bookmarkSet,
         isDarkTheme = isDarkTheme,
-        settledAvailWidthDp = settledAvailWidthDp,
-        settledAvailHeightDp = settledAvailHeightDp,
-        chromeBoundsReady = chromeBoundsReady,
+        settledAvailWidthDp = maxWidth,
+        settledAvailHeightDp = (maxHeight - 8.dp).coerceAtLeast(1.dp),
         pagesStateFlow = viewModel.pagesState,
         activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
         selectedVerseKeyProvider = selectedVerseKeyProvider,
@@ -228,14 +208,16 @@ fun ReaderScreen(
         onVerseLongPressed = onVerseLongPressed,
         modifier = Modifier
           .fillMaxSize()
-          .padding(top = topPadding, bottom = bottomPadding),
+          .padding(vertical = 4.dp),
       )
 
-      // Top chrome (fades 200ms)
+      // Top overlay bar (slides down from top without shifting the page)
       AnimatedVisibility(
         visible = isChromeVisible && !isIndexOpen,
-        enter = fadeIn(animationSpec = tween(durationMillis = 200)),
-        exit = fadeOut(animationSpec = tween(durationMillis = 200)),
+        enter = slideInVertically(animationSpec = tween(durationMillis = 240)) { -it } +
+          fadeIn(animationSpec = tween(durationMillis = 180)),
+        exit = slideOutVertically(animationSpec = tween(durationMillis = 220)) { -it } +
+          fadeOut(animationSpec = tween(durationMillis = 160)),
         modifier = Modifier.align(Alignment.TopCenter),
       ) {
         QabasatTopBar(
@@ -260,15 +242,16 @@ fun ReaderScreen(
               showCreditsDialog = true
             }
           },
-          modifier = Modifier.onSizeChanged { topBarHeightPx = it.height },
         )
       }
 
-      // Bottom audio player chrome (fades 200ms, isolated audio state host)
+      // Bottom audio overlay bar (slides up from bottom without shifting the page)
       AnimatedVisibility(
         visible = isChromeVisible && !isIndexOpen,
-        enter = fadeIn(animationSpec = tween(durationMillis = 200)),
-        exit = fadeOut(animationSpec = tween(durationMillis = 200)),
+        enter = slideInVertically(animationSpec = tween(durationMillis = 240)) { it } +
+          fadeIn(animationSpec = tween(durationMillis = 180)),
+        exit = slideOutVertically(animationSpec = tween(durationMillis = 220)) { it } +
+          fadeOut(animationSpec = tween(durationMillis = 160)),
         modifier = Modifier.align(Alignment.BottomCenter),
       ) {
         ReaderBottomAudioHost(
@@ -279,8 +262,8 @@ fun ReaderScreen(
           onNextSurah = remember(viewModel) { { viewModel.playbackController.nextSurah() } },
           onPrevSurah = remember(viewModel) { { viewModel.playbackController.prevSurah() } },
           onCycleSpeed = onCycleSpeed,
-          onOpenReciterPicker = remember { { showReciterSheet = true } },
-          modifier = Modifier.onSizeChanged { bottomBarHeightPx = it.height },
+          onOpenReciterPicker = remember { { audioSheetMode = AudioPickerSheetMode.RECITERS_ONLY } },
+          onOpenRangePicker = remember { { audioSheetMode = AudioPickerSheetMode.AYAH_RANGE_ONLY } },
         )
       }
     }
@@ -339,18 +322,18 @@ fun ReaderScreen(
           viewModel.ensureCreditsLoaded()
           showCreditsDialog = true
         },
-        onOpenRangePicker = { showReciterSheet = true },
+        onOpenRangePicker = { audioSheetMode = AudioPickerSheetMode.AYAH_RANGE_ONLY },
         onTogglePlayPause = { viewModel.playbackController.togglePlayPause() },
         onSeekTo = { pos -> viewModel.playbackController.seekTo(pos) },
         onSeekDelta = { delta -> viewModel.playbackController.seekByDelta(delta) },
         onNextSurah = { viewModel.playbackController.nextSurah() },
         onPrevSurah = { viewModel.playbackController.prevSurah() },
         onCycleSpeed = onCycleSpeed,
-        onOpenReciterPicker = { showReciterSheet = true },
+        onOpenReciterPicker = { audioSheetMode = AudioPickerSheetMode.RECITERS_ONLY },
       )
     }
 
-    if (showReciterSheet) {
+    audioSheetMode?.let { activeSheetMode ->
       ReaderReciterPickerHost(
         audioStateFlow = viewModel.audioState,
         primaryReciters = uiState.primaryReciters,
@@ -358,6 +341,7 @@ fun ReaderScreen(
         surahs = uiState.surahs,
         isLoading = uiState.recitersLoading,
         errorMessage = uiState.recitersError,
+        mode = activeSheetMode,
         onSelectReciter = { reciter -> viewModel.selectReciter(reciter) },
         onPlayFromAyah = { surahId, ayahNum ->
           hasSelectedSurah = true
@@ -370,7 +354,7 @@ fun ReaderScreen(
           viewModel.playAyahRange(range)
         },
         onClearRange = { viewModel.clearAyahRange() },
-        onDismiss = { showReciterSheet = false },
+        onDismiss = { audioSheetMode = null },
       )
     }
 
@@ -414,7 +398,7 @@ fun ReaderScreen(
       onPlaySingleAyah = remember(viewModel) { { surahId, ayahNum -> viewModel.playSingleAyah(surahId, ayahNum) } },
       onPlayFromAyah = remember(viewModel) { { surahId, ayahNum -> viewModel.playFromAyah(surahId, ayahNum) } },
       onPlayAyahRange = remember(viewModel) { { range -> viewModel.playAyahRange(range) } },
-      onOpenRangePicker = remember { { showReciterSheet = true } },
+      onOpenRangePicker = remember { { audioSheetMode = AudioPickerSheetMode.AYAH_RANGE_ONLY } },
       onDismiss = remember(viewModel) { { viewModel.dismissVerseInsights() } },
     )
 
@@ -431,7 +415,6 @@ private fun ReaderPagerHost(
   isDarkTheme: Boolean,
   settledAvailWidthDp: Dp,
   settledAvailHeightDp: Dp,
-  chromeBoundsReady: Boolean,
   pagesStateFlow: StateFlow<Map<Int, PageLoadState>>,
   activePlayingVerseKeyProvider: () -> String?,
   selectedVerseKeyProvider: () -> String?,
@@ -458,10 +441,8 @@ private fun ReaderPagerHost(
   val bitmapWidthPx = with(density) { (settledSlotW - 6.dp).coerceAtLeast(1.dp).roundToPx() }
   val bitmapHeightPx = with(density) { (settledSlotH - 4.dp).coerceAtLeast(1.dp).roundToPx() }
 
-  LaunchedEffect(chromeBoundsReady, bitmapWidthPx, bitmapHeightPx, density.density, density.fontScale) {
-    if (chromeBoundsReady) {
-      onUpdateRenderSpec(bitmapWidthPx, bitmapHeightPx, density.density, density.fontScale)
-    }
+  LaunchedEffect(bitmapWidthPx, bitmapHeightPx, density.density, density.fontScale) {
+    onUpdateRenderSpec(bitmapWidthPx, bitmapHeightPx, density.density, density.fontScale)
   }
 
   BoxWithConstraints(modifier = modifier) {
@@ -518,6 +499,9 @@ private fun ReaderPagerHost(
           Row(
             modifier = Modifier
               .fillMaxSize()
+              .pointerInput(toggleChromeIfNotSwiping) {
+                detectTapGestures(onTap = { toggleChromeIfNotSwiping() })
+              }
               .padding(horizontal = 4.dp),
           ) {
             MushafPageFrame(
@@ -606,7 +590,11 @@ private fun ReaderPagerHost(
           val pageNum = pageIdx + 1
           val pageState = pages[pageNum]
           Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+              .fillMaxSize()
+              .pointerInput(toggleChromeIfNotSwiping) {
+                detectTapGestures(onTap = { toggleChromeIfNotSwiping() })
+              },
             contentAlignment = Alignment.Center,
           ) {
             MushafPageFrame(
@@ -706,14 +694,14 @@ private fun AppUpdateDialogHost(
     is AppUpdateState.UpdateAvailable -> {
       AlertDialog(
         onDismissRequest = { viewModel.dismissUpdateDialog() },
-        title = { Text("يوجد تحديث") },
+        title = { Text("يوجد تحديث جديد") },
         text = { Text("يتوفر إصدار جديد (Build ${state.remoteBuildNumber}).") },
         confirmButton = {
           TextButton(
             onClick = { viewModel.downloadUpdate(state) },
             modifier = Modifier.testTag("update_download_button"),
           ) {
-            Text("تحميل")
+            Text("تحديث الآن")
           }
         },
         dismissButton = {
@@ -742,22 +730,35 @@ private fun AppUpdateDialogHost(
 
     is AppUpdateState.Downloading -> {
       AlertDialog(
-        onDismissRequest = { viewModel.dismissUpdateDialog() },
+        onDismissRequest = {},
         title = { Text("جاري تحميل التحديث") },
         text = {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
           ) {
-            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
-            Text(
-              text = state.progressPercent?.let { "جاري التنزيل ($it%)" } ?: "جاري التنزيل...",
-            )
+            val pct = state.progressPercent
+            if (pct != null) {
+              LinearProgressIndicator(
+                progress = { pct / 100f },
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("update_download_progress_bar"),
+              )
+              Text(text = "جاري التنزيل ($pct%)")
+            } else {
+              LinearProgressIndicator(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("update_download_progress_bar"),
+              )
+              Text(text = "جاري التنزيل...")
+            }
           }
         },
         confirmButton = {
-          TextButton(onClick = { viewModel.dismissUpdateDialog() }) {
-            Text("إخفاء")
+          TextButton(onClick = { viewModel.cancelUpdateDownload() }) {
+            Text("إلغاء")
           }
         },
       )
@@ -806,6 +807,7 @@ private fun ReaderBottomAudioHost(
   onPrevSurah: () -> Unit,
   onCycleSpeed: (Float) -> Unit,
   onOpenReciterPicker: () -> Unit,
+  onOpenRangePicker: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val audioState by audioStateFlow.collectAsStateWithLifecycle()
@@ -818,6 +820,7 @@ private fun ReaderBottomAudioHost(
     onPrevSurah = onPrevSurah,
     onCycleSpeed = { onCycleSpeed(audioState.playbackSpeed) },
     onOpenReciterPicker = onOpenReciterPicker,
+    onOpenRangePicker = onOpenRangePicker,
     modifier = modifier,
   )
 }
@@ -830,6 +833,7 @@ private fun ReaderReciterPickerHost(
   surahs: List<SurahMeta>,
   isLoading: Boolean,
   errorMessage: String?,
+  mode: AudioPickerSheetMode,
   onSelectReciter: (VerifiedReciter) -> Unit,
   onPlayFromAyah: (Int, Int) -> Unit,
   onPlayRange: (RecitationRange) -> Unit,
@@ -851,6 +855,7 @@ private fun ReaderReciterPickerHost(
     onPlayRange = onPlayRange,
     onClearRange = onClearRange,
     onDismiss = onDismiss,
+    mode = mode,
   )
 }
 
@@ -869,11 +874,13 @@ private fun QabasatTopBar(
   onOpenCredits: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val noopInteraction = remember { MutableInteractionSource() }
   Surface(
     color = MaterialTheme.colorScheme.background,
     tonalElevation = 0.dp,
     modifier = modifier
       .fillMaxWidth()
+      .clickable(interactionSource = noopInteraction, indication = null, onClick = {})
       .windowInsetsPadding(WindowInsets.statusBars),
   ) {
     Column(

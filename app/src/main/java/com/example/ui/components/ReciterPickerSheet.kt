@@ -71,6 +71,12 @@ import com.example.data.audio.VerifiedReciter
 import com.example.data.quran.SurahMeta
 import com.example.ui.theme.AmiriFontFamily
 
+enum class AudioPickerSheetMode {
+  RECITERS_ONLY,
+  AYAH_RANGE_ONLY,
+  COMBINED,
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReciterPickerSheet(
@@ -87,6 +93,7 @@ fun ReciterPickerSheet(
   onPlayRange: (RecitationRange) -> Unit,
   onClearRange: () -> Unit,
   onDismiss: () -> Unit,
+  mode: AudioPickerSheetMode = AudioPickerSheetMode.COMBINED,
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -127,11 +134,19 @@ fun ReciterPickerSheet(
     sheetState = sheetState,
     containerColor = MaterialTheme.colorScheme.surface,
   ) {
-    Column(
-      modifier = Modifier
+    val sheetHeightModifier = if (mode == AudioPickerSheetMode.AYAH_RANGE_ONLY) {
+      Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 16.dp)
+        .padding(bottom = 24.dp)
+    } else {
+      Modifier
         .fillMaxWidth()
         .fillMaxHeight(0.92f)
-        .padding(horizontal = 16.dp),
+        .padding(horizontal = 16.dp)
+    }
+    Column(
+      modifier = sheetHeightModifier,
     ) {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -140,12 +155,20 @@ fun ReciterPickerSheet(
       ) {
         Column(modifier = Modifier.weight(1f)) {
           Text(
-            text = "القراء ونطاق الآيات والسور",
+            text = when (mode) {
+              AudioPickerSheetMode.RECITERS_ONLY -> "اختيار القارئ"
+              AudioPickerSheetMode.AYAH_RANGE_ONLY -> "تحديد الآيات"
+              AudioPickerSheetMode.COMBINED -> "القراء ونطاق الآيات والسور"
+            },
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.primary,
           )
           Text(
-            text = "اختر القارئ وحدد سورة وآية البداية والنهاية",
+            text = when (mode) {
+              AudioPickerSheetMode.RECITERS_ONLY -> "اختر القارئ للتلاوة الصوتية"
+              AudioPickerSheetMode.AYAH_RANGE_ONLY -> "حدد سورة وآية البداية والنهاية"
+              AudioPickerSheetMode.COMBINED -> "اختر القارئ وحدد سورة وآية البداية والنهاية"
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
@@ -156,12 +179,13 @@ fun ReciterPickerSheet(
       }
       Spacer(Modifier.height(10.dp))
 
-      // Range selection: Where recitation starts & ends
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-        modifier = Modifier.fillMaxWidth(),
-      ) {
+      if (mode != AudioPickerSheetMode.RECITERS_ONLY) {
+        // Range selection: Where recitation starts & ends
+        Surface(
+          shape = RoundedCornerShape(14.dp),
+          color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
         Column(modifier = Modifier.padding(12.dp)) {
           Row(
             modifier = Modifier.fillMaxWidth(),
@@ -298,10 +322,14 @@ fun ReciterPickerSheet(
           }
         }
       }
+      }
 
-      Spacer(Modifier.height(10.dp))
+      if (mode != AudioPickerSheetMode.AYAH_RANGE_ONLY) {
+        if (mode == AudioPickerSheetMode.COMBINED) {
+          Spacer(Modifier.height(10.dp))
+        }
 
-      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FilterChip(
           selected = !showAllCatalog,
           onClick = { showAllCatalog = false },
@@ -412,6 +440,7 @@ fun ReciterPickerSheet(
             }
           }
         }
+      }
       }
     }
   }

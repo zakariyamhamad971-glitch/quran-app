@@ -1,33 +1,30 @@
 package com.example.update
 
-import android.app.DownloadManager
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
+import android.os.SystemClock
 import android.provider.Settings
-import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.example.BuildConfig
 import com.example.data.quran.QuranApiClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -41,7 +38,11 @@ sealed interface AppUpdateState {
     val fileName: String,
   ) : AppUpdateState
   data object UpToDate : AppUpdateState
-  data class Downloading(val progressPercent: Int?) : AppUpdateState
+  data class Downloading(
+    val progressPercent: Int?,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = -1L,
+  ) : AppUpdateState
   data object NeedsInstallPermission : AppUpdateState
   data class Error(val message: String) : AppUpdateState
 }
@@ -59,15 +60,40 @@ class AppUpdateManager(
   private val _state = MutableStateFlow<AppUpdateState>(AppUpdateState.Idle)
   val state: StateFlow<AppUpdateState> = _state.asStateFlow()
 
+  private var autoCheckJob: Job? = null
   private var checkJob: Job? = null
-  private var downloadMonitorJob: Job? = null
-  private var downloadReceiver: BroadcastReceiver? = null
-  private var activeDownloadId: Long = -1L
-  private var expectedApkFile: File? = null
+  private var downloadJob: Job? = null
+  private var hasAutoChecked = false
   private var pendingInstallFile: File? = null
 
+  /**
+   * Silent startup update check on a background thread.
+   * Never blocks app startup and silently ignores offline / failed checks.
+   */
+  fun checkForUpdatesInBackground() {
+    if (hasAutoChecked) return
+    hasAutoChecked = true
+    if (_state.value !is AppUpdateState.Idle) return
+
+    autoCheckJob = scope.launch(Dispatchers.IO) {
+      if (!hasActiveNetwork()) return@launch
+      val result = fetchLatestReleaseInfo()
+      if (result is AppUpdateState.UpdateAvailable) {
+        withContext(Dispatchers.Main) {
+          if (_state.value is AppUpdateState.Idle) {
+            _state.value = result
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * User-triggered check from Settings. Shows progress, up-to-date notice, or Arabic error messages.
+   */
   fun checkForUpdates() {
     if (_state.value is AppUpdateState.Checking || _state.value is AppUpdateState.Downloading) return
+    autoCheckJob?.cancel()
     checkJob?.cancel()
     checkJob = scope.launch {
       _state.value = AppUpdateState.Checking
@@ -149,173 +175,123 @@ class AppUpdateManager(
     }
   }
 
+  /**
+   * Downloads the APK in-app over OkHttp with progress updates, then launches Android installer via FileProvider.
+   */
   fun startDownloadAndInstall(update: AppUpdateState.UpdateAvailable) {
+    if (_state.value is AppUpdateState.Downloading) return
     if (!hasActiveNetwork()) {
       _state.value = AppUpdateState.Error("لا يوجد اتصال بالإنترنت")
       return
     }
 
-    val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
-    if (dm == null) {
-      _state.value = AppUpdateState.Error("فشل تحميل التحديث")
-      return
-    }
-
-    cleanupDownloadMonitor()
+    downloadJob?.cancel()
     val safeName = update.fileName.replace(Regex("""[^A-Za-z0-9._-]"""), "_").let {
       if (it.endsWith(".apk", ignoreCase = true)) it else "$it.apk"
     }
-    val targetDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-    if (targetDir == null) {
-      _state.value = AppUpdateState.Error("فشل تحميل التحديث")
-      return
-    }
-    if (!targetDir.exists()) targetDir.mkdirs()
-    val targetFile = File(targetDir, safeName)
-    if (targetFile.exists()) {
-      targetFile.delete()
-    }
-    expectedApkFile = targetFile
+    val updatesDir = File(context.filesDir, "updates")
+    if (!updatesDir.exists()) updatesDir.mkdirs()
+    val targetFile = File(updatesDir, safeName)
+    val tempFile = File(updatesDir, "$safeName.part")
 
-    val downloadId = try {
-      val req = DownloadManager.Request(Uri.parse(update.apkUrl))
-        .setTitle("تحديث قبسات")
-        .setDescription("جاري تحميل التحديث...")
-        .setMimeType("application/vnd.android.package-archive")
-        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setAllowedOverMetered(true)
-        .setAllowedOverRoaming(true)
-        .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, safeName)
-      dm.enqueue(req)
-    } catch (_: Exception) {
-      -1L
-    }
-
-    if (downloadId <= 0L) {
-      _state.value = AppUpdateState.Error("فشل تحميل التحديث")
-      return
-    }
-
-    activeDownloadId = downloadId
     _state.value = AppUpdateState.Downloading(progressPercent = 0)
-    registerCompletionReceiver(dm, downloadId)
-    startDownloadPolling(dm, downloadId)
-  }
 
-  private fun registerCompletionReceiver(dm: DownloadManager, downloadId: Long) {
-    val receiver = object : BroadcastReceiver() {
-      override fun onReceive(ctx: Context?, intent: Intent?) {
-        if (intent?.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) return
-        val completedId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-        if (completedId == downloadId) {
-          handleDownloadFinishedCheck(dm, downloadId)
+    downloadJob = scope.launch(Dispatchers.IO) {
+      try {
+        // Clean stale update APKs to avoid wasted internal storage
+        updatesDir.listFiles()?.forEach { old ->
+          if (old.name != safeName && old.name != tempFile.name) {
+            runCatching { old.delete() }
+          }
         }
-      }
-    }
-    downloadReceiver = receiver
-    runCatching {
-      ContextCompat.registerReceiver(
-        context,
-        receiver,
-        IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-        ContextCompat.RECEIVER_EXPORTED,
-      )
-    }
-  }
+        if (tempFile.exists()) tempFile.delete()
 
-  private fun startDownloadPolling(dm: DownloadManager, downloadId: Long) {
-    downloadMonitorJob?.cancel()
-    downloadMonitorJob = scope.launch(Dispatchers.IO) {
-      while (isActive && activeDownloadId == downloadId) {
-        val statusResult = queryDownloadStatus(dm, downloadId)
-        when (statusResult) {
-          is DownloadPollStatus.InProgress -> {
-            withContext(Dispatchers.Main) {
-              if (_state.value is AppUpdateState.Downloading) {
-                _state.value = AppUpdateState.Downloading(statusResult.percent)
+        val request = Request.Builder()
+          .url(update.apkUrl)
+          .header("Accept", "application/octet-stream")
+          .header("User-Agent", "Qabasat-Android")
+          .build()
+
+        QuranApiClient.okHttpClient.newCall(request).execute().use { response ->
+          if (!response.isSuccessful) {
+            throw IllegalStateException("HTTP ${response.code}")
+          }
+          val body = response.body ?: throw IllegalStateException("Empty APK body")
+          val totalBytes = body.contentLength()
+
+          body.byteStream().use { input ->
+            FileOutputStream(tempFile).use { output ->
+              val buffer = ByteArray(16 * 1024)
+              var downloaded = 0L
+              var lastEmitMs = 0L
+              var lastPercent = -1
+
+              while (true) {
+                ensureActive()
+                val read = input.read(buffer)
+                if (read == -1) break
+                output.write(buffer, 0, read)
+                downloaded += read
+
+                val now = SystemClock.elapsedRealtime()
+                val pct = if (totalBytes > 0L) {
+                  ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                } else {
+                  null
+                }
+                if ((pct != null && pct != lastPercent && now - lastEmitMs >= 80L) ||
+                  now - lastEmitMs >= 200L
+                ) {
+                  lastEmitMs = now
+                  if (pct != null) lastPercent = pct
+                  _state.value = AppUpdateState.Downloading(
+                    progressPercent = pct,
+                    downloadedBytes = downloaded,
+                    totalBytes = totalBytes,
+                  )
+                }
               }
+              output.flush()
             }
           }
-          is DownloadPollStatus.Completed -> {
-            withContext(Dispatchers.Main) {
-              onApkDownloaded(statusResult.file)
-            }
-            break
-          }
-          is DownloadPollStatus.Failed -> {
-            withContext(Dispatchers.Main) {
-              cleanupDownloadMonitor()
-              _state.value = AppUpdateState.Error("فشل تحميل التحديث")
-            }
-            break
-          }
-          null -> Unit
         }
-        delay(600L)
+
+        if (targetFile.exists()) targetFile.delete()
+        if (!tempFile.renameTo(targetFile) || !targetFile.exists() || targetFile.length() == 0L) {
+          throw IllegalStateException("Failed to finalize APK file")
+        }
+
+        withContext(Dispatchers.Main) {
+          onApkDownloaded(targetFile)
+        }
+      } catch (ce: CancellationException) {
+        runCatching { tempFile.delete() }
+        throw ce
+      } catch (_: UnknownHostException) {
+        runCatching { tempFile.delete() }
+        _state.value = AppUpdateState.Error("لا يوجد اتصال بالإنترنت")
+      } catch (_: ConnectException) {
+        runCatching { tempFile.delete() }
+        _state.value = AppUpdateState.Error("لا يوجد اتصال بالإنترنت")
+      } catch (_: SocketTimeoutException) {
+        runCatching { tempFile.delete() }
+        _state.value = AppUpdateState.Error("انتهت مهلة تحميل التحديث")
+      } catch (_: Exception) {
+        runCatching { tempFile.delete() }
+        _state.value = AppUpdateState.Error("فشل تحميل التحديث")
       }
     }
   }
 
-  private fun handleDownloadFinishedCheck(dm: DownloadManager, downloadId: Long) {
-    scope.launch(Dispatchers.IO) {
-      val statusResult = queryDownloadStatus(dm, downloadId)
-      withContext(Dispatchers.Main) {
-        when (statusResult) {
-          is DownloadPollStatus.Completed -> onApkDownloaded(statusResult.file)
-          is DownloadPollStatus.Failed -> {
-            cleanupDownloadMonitor()
-            _state.value = AppUpdateState.Error("فشل تحميل التحديث")
-          }
-          else -> Unit
-        }
-      }
-    }
-  }
-
-  private sealed interface DownloadPollStatus {
-    data class InProgress(val percent: Int?) : DownloadPollStatus
-    data class Completed(val file: File) : DownloadPollStatus
-    data object Failed : DownloadPollStatus
-  }
-
-  private fun queryDownloadStatus(dm: DownloadManager, downloadId: Long): DownloadPollStatus? {
-    return try {
-      dm.query(DownloadManager.Query().setFilterById(downloadId)).use { cursor ->
-        if (cursor == null || !cursor.moveToFirst()) return null
-        val statusCol = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-        val totalCol = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
-        val downloadedCol = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
-        val uriCol = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)
-
-        when (if (statusCol >= 0) cursor.getInt(statusCol) else -1) {
-          DownloadManager.STATUS_SUCCESSFUL -> {
-            val localUriStr = if (uriCol >= 0) cursor.getString(uriCol) else null
-            val resolvedFile = localUriStr?.let { Uri.parse(it).path }?.let(::File)
-              ?: expectedApkFile
-            if (resolvedFile != null && resolvedFile.exists()) {
-              DownloadPollStatus.Completed(resolvedFile)
-            } else {
-              DownloadPollStatus.Failed
-            }
-          }
-          DownloadManager.STATUS_FAILED -> DownloadPollStatus.Failed
-          DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PENDING, DownloadManager.STATUS_PAUSED -> {
-            val total = if (totalCol >= 0) cursor.getLong(totalCol) else -1L
-            val downloaded = if (downloadedCol >= 0) cursor.getLong(downloadedCol) else 0L
-            val pct = if (total > 0L) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else null
-            DownloadPollStatus.InProgress(pct)
-          }
-          else -> null
-        }
-      }
-    } catch (_: Exception) {
-      DownloadPollStatus.Failed
+  fun cancelDownload() {
+    downloadJob?.cancel()
+    downloadJob = null
+    if (_state.value is AppUpdateState.Downloading) {
+      _state.value = AppUpdateState.Idle
     }
   }
 
   private fun onApkDownloaded(apkFile: File) {
-    if (activeDownloadId == -1L) return
-    cleanupDownloadMonitor()
     pendingInstallFile = apkFile
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
@@ -369,20 +345,12 @@ class AppUpdateManager(
   }
 
   fun dismiss() {
-    if (_state.value !is AppUpdateState.Downloading) {
-      pendingInstallFile = null
+    if (_state.value is AppUpdateState.Downloading) {
+      cancelDownload()
+      return
     }
+    pendingInstallFile = null
     _state.value = AppUpdateState.Idle
-  }
-
-  private fun cleanupDownloadMonitor() {
-    activeDownloadId = -1L
-    downloadMonitorJob?.cancel()
-    downloadMonitorJob = null
-    downloadReceiver?.let { r ->
-      runCatching { context.unregisterReceiver(r) }
-    }
-    downloadReceiver = null
   }
 
   private fun hasActiveNetwork(): Boolean {
@@ -397,7 +365,8 @@ class AppUpdateManager(
   }
 
   fun release() {
+    autoCheckJob?.cancel()
     checkJob?.cancel()
-    cleanupDownloadMonitor()
+    downloadJob?.cancel()
   }
 }

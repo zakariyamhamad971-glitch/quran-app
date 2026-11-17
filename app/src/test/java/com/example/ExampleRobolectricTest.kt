@@ -98,4 +98,19 @@ class ExampleRobolectricTest {
     val darkSpec = spec.copy(isDarkTheme = true, backgroundTheme = BackgroundTheme.BLACK)
     assertNull(renderer.getCached(1, darkSpec))
   }
+
+  @Test
+  fun `auto update check stays silent offline while manual check reports error`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val manager = com.example.update.AppUpdateManager(context, this)
+
+    manager.checkForUpdatesInBackground()
+    kotlinx.coroutines.delay(50)
+    assertEquals(com.example.update.AppUpdateState.Idle, manager.state.value)
+
+    manager.checkForUpdates()
+    kotlinx.coroutines.delay(50)
+    assertTrue(manager.state.value is com.example.update.AppUpdateState.Error)
+    manager.release()
+  }
 }
