@@ -3,18 +3,25 @@ package com.example
 import android.content.Context
 import android.graphics.Typeface
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.integrity.VerifiedDiskCache
 import com.example.data.prefs.BackgroundTheme
+import com.example.data.prefs.ReaderPreferences
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafLine
+import com.example.data.quran.MushafOfflineSetupManager
 import com.example.data.quran.MushafPageBuilder
+import com.example.data.quran.PageFontManager
+import com.example.data.quran.QuranRepository
 import com.example.data.quran.SurahMeta
 import com.example.data.quran.VerseDto
 import com.example.data.quran.VersesByPageResponse
 import com.example.data.quran.WordDto
 import com.example.ui.components.MushafPageBitmapRenderer
 import com.example.ui.components.PageRenderSpec
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -170,5 +177,68 @@ class ExampleRobolectricTest {
     assertEquals(longHeight, shortHeight, 1.0f)
     // Shorter line of 5 words justifies across the majority of the inner line width.
     assertTrue(shortWidth > spec.widthPx * 0.65f)
+  }
+
+  @Test
+  fun `offline setup manager tracks resumable progress in verified cache and setup flag persists`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefs = ReaderPreferences(context)
+    assertFalse(prefs.stateFlow.first().mushafSetupCompleted)
+
+    val diskCache = VerifiedDiskCache(context)
+    val fontManager = PageFontManager(diskCache)
+    val repo = QuranRepository(context, diskCache, fontManager)
+    val manager = MushafOfflineSetupManager(
+      diskCache = diskCache,
+      quranRepository = repo,
+      fontManager = fontManager,
+      scope = this,
+      includeTajweedFallback = false,
+    )
+
+    // Pre-populate verified cache items for both editions + chapters + basmalah + juzs
+    diskCache.writeVerifiedBytes(
+      "api/chapters_ar.json",
+      """{"chapters":[{"id":1,"name_simple":"Al-Fatihah","name_arabic":"الفاتحة","revelation_order":5,"verses_count":7,"bismillah_pre":false,"pages":[1,1],"revelation_place":"makkah"}]}""".encodeToByteArray(),
+    )
+    diskCache.writeVerifiedBytes(
+      "api/juzs_resolved.json",
+      """{"juzs":[{"juzNumber":1,"startPage":1,"firstSurahId":1,"firstAyah":1}]}""".encodeToByteArray(),
+    )
+    diskCache.writeVerifiedBytes(
+      "api/verse_1_1.json",
+      """{"verse":{"id":1,"verse_key":"1:1","page_number":1,"juz_number":1,"hizb_number":1,"words":[]}}""".encodeToByteArray(),
+    )
+    diskCache.writeVerifiedBytes(
+      "api/page_1.json",
+      """{"verses":[{"id":1,"verse_key":"1:1","page_number":1,"juz_number":1,"hizb_number":1,"words":[]}]}""".encodeToByteArray(),
+    )
+    diskCache.writeVerifiedBytes("fonts/qcf_v2/p1.ttf", byteArrayOf(0x00, 0x01, 0x00, 0x00) + ByteArray(300))
+    diskCache.writeVerifiedBytes("fonts/qcf_v4_raw/p1.ttf", byteArrayOf(0x00, 0x01, 0x00, 0x00) + ByteArray(300))
+
+    val scan = manager.inspectCachedProgress()
+    assertEquals(1211, scan.madinahProgress.totalFiles)
+    assertEquals(5, scan.madinahProgress.completedFiles)
+    assertEquals(1206, scan.madinahProgress.remainingFiles)
+    assertEquals(604, scan.tajweedProgress.totalFiles)
+    assertEquals(1, scan.tajweedProgress.completedFiles)
+    assertEquals(603, scan.tajweedProgress.remainingFiles)
+
+    // Corrupt a cached file without updating .sha256 — SHA-256 verification must reject and queue it for re-download
+    val corruptedFont = java.io.File(context.filesDir, "qabasat_verified_cache/fonts/qcf_v4_raw/p1.ttf")
+    corruptedFont.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+    val rescan = manager.inspectCachedProgress()
+    assertEquals(0, rescan.tajweedProgress.completedFiles)
+    assertEquals(604, rescan.tajweedProgress.remainingFiles)
+
+    // Offline index & page metadata load cleanly from qabasat_verified_cache
+    val surahs = repo.getSurahs().getOrThrow()
+    assertEquals(1, surahs.size)
+    assertEquals("الفاتحة", surahs.first().nameArabic)
+    assertEquals(1, repo.getJuzs().getOrThrow().size)
+    assertTrue(repo.getPage(1, includeTajweedFallback = false).isSuccess)
+
+    prefs.setMushafSetupCompleted(true)
+    assertTrue(prefs.stateFlow.first().mushafSetupCompleted)
   }
 }

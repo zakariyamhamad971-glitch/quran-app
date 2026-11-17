@@ -83,12 +83,14 @@ import com.example.data.audio.VerifiedReciter
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.PageViewMode
 import com.example.data.quran.MushafEdition
+import com.example.data.quran.MushafSetupState
 import com.example.data.quran.SurahMeta
 import com.example.player.AudioPlaybackUiState
 import com.example.ui.components.AudioPickerSheetMode
 import com.example.ui.components.CreditsAndIntegrityDialog
 import com.example.ui.components.FullScreenQuranIndex
 import com.example.ui.components.MushafPageFrame
+import com.example.ui.components.MushafSetupScreen
 import com.example.ui.components.PersistentAudioBar
 import com.example.ui.components.ReciterPickerSheet
 import com.example.ui.components.SettingsSheet
@@ -112,6 +114,33 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 
 @Composable
 fun ReaderScreen(
+  viewModel: QabasatViewModel,
+) {
+  val setupState by viewModel.setupState.collectAsStateWithLifecycle()
+  when (val currentSetup = setupState) {
+    MushafSetupState.Checking -> {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(MaterialTheme.colorScheme.background),
+      )
+    }
+
+    is MushafSetupState.Required -> {
+      MushafSetupScreen(
+        state = currentSetup,
+        onRetry = remember(viewModel) { { viewModel.retryOfflineSetup() } },
+      )
+    }
+
+    MushafSetupState.Completed -> {
+      ReaderScreenContent(viewModel = viewModel)
+    }
+  }
+}
+
+@Composable
+private fun ReaderScreenContent(
   viewModel: QabasatViewModel,
 ) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()

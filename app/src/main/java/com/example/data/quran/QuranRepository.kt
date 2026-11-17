@@ -201,6 +201,39 @@ class QuranRepository(
     }
   }
 
+  internal suspend fun ensurePageJsonCached(pageNumber: Int) = withContext(Dispatchers.IO) {
+    if (diskCache.getVerifiedFile("api/page_$pageNumber.json") != null) return@withContext
+    val resp = QuranApiClient.quranComApi.getVersesByPageRaw(page = pageNumber)
+    if (!resp.isSuccessful) error("فشل تحميل بيانات الصفحة $pageNumber (${resp.code()})")
+    val body = resp.body()?.bytes() ?: error("بيانات الصفحة $pageNumber فارغة")
+    val parsed = pageAdapter.fromJson(body.decodeToString())
+      ?: error("بيانات الصفحة $pageNumber غير صالحة")
+    if (parsed.verses.isEmpty()) error("بيانات الصفحة $pageNumber غير مكتملة")
+    diskCache.writeVerifiedBytes("api/page_$pageNumber.json", body)
+  }
+
+  internal suspend fun ensureBasmalahCached() = withContext(Dispatchers.IO) {
+    if (diskCache.getVerifiedFile("api/verse_1_1.json") != null) return@withContext
+    val resp = QuranApiClient.quranComApi.getVerseByKeyRaw("1:1")
+    if (!resp.isSuccessful) error("فشل جلب البسملة الرسمية (${resp.code()})")
+    val body = resp.body()?.bytes() ?: error("بيانات البسملة فارغة")
+    val parsed = verseKeyAdapter.fromJson(body.decodeToString())
+      ?: error("بيانات البسملة غير صالحة")
+    cachedBasmalahWords = parsed.verse.words
+    diskCache.writeVerifiedBytes("api/verse_1_1.json", body)
+  }
+
+  internal suspend fun ensureTajweedPageFallbackCached(pageNumber: Int) = withContext(Dispatchers.IO) {
+    if (diskCache.getVerifiedFile("api/tajweed_page_$pageNumber.json") != null) return@withContext
+    val resp = QuranApiClient.alQuranCloudApi.getTajweedPageRaw(pageNumber)
+    if (!resp.isSuccessful) error("فشل تحميل بيانات التجويد للصفحة $pageNumber (${resp.code()})")
+    val body = resp.body()?.bytes() ?: error("بيانات التجويد للصفحة $pageNumber فارغة")
+    val parsed = alQuranPageAdapter.fromJson(body.decodeToString())
+      ?: error("بيانات التجويد للصفحة $pageNumber غير صالحة")
+    if (parsed.data?.ayahs.isNullOrEmpty()) error("بيانات التجويد للصفحة $pageNumber غير مكتملة")
+    diskCache.writeVerifiedBytes("api/tajweed_page_$pageNumber.json", body)
+  }
+
   private suspend fun fetchTajweedPageTexts(pageNumber: Int): Map<String, String> {
     return runCatching {
       val bytes = diskCache.readVerifiedBytes("api/tajweed_page_$pageNumber.json") ?: run {

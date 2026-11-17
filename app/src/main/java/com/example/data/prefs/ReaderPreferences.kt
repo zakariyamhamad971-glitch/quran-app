@@ -39,6 +39,7 @@ data class PersistedReaderState(
   val lastSurahId: Int = 1,
   val lastPositionMs: Long = 0L,
   val playbackSpeed: Float = 1.0f,
+  val mushafSetupCompleted: Boolean = false,
 )
 
 class ReaderPreferences(private val context: Context) {
@@ -53,6 +54,7 @@ class ReaderPreferences(private val context: Context) {
     val LAST_SURAH_ID = intPreferencesKey("last_surah_id")
     val LAST_POSITION_MS = longPreferencesKey("last_position_ms")
     val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
+    val MUSHAF_SETUP_COMPLETED = booleanPreferencesKey("mushaf_setup_completed")
   }
 
   val stateFlow: Flow<PersistedReaderState> = context.dataStore.data.map { prefs ->
@@ -86,6 +88,7 @@ class ReaderPreferences(private val context: Context) {
       lastSurahId = (prefs[Keys.LAST_SURAH_ID] ?: 1).coerceIn(1, 114),
       lastPositionMs = (prefs[Keys.LAST_POSITION_MS] ?: 0L).coerceAtLeast(0L),
       playbackSpeed = (prefs[Keys.PLAYBACK_SPEED] ?: 1.0f).coerceIn(0.75f, 1.25f),
+      mushafSetupCompleted = prefs[Keys.MUSHAF_SETUP_COMPLETED] ?: false,
     )
   }
 
@@ -145,6 +148,12 @@ class ReaderPreferences(private val context: Context) {
       surahId?.let { prefs[Keys.LAST_SURAH_ID] = it.coerceIn(1, 114) }
       positionMs?.let { prefs[Keys.LAST_POSITION_MS] = it.coerceAtLeast(0L) }
       speed?.let { prefs[Keys.PLAYBACK_SPEED] = it.coerceIn(0.75f, 1.25f) }
+    }
+  }
+
+  suspend fun setMushafSetupCompleted(completed: Boolean) {
+    context.dataStore.edit {
+      it[Keys.MUSHAF_SETUP_COMPLETED] = completed
     }
   }
 }

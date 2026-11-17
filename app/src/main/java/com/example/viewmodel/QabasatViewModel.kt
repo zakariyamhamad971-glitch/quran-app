@@ -19,6 +19,8 @@ import com.example.data.prefs.ReaderPreferences
 import com.example.data.quran.CreditSourceInfo
 import com.example.data.quran.JuzMeta
 import com.example.data.quran.MushafEdition
+import com.example.data.quran.MushafOfflineSetupManager
+import com.example.data.quran.MushafSetupState
 import com.example.data.quran.PageFontManager
 import com.example.data.quran.QuranRepository
 import com.example.data.quran.SurahMeta
@@ -134,6 +136,14 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     context = application,
     scope = viewModelScope,
   )
+  private val setupManager = MushafOfflineSetupManager(
+    diskCache = diskCache,
+    quranRepository = quranRepository,
+    fontManager = fontManager,
+    scope = viewModelScope,
+  )
+
+  val setupState: StateFlow<MushafSetupState> = setupManager.state
 
   private val _uiState = MutableStateFlow(ReaderUiState())
   val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
@@ -337,30 +347,56 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         }
       }
 
-      // First screen only needs Surah index; defer playback binding, downloaded keys scan & reciters until after first draw.
-      val surahsRes = quranRepository.getSurahs()
-      val surahs = surahsRes.getOrDefault(emptyList())
-      if (surahs.isNotEmpty()) {
-        cachedSurahsById = surahs.associateBy { it.id }
+      if (!saved.mushafSetupCompleted) {
+        setupManager.startOrResume {
+          completeSetupAndBootstrap(saved)
+        }
+        return@launch
       }
 
-      _uiState.update {
-        it.copy(
-          surahs = surahs,
-          metadataError = surahsRes.exceptionOrNull()?.localizedMessage,
-        )
-      }
+      setupManager.markCompleted()
+      finishPostSetupBootstrap(saved)
+    }
+  }
 
-      // Yield so Compose can commit the first frame of the Surah index before background init runs.
-      yield()
+  private suspend fun completeSetupAndBootstrap(saved: PersistedReaderState) {
+    preferences.setMushafSetupCompleted(true)
+    finishPostSetupBootstrap(saved)
+  }
 
-      if (surahs.isNotEmpty()) {
-        playbackController.updateSurahNames(surahs.associate { it.id to it.nameArabic })
+  private suspend fun finishPostSetupBootstrap(saved: PersistedReaderState) {
+    // First screen only needs Surah index; defer playback binding, downloaded keys scan & reciters until after first draw.
+    val surahsRes = quranRepository.getSurahs()
+    val surahs = surahsRes.getOrDefault(emptyList())
+    if (surahs.isNotEmpty()) {
+      cachedSurahsById = surahs.associateBy { it.id }
+    }
+
+    _uiState.update {
+      it.copy(
+        surahs = surahs,
+        metadataError = surahsRes.exceptionOrNull()?.localizedMessage,
+      )
+    }
+
+    // Yield so Compose can commit the first frame of the Surah index before background init runs.
+    yield()
+
+    if (surahs.isNotEmpty()) {
+      playbackController.updateSurahNames(surahs.associate { it.id to it.nameArabic })
+    }
+    ensurePlaybackConnected()
+    viewModelScope.launch { audioCacheManager.refreshDownloadedKeys() }
+    loadReciters(saved)
+    appUpdateManager.checkForUpdatesInBackground()
+  }
+
+  fun retryOfflineSetup() {
+    viewModelScope.launch {
+      val saved = preferences.stateFlow.first()
+      setupManager.retry {
+        completeSetupAndBootstrap(saved)
       }
-      ensurePlaybackConnected()
-      launch { audioCacheManager.refreshDownloadedKeys() }
-      loadReciters(saved)
-      appUpdateManager.checkForUpdatesInBackground()
     }
   }
 
@@ -451,7 +487,14 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun retryBootstrap() {
-    bootstrap()
+    if (setupManager.state.value !is MushafSetupState.Completed) {
+      retryOfflineSetup()
+      return
+    }
+    viewModelScope.launch {
+      val saved = preferences.stateFlow.first()
+      finishPostSetupBootstrap(saved)
+    }
   }
 
   fun onPageChanged(page: Int) {

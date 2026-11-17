@@ -30,7 +30,7 @@ class PageFontManager(
         if (useWhiteInk) "fonts/qcf_v4_white_v2/p$page.ttf" else "fonts/qcf_v4_black_v2/p$page.ttf"
     }
 
-  private fun fontUrl(page: Int, edition: MushafEdition): String =
+  internal fun fontUrl(page: Int, edition: MushafEdition): String =
     when (edition) {
       MushafEdition.MADINAH_1421 ->
         "https://verses.quran.foundation/fonts/quran/hafs/v2/ttf/p$page.ttf"
