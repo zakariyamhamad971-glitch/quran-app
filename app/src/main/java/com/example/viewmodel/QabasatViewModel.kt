@@ -345,6 +345,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       }
       activeRenderSpec = rebuildRenderSpec()
 
+      if (saved.layoutCacheVersion < QuranRepository.LAYOUT_CACHE_VERSION) {
+        quranRepository.clearInMemoryPageCache()
+        pageBitmapRenderer.clearAll()
+        preferences.setLayoutCacheVersion(QuranRepository.LAYOUT_CACHE_VERSION)
+      }
+
       launch {
         preferences.stateFlow.collect { pref ->
           val prev = _uiState.value
@@ -732,7 +738,11 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       val needsTagFallbackTajweed =
         edition == MushafEdition.TAJWEED_V4 && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
 
-      val pageRes = quranRepository.getPage(page, includeTajweedFallback = needsTagFallbackTajweed)
+      val pageRes = quranRepository.getPage(
+        pageNumber = page,
+        edition = edition,
+        includeTajweedFallback = needsTagFallbackTajweed,
+      )
       if (pageRes.isFailure) {
         _pagesState.update {
           it + (page to PageLoadState.Error(

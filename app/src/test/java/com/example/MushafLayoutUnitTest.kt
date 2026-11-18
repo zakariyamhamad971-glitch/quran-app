@@ -1,21 +1,238 @@
 package com.example
 
+import androidx.compose.ui.graphics.Color
+import com.example.data.integrity.Sha256Integrity
+import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafLine
 import com.example.data.quran.MushafPageBuilder
+import com.example.data.quran.QulLayoutLine
+import com.example.data.quran.QulPageLayoutLoader
 import com.example.data.quran.SurahMeta
 import com.example.data.quran.TajweedTagParser
 import com.example.data.quran.VerseDto
 import com.example.data.quran.VersesByPageResponse
 import com.example.data.quran.WordDto
-import androidx.compose.ui.graphics.Color
+import com.squareup.moshi.JsonReader
+import okio.Buffer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class MushafLayoutUnitTest {
 
+  private fun locateQuranAsset(relativeName: String): File {
+    val candidates = listOf(
+      File("src/main/assets/quran/$relativeName"),
+      File("app/src/main/assets/quran/$relativeName"),
+    )
+    return candidates.firstOrNull { it.exists() }
+      ?: error("Cannot locate asset $relativeName from ${File(".").absolutePath}")
+  }
+
+  private fun assertCompleteQulLayout(fileName: String) {
+    val file = locateQuranAsset(fileName)
+    val pages = QulPageLayoutLoader.parseLayoutJson(file.readText())
+    assertEquals("Expected 604 pages in $fileName", 604, pages.size)
+
+    var expectedNextWordId = 1
+    val seenSurahHeaders = mutableListOf<Int>()
+    var basmallahCount = 0
+
+    for (pageNum in 1..604) {
+      val lines = pages[pageNum] ?: error("Missing page $pageNum in $fileName")
+      val expectedLineCount = if (pageNum in 1..2) 8 else 15
+      assertEquals("Page $pageNum line count mismatch in $fileName", expectedLineCount, lines.size)
+      assertEquals((1..expectedLineCount).toList(), lines.map { it.line })
+
+      for (line in lines) {
+        when (line.type) {
+          "ayah" -> {
+            val first = line.first ?: error("Missing first on p$pageNum L${line.line} in $fileName")
+            val last = line.last ?: error("Missing last on p$pageNum L${line.line} in $fileName")
+            assertEquals(
+              "Gap or duplicate word at p$pageNum L${line.line} in $fileName",
+              expectedNextWordId,
+              first,
+            )
+            assertTrue("Invalid range [$first..$last] on p$pageNum L${line.line}", last >= first)
+            expectedNextWordId = last + 1
+          }
+          "surah_name" -> {
+            val surah = line.surah ?: error("Missing surah on p$pageNum L${line.line} in $fileName")
+            seenSurahHeaders += surah
+          }
+          "basmallah" -> basmallahCount++
+          else -> error("Unexpected line type ${line.type} on p$pageNum L${line.line}")
+        }
+      }
+    }
+
+    // All 83,668 Quran word tokens (including 6,236 ayah-end markers across all 6,236 verses) covered contiguously
+    assertEquals(83668, expectedNextWordId - 1)
+    assertEquals((1..114).toList(), seenSurahHeaders)
+    // All 114 surahs except Al-Fatihah (uses 1:1 as ayah) and At-Tawbah (9, no basmalah) = 112
+    assertEquals(112, basmallahCount)
+  }
+
   @Test
-  fun `buildPage preserves exact 15 lines and surah header plus basmalah slots`() {
+  fun `both QUL layouts cover all 604 pages 8 or 15 lines and all 83668 Quran tokens without gaps`() {
+    assertCompleteQulLayout("layout_madinah_v2.json")
+    assertCompleteQulLayout("layout_tajweed_v4.json")
+  }
+
+  @Test
+  fun `manifest sha256 matches bundled QUL layout assets`() {
+    val manifestMap = mutableMapOf<String, String>()
+    JsonReader.of(Buffer().writeUtf8(locateQuranAsset("manifest.sha256.json").readText())).use { r ->
+      r.beginObject()
+      while (r.hasNext()) {
+        if (r.nextName() == "files") {
+          r.beginArray()
+          while (r.hasNext()) {
+            var path = ""
+            var sha256 = ""
+            r.beginObject()
+            while (r.hasNext()) {
+              when (r.nextName()) {
+                "path" -> path = r.nextString()
+                "sha256" -> sha256 = r.nextString().lowercase()
+                else -> r.skipValue()
+              }
+            }
+            r.endObject()
+            manifestMap[path] = sha256
+          }
+          r.endArray()
+        } else {
+          r.skipValue()
+        }
+      }
+      r.endObject()
+    }
+    for (name in listOf("layout_madinah_v2.json", "layout_tajweed_v4.json")) {
+      val actual = Sha256Integrity.sha256Hex(locateQuranAsset(name))
+      assertEquals("SHA-256 mismatch for $name", manifestMap[name], actual)
+    }
+  }
+
+  @Test
+  fun `buildPageFromQulLayout resolves boundary pages 597 598 604 across both editions`() {
+    val basmalahTokens = listOf(
+      WordDto(1, 1, "word", 1, 2, "b1", "بسم"),
+      WordDto(2, 2, "word", 1, 2, "b2", "الله"),
+      WordDto(3, 3, "word", 1, 2, "b3", "الرحمن"),
+      WordDto(4, 4, "word", 1, 2, "b4", "الرحيم"),
+      WordDto(5, 5, "end", 1, 2, "b5", "١"),
+    )
+    val surahs = (1..114).associateWith { id ->
+      SurahMeta(id, "S$id", id, 10, id != 9, 1, 604, true)
+    }
+
+    for (assetName in listOf("layout_madinah_v2.json", "layout_tajweed_v4.json")) {
+      val pages = QulPageLayoutLoader.parseLayoutJson(locateQuranAsset(assetName).readText())
+      for (pageNum in listOf(1, 2, 597, 598, 599, 604)) {
+        val qulLines = pages[pageNum]!!
+        val ayahLines = qulLines.filter { it.type == "ayah" }
+        val firstId = ayahLines.minOf { it.first!! }
+        val lastId = ayahLines.maxOf { it.last!! }
+
+        // Split words between simulated page N-1 response and page N response (with non-matching API IDs to exercise sequential mapping)
+        val allSimulatedWords = (firstId..lastId).mapIndexed { idx, qulIdx ->
+          WordDto(
+            id = 100_000 + idx * 7, // intentionally non-sequential API DB ID
+            position = idx + 1,
+            char_type_name = if (qulIdx == lastId) "end" else "word",
+            page_number = pageNum,
+            line_number = 1, // ignored when QUL layout is authoritative
+            code_v2 = "g$qulIdx",
+            text_uthmani = "w$qulIdx",
+          )
+        }
+        val splitPoint = (allSimulatedWords.size / 4).coerceAtLeast(1)
+        val prevPageResp = VersesByPageResponse(
+          verses = listOf(
+            VerseDto(
+              id = 6000,
+              verse_key = "94:3",
+              page_number = (pageNum - 1).coerceAtLeast(1),
+              juz_number = 30,
+              hizb_number = 60,
+              words = allSimulatedWords.take(splitPoint),
+            ),
+          ),
+        )
+        val currPageResp = VersesByPageResponse(
+          verses = listOf(
+            VerseDto(
+              id = 6001,
+              verse_key = "95:1",
+              page_number = pageNum,
+              juz_number = 30,
+              hizb_number = 60,
+              words = allSimulatedWords.drop(splitPoint),
+            ),
+          ),
+        )
+
+        val built = MushafPageBuilder.buildPageFromQulLayout(
+          pageNumber = pageNum,
+          qulLines = qulLines,
+          versesResponses = listOf(prevPageResp, currPageResp),
+          chaptersById = surahs,
+          basmalahTokens = basmalahTokens,
+        )
+
+        assertEquals(qulLines.size, built.lines.size)
+        for (i in qulLines.indices) {
+          val qLine = qulLines[i]
+          val mLine = built.lines[i]
+          when (qLine.type) {
+            "surah_name" -> assertTrue(mLine is MushafLine.SurahHeaderLine)
+            "basmallah" -> assertTrue(mLine is MushafLine.BasmalahLine)
+            "ayah" -> {
+              assertTrue("Expected AyahWordsLine at $assetName p$pageNum L${qLine.line}", mLine is MushafLine.AyahWordsLine)
+              val ayahLine = mLine as MushafLine.AyahWordsLine
+              assertEquals(qLine.centered, ayahLine.isCentered)
+              assertEquals("g${qLine.first}", ayahLine.words.first().codeV2)
+              assertEquals("g${qLine.last}", ayahLine.words.last().codeV2)
+            }
+          }
+        }
+      }
+    }
+
+    // Verify centered=1 vs centered=0 propagation on page 604
+    val p604V2 = QulPageLayoutLoader.parseLayoutJson(locateQuranAsset("layout_madinah_v2.json").readText())[604]!!
+    assertTrue(p604V2.first { it.line == 4 }.centered)
+    assertFalse(p604V2.first { it.line == 3 }.centered)
+  }
+
+  @Test
+  fun `buildPageFromQulLayout emits EmptyLine when page words are missing instead of guessing`() {
+    val qulLines = listOf(
+      QulLayoutLine(line = 1, type = "surah_name", centered = true, surah = 112),
+      QulLayoutLine(line = 2, type = "ayah", centered = false, first = 1, last = 5),
+    )
+    val surahs = mapOf(112 to SurahMeta(112, "الإخلاص", 22, 4, true, 604, 604, true))
+    val emptyResp = VersesByPageResponse(verses = emptyList())
+
+    val built = MushafPageBuilder.buildPageFromQulLayout(
+      pageNumber = 604,
+      qulLines = qulLines,
+      versesResponses = listOf(emptyResp),
+      chaptersById = surahs,
+      basmalahTokens = emptyList(),
+    )
+
+    assertEquals(2, built.lines.size)
+    assertTrue(built.lines[0] is MushafLine.SurahHeaderLine)
+    assertTrue(built.lines[1] is MushafLine.EmptyLine)
+  }
+
+  @Test
+  fun `buildPage legacy fallback preserves 15 lines and surah header plus basmalah slots`() {
     val surahs = mapOf(
       1 to SurahMeta(1, "S1", 5, 7, false, 1, 1, true),
       2 to SurahMeta(2, "S2", 87, 286, true, 2, 49, false),

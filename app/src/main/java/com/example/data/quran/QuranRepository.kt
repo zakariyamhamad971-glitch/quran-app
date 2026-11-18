@@ -35,8 +35,16 @@ class QuranRepository(
   @Volatile
   private var cachedAssetHashes: List<AssetHashStatus>? = null
 
+  companion object {
+    const val LAYOUT_CACHE_VERSION = 2
+  }
+
   // Compute each page layout once and keep up to 10 pages (covering +-2 prefetch + 8 bitmap pages)
   private val pageMemoryCache = LruCache<String, MushafPageData>(10)
+
+  fun clearInMemoryPageCache() {
+    pageMemoryCache.evictAll()
+  }
 
   suspend fun getSurahs(): Result<List<SurahMeta>> = runCatching {
     cachedSurahs?.let { return@runCatching it }
@@ -160,11 +168,24 @@ class QuranRepository(
     }
   }
 
+  private suspend fun loadRawPageVerses(pageNumber: Int): VersesByPageResponse {
+    val pageBytes = diskCache.readVerifiedBytes("api/page_$pageNumber.json") ?: run {
+      val resp = QuranApiClient.quranComApi.getVersesByPageRaw(page = pageNumber)
+      if (!resp.isSuccessful) error("فشل تحميل الصفحة $pageNumber (${resp.code()})")
+      val body = resp.body()?.bytes() ?: error("بيانات الصفحة $pageNumber فارغة")
+      diskCache.writeVerifiedBytes("api/page_$pageNumber.json", body)
+      body
+    }
+    return pageAdapter.fromJson(pageBytes.decodeToString())
+      ?: error("تعذر قراءة الصفحة $pageNumber")
+  }
+
   suspend fun getPage(
     pageNumber: Int,
-    includeTajweedFallback: Boolean,
+    edition: MushafEdition = MushafEdition.MADINAH_1421,
+    includeTajweedFallback: Boolean = false,
   ): Result<MushafPageData> = runCatching {
-    val cacheKey = "${pageNumber}_$includeTajweedFallback"
+    val cacheKey = "v${LAYOUT_CACHE_VERSION}_${edition.name}_${pageNumber}_$includeTajweedFallback"
     pageMemoryCache.get(cacheKey)?.let { return@runCatching it }
 
     withContext(Dispatchers.IO) {
@@ -172,16 +193,35 @@ class QuranRepository(
 
       val surahs = getSurahs().getOrThrow().associateBy { it.id }
       val basmalahWords = getBasmalahWords()
+      val qulLines = QulPageLayoutLoader.getPageLines(context, edition, pageNumber)
 
-      val pageBytes = diskCache.readVerifiedBytes("api/page_$pageNumber.json") ?: run {
-        val resp = QuranApiClient.quranComApi.getVersesByPageRaw(page = pageNumber)
-        if (!resp.isSuccessful) error("فشل تحميل الصفحة $pageNumber (${resp.code()})")
-        val body = resp.body()?.bytes() ?: error("بيانات الصفحة $pageNumber فارغة")
-        diskCache.writeVerifiedBytes("api/page_$pageNumber.json", body)
-        body
+      val currentVersesResp = loadRawPageVerses(pageNumber)
+      val responses = mutableListOf(currentVersesResp)
+
+      val expectedCount = qulLines
+        .filter { it.type == "ayah" && it.first != null && it.last != null }
+        .let { ayahLines ->
+          if (ayahLines.isEmpty()) 0
+          else (ayahLines.maxOf { it.last!! } - ayahLines.minOf { it.first!! } + 1)
+        }
+
+      if (expectedCount > 0 &&
+        MushafPageBuilder.countExpandedWordsForPage(pageNumber, responses) < expectedCount &&
+        pageNumber > 1
+      ) {
+        runCatching { loadRawPageVerses(pageNumber - 1) }.getOrNull()?.let { prevResp ->
+          responses.add(0, prevResp)
+        }
       }
-      val versesResp = pageAdapter.fromJson(pageBytes.decodeToString())
-        ?: error("تعذر قراءة الصفحة $pageNumber")
+
+      if (expectedCount > 0 &&
+        MushafPageBuilder.countExpandedWordsForPage(pageNumber, responses) < expectedCount &&
+        pageNumber < 604
+      ) {
+        runCatching { loadRawPageVerses(pageNumber + 1) }.getOrNull()?.let { nextResp ->
+          responses.add(nextResp)
+        }
+      }
 
       val tajweedTexts = if (includeTajweedFallback) {
         fetchTajweedPageTexts(pageNumber)
@@ -189,13 +229,24 @@ class QuranRepository(
         emptyMap()
       }
 
-      val built = MushafPageBuilder.buildPage(
-        pageNumber = pageNumber,
-        versesResponse = versesResp,
-        chaptersById = surahs,
-        basmalahTokens = basmalahWords,
-        tajweedAyahTexts = tajweedTexts,
-      )
+      val built = if (qulLines.isNotEmpty()) {
+        MushafPageBuilder.buildPageFromQulLayout(
+          pageNumber = pageNumber,
+          qulLines = qulLines,
+          versesResponses = responses,
+          chaptersById = surahs,
+          basmalahTokens = basmalahWords,
+          tajweedAyahTexts = tajweedTexts,
+        )
+      } else {
+        MushafPageBuilder.buildPage(
+          pageNumber = pageNumber,
+          versesResponse = currentVersesResp,
+          chaptersById = surahs,
+          basmalahTokens = basmalahWords,
+          tajweedAyahTexts = tajweedTexts,
+        )
+      }
       pageMemoryCache.put(cacheKey, built)
       built
     }

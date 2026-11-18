@@ -151,6 +151,7 @@ sealed interface MushafLine {
   data class AyahWordsLine(
     override val lineNumber: Int,
     val words: List<MushafWord>,
+    val isCentered: Boolean = false,
   ) : MushafLine
 
   @Immutable

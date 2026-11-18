@@ -61,6 +61,7 @@ data class PageBitmapKey(
   val edition: MushafEdition,
   val effectiveDark: Boolean,
   val isTwoPageMode: Boolean,
+  val layoutVersion: Int = com.example.data.quran.QuranRepository.LAYOUT_CACHE_VERSION,
 )
 
 @Immutable
@@ -1056,11 +1057,10 @@ class MushafPageBitmapRenderer(
     val gaps = IntArray((n - 1).coerceAtLeast(0))
 
     if (isFramedIntroPage) {
-      // Framed pages 1 & 2 remain unchanged
       val defaultGapPx = (fontSizePx * 0.20f).roundToInt().coerceAtLeast(3)
       val leftoverWidth = (widthPx.toFloat() - sumWordWidths).coerceAtLeast(0f)
-      justifyEdgeToEdge = n >= 4 || (n >= 2 && sumWordWidths >= widthPx.toFloat() * 0.45f)
-      if (justifyEdgeToEdge && n > 1 && widthPx.toFloat() >= sumWordWidths) {
+      justifyEdgeToEdge = !line.isCentered && n >= 2
+      if (justifyEdgeToEdge && widthPx.toFloat() >= sumWordWidths) {
         val totalGap = leftoverWidth.toDouble()
         var prevCum = 0
         for (i in 0 until n - 1) {
@@ -1068,22 +1068,24 @@ class MushafPageBitmapRenderer(
           gaps[i] = (cum - prevCum).coerceAtLeast(0)
           prevCum = cum
         }
-      } else {
+      } else if (n > 1) {
+        val maxNaturalGap = (leftoverWidth / (n - 1)).toInt().coerceAtLeast(1)
+        val clampedGap = defaultGapPx.coerceAtMost(maxNaturalGap)
         for (i in 0 until n - 1) {
-          gaps[i] = defaultGapPx
+          gaps[i] = clampedGap
         }
       }
     } else if (!isTwoPageMode) {
       // Single-page mode: strictly uniform font size for ALL lines of the whole page (no line shrinks)
-      // Shorter lines distributed evenly across full width (Justify edge-to-edge)
+      // QUL centered=0 lines distributed evenly across full width; centered=1 lines centered with natural gap
       fittedSp = uniformPageSp
       val measured = measureLineWidthsAt(fittedSp)
       sumWordWidths = measured.first
       fontSizePx = measured.second
 
-      justifyEdgeToEdge = n >= 2
-      if (justifyEdgeToEdge && n > 1) {
-        val leftoverWidth = (effectiveWidthF - sumWordWidths).coerceAtLeast(0f)
+      val leftoverWidth = (effectiveWidthF - sumWordWidths).coerceAtLeast(0f)
+      justifyEdgeToEdge = !line.isCentered && n >= 2
+      if (justifyEdgeToEdge) {
         val totalGap = leftoverWidth.toDouble()
         var prevCum = 0
         for (i in 0 until n - 1) {
@@ -1091,14 +1093,16 @@ class MushafPageBitmapRenderer(
           gaps[i] = (cum - prevCum).coerceAtLeast(0)
           prevCum = cum
         }
-      } else {
+      } else if (n > 1) {
         val defaultGapPx = (fontSizePx * 0.20f).roundToInt().coerceAtLeast(3)
+        val maxNaturalGap = (leftoverWidth / (n - 1)).toInt().coerceAtLeast(1)
+        val clampedGap = defaultGapPx.coerceAtMost(maxNaturalGap)
         for (i in 0 until n - 1) {
-          gaps[i] = defaultGapPx
+          gaps[i] = clampedGap
         }
       }
     } else {
-      // Two-page mode: enlarged font with outlier shrink up to 10% and edge-to-edge justification
+      // Two-page mode: enlarged font with outlier shrink up to 10% and QUL centered/justify handling
       val gapSlots = (n - 1).coerceAtLeast(0)
       val minTouchGapAtUniform = (fontSizePx * 0.025f).coerceAtLeast(1.5f)
       val minLineWidthAtUniform = sumWordWidths + minTouchGapAtUniform * gapSlots
@@ -1124,20 +1128,27 @@ class MushafPageBitmapRenderer(
         fontSizePx = measured.second
 
         val leftover = (effectiveWidthF - sumWordWidths).coerceAtLeast(0f)
-        justifyEdgeToEdge = n > 1
-        if (n > 1) {
+        justifyEdgeToEdge = !line.isCentered && n >= 2
+        if (justifyEdgeToEdge) {
           val totalGap = leftover.toDouble()
           var prevCum = 0
           for (i in 0 until n - 1) {
             val cum = ((totalGap * (i + 1)) / (n - 1)).roundToInt()
             gaps[i] = (cum - prevCum).coerceAtLeast(1)
             prevCum = cum
+          }
+        } else if (n > 1) {
+          val naturalGapPx = (fontSizePx * 0.16f).roundToInt().coerceAtLeast(2)
+          val maxNaturalGap = (leftover / (n - 1)).toInt().coerceAtLeast(1)
+          val clampedGap = naturalGapPx.coerceAtMost(maxNaturalGap)
+          for (i in 0 until n - 1) {
+            gaps[i] = clampedGap
           }
         }
       } else {
-        justifyEdgeToEdge = n >= 2
-        if (justifyEdgeToEdge && n > 1) {
-          val leftover = (effectiveWidthF - sumWordWidths).coerceAtLeast(0f)
+        val leftover = (effectiveWidthF - sumWordWidths).coerceAtLeast(0f)
+        justifyEdgeToEdge = !line.isCentered && n >= 2
+        if (justifyEdgeToEdge) {
           val totalGap = leftover.toDouble()
           var prevCum = 0
           for (i in 0 until n - 1) {
@@ -1145,10 +1156,12 @@ class MushafPageBitmapRenderer(
             gaps[i] = (cum - prevCum).coerceAtLeast(1)
             prevCum = cum
           }
-        } else {
+        } else if (n > 1) {
           val naturalGapPx = (fontSizePx * 0.16f).roundToInt().coerceAtLeast(3)
+          val maxNaturalGap = (leftover / (n - 1)).toInt().coerceAtLeast(1)
+          val clampedGap = naturalGapPx.coerceAtMost(maxNaturalGap)
           for (i in 0 until n - 1) {
-            gaps[i] = naturalGapPx
+            gaps[i] = clampedGap
           }
         }
       }

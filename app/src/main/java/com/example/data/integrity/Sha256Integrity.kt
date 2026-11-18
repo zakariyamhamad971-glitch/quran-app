@@ -39,6 +39,36 @@ object Sha256Integrity {
 class VerifiedDiskCache(private val context: Context) {
   private val cacheRoot = File(context.filesDir, "qabasat_verified_cache").apply { mkdirs() }
 
+  init {
+    migrateLegacyCacheDirIfNeeded()
+  }
+
+  private fun migrateLegacyCacheDirIfNeeded() {
+    runCatching {
+      val legacyRoot = File(context.cacheDir, "qabasat_verified_cache")
+      if (!legacyRoot.exists() || !legacyRoot.isDirectory) return
+      legacyRoot.walkBottomUp().forEach { src ->
+        if (src == legacyRoot) return@forEach
+        val rel = legacyRoot.toPath().relativize(src.toPath()).toString()
+        val dst = File(cacheRoot, rel)
+        if (src.isDirectory) {
+          dst.mkdirs()
+        } else if (src.isFile) {
+          dst.parentFile?.mkdirs()
+          if (!dst.exists()) {
+            if (!src.renameTo(dst)) {
+              src.copyTo(dst, overwrite = false)
+              src.delete()
+            }
+          } else {
+            src.delete()
+          }
+        }
+      }
+      legacyRoot.deleteRecursively()
+    }
+  }
+
   suspend fun readVerifiedBytes(relativePath: String): ByteArray? = withContext(Dispatchers.IO) {
     val file = File(cacheRoot, relativePath)
     val hashFile = File(cacheRoot, "$relativePath.sha256")

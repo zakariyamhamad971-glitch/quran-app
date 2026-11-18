@@ -41,6 +41,7 @@ data class PersistedReaderState(
   val playbackSpeed: Float = 1.0f,
   val downloadedMushafIds: Set<String> = emptySet(),
   val activeMushafId: String = "madinah_1421",
+  val layoutCacheVersion: Int = 1,
 )
 
 class ReaderPreferences(private val context: Context) {
@@ -57,6 +58,7 @@ class ReaderPreferences(private val context: Context) {
     val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
     val DOWNLOADED_MUSHAF_IDS = stringSetPreferencesKey("downloaded_mushaf_ids")
     val ACTIVE_MUSHAF_ID = stringPreferencesKey("active_mushaf_id")
+    val LAYOUT_CACHE_VERSION = intPreferencesKey("layout_cache_version")
   }
 
   val stateFlow: Flow<PersistedReaderState> = context.dataStore.data.map { prefs ->
@@ -95,6 +97,7 @@ class ReaderPreferences(private val context: Context) {
       playbackSpeed = (prefs[Keys.PLAYBACK_SPEED] ?: 1.0f).coerceIn(0.75f, 1.25f),
       downloadedMushafIds = downloadedIds,
       activeMushafId = activeId,
+      layoutCacheVersion = prefs[Keys.LAYOUT_CACHE_VERSION] ?: 1,
     )
   }
 
@@ -188,5 +191,9 @@ class ReaderPreferences(private val context: Context) {
       positionMs?.let { prefs[Keys.LAST_POSITION_MS] = it.coerceAtLeast(0L) }
       speed?.let { prefs[Keys.PLAYBACK_SPEED] = it.coerceIn(0.75f, 1.25f) }
     }
+  }
+
+  suspend fun setLayoutCacheVersion(version: Int) {
+    context.dataStore.edit { it[Keys.LAYOUT_CACHE_VERSION] = version }
   }
 }
