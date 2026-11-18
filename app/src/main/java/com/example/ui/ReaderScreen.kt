@@ -672,6 +672,7 @@ private fun ReaderSettingsHost(
   val downloadedIds by viewModel.downloadedMushafIdsState.collectAsStateWithLifecycle()
   val activeId by viewModel.activeMushafIdState.collectAsStateWithLifecycle()
   val downloadStates by viewModel.mushafDownloadManager.states.collectAsStateWithLifecycle()
+  val isBetaChannelEnabled by viewModel.betaChannelEnabledState.collectAsStateWithLifecycle()
 
   SettingsSheet(
     isDarkMode = isDarkMode,
@@ -692,6 +693,8 @@ private fun ReaderSettingsHost(
     onDismiss = onDismiss,
     isCheckingUpdate = updateState is AppUpdateState.Checking,
     onCheckForUpdate = { viewModel.checkForUpdates() },
+    isBetaChannelEnabled = isBetaChannelEnabled,
+    onToggleBetaChannel = { enabled -> viewModel.setBetaChannelEnabled(enabled) },
   )
 }
 

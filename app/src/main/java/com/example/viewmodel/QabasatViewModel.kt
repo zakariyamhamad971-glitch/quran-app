@@ -163,6 +163,11 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     .distinctUntilChanged()
     .stateIn(viewModelScope, SharingStarted.Eagerly, "madinah_1421")
 
+  val betaChannelEnabledState: StateFlow<Boolean> = preferences.stateFlow
+    .map { it.betaChannelEnabled }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
   val setupState: StateFlow<MushafSetupState> = setupManager.state
 
   private val _uiState = MutableStateFlow(ReaderUiState())
@@ -401,7 +406,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     ensurePlaybackConnected()
     viewModelScope.launch { audioCacheManager.refreshDownloadedKeys() }
     loadReciters(saved)
-    appUpdateManager.checkForUpdatesInBackground()
+    appUpdateManager.checkForUpdatesInBackground(saved.betaChannelEnabled)
   }
 
   fun startMushafDownload(item: MushafItem) {
@@ -900,8 +905,14 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
+  fun setBetaChannelEnabled(enabled: Boolean) {
+    viewModelScope.launch {
+      preferences.setBetaChannelEnabled(enabled)
+    }
+  }
+
   fun checkForUpdates() {
-    appUpdateManager.checkForUpdates()
+    appUpdateManager.checkForUpdates(betaChannelEnabledState.value)
   }
 
   fun downloadUpdate(update: AppUpdateState.UpdateAvailable) {

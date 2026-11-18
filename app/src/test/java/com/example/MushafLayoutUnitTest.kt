@@ -314,6 +314,61 @@ class MushafLayoutUnitTest {
   }
 
   @Test
+  fun `surah header glyph rect fits strictly inside slot bounds on pages 1 2 595 596 604 without clipping neighbors`() {
+    val scenarios = listOf(
+      Triple(342f, 44f, "portrait phone 15-line"),
+      Triple(560f, 38f, "landscape tablet two-page 15-line"),
+      Triple(620f, 46f, "landscape tablet single-page 15-line"),
+      Triple(560f, 82f, "framed intro p1-p2"),
+    )
+    for ((slotW, slotH, label) in scenarios) {
+      val slotTop = 120f
+      val rect = com.example.ui.components.SurahHeaderOrnamentRenderer.computeHeaderGlyphBounds(
+        left = 18f,
+        top = slotTop,
+        width = slotW,
+        height = slotH,
+        vertPadPx = 3f,
+      )
+      assertTrue("$label top overflow: ${rect.top} < $slotTop", rect.top >= slotTop)
+      assertTrue("$label bottom overflow: ${rect.bottom} > ${slotTop + slotH}", rect.bottom <= slotTop + slotH)
+      assertTrue("$label width overflow: ${rect.width} > $slotW", rect.width <= slotW + 0.01f)
+      val aspect = rect.width / rect.height
+      assertEquals(
+        "$label distorted aspect ratio",
+        com.example.ui.components.SurahHeaderOrnamentRenderer.HEADER_GLYPH_ASPECT_RATIO,
+        aspect,
+        0.01f,
+      )
+    }
+
+    // Verify QUL surah_name line indices on p1, p2, p595, p596, p604 never clash across both editions
+    for (assetName in listOf("layout_madinah_v2.json", "layout_tajweed_v4.json")) {
+      val pages = QulPageLayoutLoader.parseLayoutJson(locateQuranAsset(assetName).readText())
+      for (pageNum in listOf(1, 2, 595, 596, 604)) {
+        val lines = pages[pageNum]!!
+        val lineCount = lines.size.toFloat()
+        val slotH = 1200f / lineCount
+        val slotW = 700f
+        lines.forEachIndexed { idx, qLine ->
+          if (qLine.type == "surah_name") {
+            val sTop = idx * slotH
+            val rect = com.example.ui.components.SurahHeaderOrnamentRenderer.computeHeaderGlyphBounds(
+              left = 20f,
+              top = sTop,
+              width = slotW,
+              height = slotH,
+              vertPadPx = 3f,
+            )
+            assertTrue("$assetName p$pageNum L${qLine.line} bleeds above slot", rect.top >= sTop)
+            assertTrue("$assetName p$pageNum L${qLine.line} bleeds below slot", rect.bottom <= sTop + slotH)
+          }
+        }
+      }
+    }
+  }
+
+  @Test
   fun `buildPageFromQulLayout resolves boundary pages 597 598 604 across both editions`() {
     val basmalahTokens = listOf(
       WordDto(1, 1, "word", 1, 2, "b1", "بسم"),
@@ -608,5 +663,76 @@ class MushafLayoutUnitTest {
         list,
       ),
     )
+  }
+
+  @Test
+  fun `beta channel preference defaults to false`() {
+    val defaultState = com.example.data.prefs.PersistedReaderState()
+    assertFalse(defaultState.betaChannelEnabled)
+  }
+
+  @Test
+  fun `pickHigherBuildCandidate selects higher build number between latest and beta`() {
+    val latest50 = com.example.update.AppUpdateManager.ReleaseCandidate(
+      remoteBuildNumber = 50,
+      apkUrl = "https://example.com/latest.apk",
+      fileName = "quran-app.apk",
+    )
+    val beta55 = com.example.update.AppUpdateManager.ReleaseCandidate(
+      remoteBuildNumber = 55,
+      apkUrl = "https://example.com/beta.apk",
+      fileName = "quran-app.apk",
+    )
+    val beta48 = com.example.update.AppUpdateManager.ReleaseCandidate(
+      remoteBuildNumber = 48,
+      apkUrl = "https://example.com/beta48.apk",
+      fileName = "quran-app.apk",
+    )
+
+    assertEquals(
+      beta55,
+      com.example.update.AppUpdateManager.pickHigherBuildCandidate(latest = latest50, beta = beta55),
+    )
+    assertEquals(
+      latest50,
+      com.example.update.AppUpdateManager.pickHigherBuildCandidate(latest = latest50, beta = beta48),
+    )
+    assertEquals(
+      latest50,
+      com.example.update.AppUpdateManager.pickHigherBuildCandidate(latest = latest50, beta = null),
+    )
+    assertEquals(
+      beta55,
+      com.example.update.AppUpdateManager.pickHigherBuildCandidate(latest = null, beta = beta55),
+    )
+    assertEquals(
+      null,
+      com.example.update.AppUpdateManager.pickHigherBuildCandidate(latest = null, beta = null),
+    )
+  }
+
+  @Test
+  fun `evaluateCandidateAgainstBuild compares candidate build number with current BuildConfig BUILD_NUMBER`() {
+    val currentBuild = BuildConfig.BUILD_NUMBER
+    val newer = com.example.update.AppUpdateManager.ReleaseCandidate(
+      remoteBuildNumber = currentBuild + 3,
+      apkUrl = "https://example.com/new.apk",
+      fileName = "quran-app.apk",
+    )
+    val equal = com.example.update.AppUpdateManager.ReleaseCandidate(
+      remoteBuildNumber = currentBuild,
+      apkUrl = "https://example.com/equal.apk",
+      fileName = "quran-app.apk",
+    )
+
+    val available = com.example.update.AppUpdateManager.evaluateCandidateAgainstBuild(newer, currentBuild)
+    assertTrue(available is com.example.update.AppUpdateState.UpdateAvailable)
+    assertEquals(
+      currentBuild + 3,
+      (available as com.example.update.AppUpdateState.UpdateAvailable).remoteBuildNumber,
+    )
+
+    val upToDate = com.example.update.AppUpdateManager.evaluateCandidateAgainstBuild(equal, currentBuild)
+    assertEquals(com.example.update.AppUpdateState.UpToDate, upToDate)
   }
 }

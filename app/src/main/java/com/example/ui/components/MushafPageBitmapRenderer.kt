@@ -406,78 +406,97 @@ class MushafPageBitmapRenderer(
       canvas.drawText(drawTitle, titleRight - drawTitleW, titleBaseline, titlePaint)
     }
 
-    // 4. Bottom Footer Row (centered Page Number Pill + RTL-left long-press hint; RTL-right slot kept clear for interactive Bookmark button)
+    // 4. Compact Bottom Footer Row (~0.5 cm total bottom band: scaled Page Number Pill + RTL-left hint + clear RTL-right Bookmark corner)
     val footerBadgePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
       typeface = amiriBold
-      textSize = sp(13f)
+      textSize = minOf(sp(8.2f), dp(10.5f))
       color = headerTintInt
     }
     val hintPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
       typeface = ibmMedium
-      textSize = sp(10f)
+      textSize = minOf(sp(6.8f), dp(8.5f))
       color = withAlpha(mutedInkInt, 0.85f)
     }
+    val pageNumText = toArabicIndicDigits(pageData.pageNumber)
+    val pageNumBounds = Rect()
+    footerBadgePaint.getTextBounds(pageNumText, 0, pageNumText.length, pageNumBounds)
     val footerBadgeFm = footerBadgePaint.fontMetrics
-    val footerHeight = maxOf(dp(30f), (footerBadgeFm.descent - footerBadgeFm.ascent) + dp(6f))
+    val pageNumW = maxOf(footerBadgePaint.measureText(pageNumText), pageNumBounds.width().toFloat())
+    val pageNumInkH = if (pageNumBounds.height() > 0) {
+      pageNumBounds.height().toFloat()
+    } else {
+      (footerBadgeFm.descent - footerBadgeFm.ascent) * 0.65f
+    }
+    val badgePadH = dp(8.5f)
+    val badgePadV = dp(3.5f)
+    val badgeW = pageNumW + badgePadH * 2f
+    val badgeH = maxOf(dp(13f), pageNumInkH + badgePadV * 2f)
+
+    val footerHeight = maxOf(dp(18f), badgeH + dp(2f))
     val footerTop = contentBottom - footerHeight
 
-    val pageNumText = toArabicIndicDigits(pageData.pageNumber)
-    val pageNumW = footerBadgePaint.measureText(pageNumText)
-    val pageNumH = footerBadgeFm.descent - footerBadgeFm.ascent
-    val badgePadH = dp(14f)
-    val badgePadV = dp(2f)
-    val badgeW = pageNumW + badgePadH * 2f
-    val badgeH = pageNumH + badgePadV * 2f
     val badgeLeft = contentLeft + (contentWidth - badgeW) * 0.5f
     val badgeTop = footerTop + (footerHeight - badgeH) * 0.5f
+    val badgeCorner = dp(8f)
     fillPaint.color = withAlpha(goldInt, if (effectiveDark) 0.18f else 0.14f)
     canvas.drawRoundRect(
       RectF(badgeLeft, badgeTop, badgeLeft + badgeW, badgeTop + badgeH),
-      dp(16f),
-      dp(16f),
+      badgeCorner,
+      badgeCorner,
       fillPaint,
     )
     strokePaint.color = withAlpha(goldInt, 0.55f)
-    strokePaint.strokeWidth = dp(0.8f)
+    strokePaint.strokeWidth = dp(0.75f)
     canvas.drawRoundRect(
       RectF(badgeLeft, badgeTop, badgeLeft + badgeW, badgeTop + badgeH),
-      dp(16f),
-      dp(16f),
+      badgeCorner,
+      badgeCorner,
       strokePaint,
     )
-    canvas.drawText(
-      pageNumText,
-      badgeLeft + badgePadH,
-      badgeTop + badgePadV - footerBadgeFm.ascent,
-      footerBadgePaint,
-    )
+    val badgeTextX = if (pageNumBounds.width() > 0) {
+      badgeLeft + badgeW * 0.5f - (pageNumBounds.left + pageNumBounds.right) * 0.5f
+    } else {
+      badgeLeft + badgePadH
+    }
+    val badgeTextY = if (pageNumBounds.height() > 0) {
+      badgeTop + badgeH * 0.5f - (pageNumBounds.top + pageNumBounds.bottom) * 0.5f
+    } else {
+      badgeTop + badgeH * 0.5f - (footerBadgeFm.ascent + footerBadgeFm.descent) * 0.5f
+    }
+    canvas.drawText(pageNumText, badgeTextX, badgeTextY, footerBadgePaint)
 
-    // Footer hint on the left side: strictly guarded to maintain safe gap and never overlap the centered badge
-    val safeGapFromBadge = dp(16f)
+    // Footer hint on the left side: compact and strictly guarded with safe gap from the centered badge
+    val safeGapFromBadge = dp(12f)
     val maxHintW = (badgeLeft - contentLeft - safeGapFromBadge).coerceAtLeast(0f)
-    if (maxHintW > dp(40f)) {
+    if (maxHintW > dp(34f)) {
       var hintText = "اضغط مطولاً على الآية للتفسير"
-      hintPaint.textSize = sp(10f)
+      hintPaint.textSize = minOf(sp(6.8f), dp(8.5f))
       if (hintPaint.measureText(hintText) > maxHintW) {
-        hintPaint.textSize = sp(9f)
+        hintPaint.textSize = minOf(sp(6.2f), dp(7.6f))
       }
       if (hintPaint.measureText(hintText) > maxHintW) {
         hintText = "اضغط مطولاً للتفسير"
-        hintPaint.textSize = sp(9f)
+        hintPaint.textSize = minOf(sp(6.2f), dp(7.6f))
       }
       if (hintPaint.measureText(hintText) > maxHintW) {
-        hintPaint.textSize = sp(8f)
+        hintPaint.textSize = minOf(sp(5.6f), dp(6.8f))
       }
       if (hintPaint.measureText(hintText) <= maxHintW) {
-        val hintFm = hintPaint.fontMetrics
-        val hintBaseline = footerTop + (footerHeight - (hintFm.descent - hintFm.ascent)) * 0.5f - hintFm.ascent
+        val hintBounds = Rect()
+        hintPaint.getTextBounds(hintText, 0, hintText.length, hintBounds)
+        val hintBaseline = if (hintBounds.height() > 0) {
+          footerTop + footerHeight * 0.5f - (hintBounds.top + hintBounds.bottom) * 0.5f
+        } else {
+          val hintFm = hintPaint.fontMetrics
+          footerTop + footerHeight * 0.5f - (hintFm.ascent + hintFm.descent) * 0.5f
+        }
         canvas.drawText(hintText, contentLeft, hintBaseline, hintPaint)
       }
     }
 
-    // 5. Mushaf 15-Line (or 7-line for p1..p2) Body Area
+    // 5. Mushaf 15-Line (or 8-line for p1..p2) Body Area — extends down cleanly to the slim footer bar
     val bodyTop = contentTop + topHeaderHeight + dp(1f)
-    val bodyBottom = footerTop - dp(1f)
+    val bodyBottom = footerTop - dp(2f)
     val bodyHeight = (bodyBottom - bodyTop).coerceAtLeast(1f)
     val bodyLeft = contentLeft
     val bodyWidthInt = contentWidth.roundToInt().coerceAtLeast(1)
@@ -667,7 +686,7 @@ class MushafPageBitmapRenderer(
       val w = paint.measureText(glyphs)
       val fm = paint.fontMetrics
       val h = fm.descent - fm.ascent
-      return w <= widthPx.toFloat() && h <= slotHeightPx * 1.05f
+      return w <= widthPx.toFloat() && h <= slotHeightPx * 0.96f
     }
 
     val resolvedSp = if (fits(hi)) {

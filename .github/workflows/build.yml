@@ -1,10 +1,15 @@
 name: Build APK
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - 'signing/**'
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release channel'
+        required: true
+        type: choice
+        options:
+          - beta
+          - stable
+        default: beta
 permissions:
   contents: write
 jobs:
@@ -34,8 +39,14 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANNEL: ${{ inputs.channel || 'beta' }}
         run: |
           APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
           cp "$APK" quran-app.apk
-          gh release delete latest --yes --cleanup-tag || true
-          gh release create latest quran-app.apk --title "Latest build" --notes "Build ${{ github.run_number }}" --latest
+          if [ "$CHANNEL" = "stable" ]; then
+            gh release delete latest --yes --cleanup-tag || true
+            gh release create latest quran-app.apk --title "Latest build" --notes "Build ${{ github.run_number }}" --latest
+          else
+            gh release delete beta --yes --cleanup-tag || true
+            gh release create beta quran-app.apk --title "Beta build" --notes "Build ${{ github.run_number }}" --prerelease
+          fi

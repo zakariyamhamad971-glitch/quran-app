@@ -51,10 +51,87 @@ class AppUpdateManager(
   private val context: Context,
   private val scope: CoroutineScope,
 ) {
+  internal data class ReleaseCandidate(
+    val remoteBuildNumber: Int,
+    val apkUrl: String?,
+    val fileName: String,
+  )
+
+  internal sealed interface ReleaseFetchResult {
+    data class Found(val candidate: ReleaseCandidate) : ReleaseFetchResult
+    data object NotFound : ReleaseFetchResult
+    data class Failed(val message: String) : ReleaseFetchResult
+  }
+
   companion object {
-    private const val RELEASE_API_URL =
+    private const val LATEST_RELEASE_API_URL =
       "https://api.github.com/repos/zakariyamhamad971-glitch/quran-app/releases/tags/latest"
+    private const val BETA_RELEASE_API_URL =
+      "https://api.github.com/repos/zakariyamhamad971-glitch/quran-app/releases/tags/beta"
     private val BUILD_NUMBER_REGEX = Regex("""Build\s+(\d+)""", RegexOption.IGNORE_CASE)
+
+    internal fun parseReleaseCandidateJson(rawJson: String): ReleaseCandidate? {
+      val json = JSONObject(rawJson)
+      val bodyText = json.optString("body", "")
+      val match = BUILD_NUMBER_REGEX.find(bodyText) ?: return null
+      val remoteBuild = match.groupValues.getOrNull(1)?.toIntOrNull() ?: return null
+
+      val assetsArray = json.optJSONArray("assets")
+      var apkUrl: String? = null
+      var apkName = "qabasat-update.apk"
+      if (assetsArray != null) {
+        for (i in 0 until assetsArray.length()) {
+          val asset = assetsArray.optJSONObject(i) ?: continue
+          val name = asset.optString("name", "")
+          val url = asset.optString("browser_download_url", "")
+          val contentType = asset.optString("content_type", "")
+          val isApk = name.endsWith(".apk", ignoreCase = true) ||
+            url.endsWith(".apk", ignoreCase = true) ||
+            contentType.equals("application/vnd.android.package-archive", ignoreCase = true)
+          if (isApk && url.isNotBlank()) {
+            apkUrl = url
+            if (name.isNotBlank()) apkName = name
+            break
+          }
+        }
+      }
+
+      return ReleaseCandidate(
+        remoteBuildNumber = remoteBuild,
+        apkUrl = apkUrl,
+        fileName = apkName,
+      )
+    }
+
+    internal fun evaluateCandidateAgainstBuild(
+      candidate: ReleaseCandidate,
+      currentBuildNumber: Int,
+    ): AppUpdateState {
+      if (candidate.remoteBuildNumber <= currentBuildNumber) {
+        return AppUpdateState.UpToDate
+      }
+      val url = candidate.apkUrl
+      return if (url.isNullOrBlank()) {
+        AppUpdateState.Error("ملف التحديث غير متاح حاليًا")
+      } else {
+        AppUpdateState.UpdateAvailable(
+          remoteBuildNumber = candidate.remoteBuildNumber,
+          apkUrl = url,
+          fileName = candidate.fileName,
+        )
+      }
+    }
+
+    internal fun pickHigherBuildCandidate(
+      latest: ReleaseCandidate?,
+      beta: ReleaseCandidate?,
+    ): ReleaseCandidate? {
+      return when {
+        latest != null && beta != null -> if (beta.remoteBuildNumber > latest.remoteBuildNumber) beta else latest
+        latest != null -> latest
+        else -> beta
+      }
+    }
   }
 
   private val _state = MutableStateFlow<AppUpdateState>(AppUpdateState.Idle)
@@ -70,14 +147,14 @@ class AppUpdateManager(
    * Silent startup update check on a background thread.
    * Never blocks app startup and silently ignores offline / failed checks.
    */
-  fun checkForUpdatesInBackground() {
+  fun checkForUpdatesInBackground(betaChannelEnabled: Boolean = false) {
     if (hasAutoChecked) return
     hasAutoChecked = true
     if (_state.value !is AppUpdateState.Idle) return
 
     autoCheckJob = scope.launch(Dispatchers.IO) {
       if (!hasActiveNetwork()) return@launch
-      val result = fetchLatestReleaseInfo()
+      val result = fetchReleaseUpdateState(betaChannelEnabled)
       if (result is AppUpdateState.UpdateAvailable) {
         withContext(Dispatchers.Main) {
           if (_state.value is AppUpdateState.Idle) {
@@ -91,7 +168,7 @@ class AppUpdateManager(
   /**
    * User-triggered check from Settings. Shows progress, up-to-date notice, or Arabic error messages.
    */
-  fun checkForUpdates() {
+  fun checkForUpdates(betaChannelEnabled: Boolean = false) {
     if (_state.value is AppUpdateState.Checking || _state.value is AppUpdateState.Downloading) return
     autoCheckJob?.cancel()
     checkJob?.cancel()
@@ -103,75 +180,70 @@ class AppUpdateManager(
       }
 
       val result = withContext(Dispatchers.IO) {
-        fetchLatestReleaseInfo()
+        fetchReleaseUpdateState(betaChannelEnabled)
       }
       _state.value = result
     }
   }
 
-  private fun fetchLatestReleaseInfo(): AppUpdateState {
+  private fun fetchReleaseUpdateState(betaChannelEnabled: Boolean): AppUpdateState {
+    if (!betaChannelEnabled) {
+      return when (val latestRes = fetchSingleRelease(LATEST_RELEASE_API_URL)) {
+        is ReleaseFetchResult.Found -> evaluateCandidateAgainstBuild(latestRes.candidate, BuildConfig.BUILD_NUMBER)
+        ReleaseFetchResult.NotFound -> AppUpdateState.Error("تعذر التحقق من التحديث (404)")
+        is ReleaseFetchResult.Failed -> AppUpdateState.Error(latestRes.message)
+      }
+    }
+
+    val latestRes = fetchSingleRelease(LATEST_RELEASE_API_URL)
+    val betaRes = fetchSingleRelease(BETA_RELEASE_API_URL)
+
+    val latestCandidate = (latestRes as? ReleaseFetchResult.Found)?.candidate
+    val betaCandidate = (betaRes as? ReleaseFetchResult.Found)?.candidate
+    val winner = pickHigherBuildCandidate(latest = latestCandidate, beta = betaCandidate)
+
+    if (winner != null) {
+      return evaluateCandidateAgainstBuild(winner, BuildConfig.BUILD_NUMBER)
+    }
+
+    val firstError = (betaRes as? ReleaseFetchResult.Failed)?.message
+      ?: (latestRes as? ReleaseFetchResult.Failed)?.message
+    if (firstError != null) {
+      return AppUpdateState.Error(firstError)
+    }
+    return AppUpdateState.Error("تعذر التحقق من التحديث")
+  }
+
+  private fun fetchSingleRelease(url: String): ReleaseFetchResult {
     return try {
       val request = Request.Builder()
-        .url(RELEASE_API_URL)
+        .url(url)
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "Qabasat-Android")
         .build()
 
       QuranApiClient.okHttpClient.newCall(request).execute().use { response ->
+        if (response.code == 404) {
+          return ReleaseFetchResult.NotFound
+        }
         if (!response.isSuccessful) {
-          return AppUpdateState.Error("تعذر التحقق من التحديث (${response.code})")
+          return ReleaseFetchResult.Failed("تعذر التحقق من التحديث (${response.code})")
         }
         val rawJson = response.body?.string()
-          ?: return AppUpdateState.Error("تعذر قراءة بيانات التحديث")
+          ?: return ReleaseFetchResult.Failed("تعذر قراءة بيانات التحديث")
 
-        val json = JSONObject(rawJson)
-        val bodyText = json.optString("body", "")
-        val match = BUILD_NUMBER_REGEX.find(bodyText)
-        val remoteBuild = match?.groupValues?.getOrNull(1)?.toIntOrNull()
-          ?: return AppUpdateState.Error("تعذر معرفة رقم الإصدار الجديد")
-
-        if (remoteBuild <= BuildConfig.BUILD_NUMBER) {
-          return AppUpdateState.UpToDate
-        }
-
-        val assetsArray = json.optJSONArray("assets")
-        var apkUrl: String? = null
-        var apkName = "qabasat-update.apk"
-        if (assetsArray != null) {
-          for (i in 0 until assetsArray.length()) {
-            val asset = assetsArray.optJSONObject(i) ?: continue
-            val name = asset.optString("name", "")
-            val url = asset.optString("browser_download_url", "")
-            val contentType = asset.optString("content_type", "")
-            val isApk = name.endsWith(".apk", ignoreCase = true) ||
-              url.endsWith(".apk", ignoreCase = true) ||
-              contentType.equals("application/vnd.android.package-archive", ignoreCase = true)
-            if (isApk && url.isNotBlank()) {
-              apkUrl = url
-              if (name.isNotBlank()) apkName = name
-              break
-            }
-          }
-        }
-
-        if (apkUrl.isNullOrBlank()) {
-          AppUpdateState.Error("ملف التحديث غير متاح حاليًا")
-        } else {
-          AppUpdateState.UpdateAvailable(
-            remoteBuildNumber = remoteBuild,
-            apkUrl = apkUrl,
-            fileName = apkName,
-          )
-        }
+        val candidate = parseReleaseCandidateJson(rawJson)
+          ?: return ReleaseFetchResult.Failed("تعذر معرفة رقم الإصدار الجديد")
+        ReleaseFetchResult.Found(candidate)
       }
     } catch (_: UnknownHostException) {
-      AppUpdateState.Error("لا يوجد اتصال بالإنترنت")
+      ReleaseFetchResult.Failed("لا يوجد اتصال بالإنترنت")
     } catch (_: ConnectException) {
-      AppUpdateState.Error("لا يوجد اتصال بالإنترنت")
+      ReleaseFetchResult.Failed("لا يوجد اتصال بالإنترنت")
     } catch (_: SocketTimeoutException) {
-      AppUpdateState.Error("انتهت مهلة الاتصال بالخادم")
+      ReleaseFetchResult.Failed("انتهت مهلة الاتصال بالخادم")
     } catch (_: Exception) {
-      AppUpdateState.Error("تعذر التحقق من التحديث")
+      ReleaseFetchResult.Failed("تعذر التحقق من التحديث")
     }
   }
 

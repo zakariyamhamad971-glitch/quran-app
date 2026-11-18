@@ -113,6 +113,32 @@ internal object SurahHeaderOrnamentRenderer {
     return if (cleaned.isNotEmpty()) "سورة $cleaned" else nameArabic.trim()
   }
 
+  internal data class HeaderGlyphBox(
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+  ) {
+    val width: Float get() = right - left
+    val height: Float get() = bottom - top
+  }
+
+  internal fun computeHeaderGlyphBounds(
+    left: Float,
+    top: Float,
+    width: Float,
+    height: Float,
+    vertPadPx: Float = 0f,
+  ): HeaderGlyphBox {
+    val safeVertPad = vertPadPx.coerceIn(0f, height * 0.12f)
+    val maxGlyphH = (height - safeVertPad).coerceAtLeast(1f)
+    val glyphH = minOf(maxGlyphH, width / HEADER_GLYPH_ASPECT_RATIO).coerceAtLeast(1f)
+    val glyphW = (glyphH * HEADER_GLYPH_ASPECT_RATIO).coerceAtMost(width)
+    val glyphLeft = left + (width - glyphW) * 0.5f
+    val glyphTop = top + (height - glyphH) * 0.5f
+    return HeaderGlyphBox(glyphLeft, glyphTop, glyphLeft + glyphW, glyphTop + glyphH)
+  }
+
   fun drawSurahHeaderBand(
     canvas: Canvas,
     surah: SurahMeta,
@@ -130,11 +156,15 @@ internal object SurahHeaderOrnamentRenderer {
   ) {
     if (width <= 8f || height <= 8f) return
 
-    // Full page width while preserving exact original 'header' glyph aspect ratio (8240 : 1016)
-    val glyphW = width
-    val glyphH = glyphW / HEADER_GLYPH_ASPECT_RATIO
-    val glyphTop = top + (height - glyphH) * 0.5f
-    val glyphRect = RectF(left, glyphTop, left + glyphW, glyphTop + glyphH)
+    // Strictly fit inside the surah_name slot bounds while preserving original 'header' aspect ratio (8240 : 1016)
+    val vertPad = dpFn(1.5f).coerceAtMost(height * 0.08f)
+    val box = computeHeaderGlyphBounds(left, top, width, height, vertPadPx = vertPad)
+    val glyphRect = RectF(box.left, box.top, box.right, box.bottom)
+    val glyphW = box.width
+    val glyphH = box.height
+
+    canvas.save()
+    canvas.clipRect(left, top, left + width, top + height)
 
     val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -269,6 +299,8 @@ internal object SurahHeaderOrnamentRenderer {
         typeface = amiriBold,
       )
     }
+
+    canvas.restore()
   }
 
   private fun buildCartouchePathFromC35(glyphRect: RectF): Path {
@@ -362,10 +394,10 @@ internal object SurahHeaderOrnamentRenderer {
 
     val labelBounds = Rect()
     val maxLabelW = radius * 1.48f
-    var labelPx = (radius * 0.54f).coerceAtLeast(7.5f)
+    var labelPx = (radius * 0.54f).coerceAtLeast(4f)
     textPaint.textSize = labelPx
     textPaint.getTextBounds(topLabel, 0, topLabel.length, labelBounds)
-    while ((textPaint.measureText(topLabel) > maxLabelW || labelBounds.height() > radius * 0.52f) && labelPx > 5.5f) {
+    while ((textPaint.measureText(topLabel) > maxLabelW || labelBounds.height() > radius * 0.52f) && labelPx > 3.5f) {
       labelPx *= 0.93f
       textPaint.textSize = labelPx
       textPaint.getTextBounds(topLabel, 0, topLabel.length, labelBounds)
@@ -380,10 +412,10 @@ internal object SurahHeaderOrnamentRenderer {
 
     val numBounds = Rect()
     val maxNumW = radius * 1.40f
-    var numPx = (radius * 0.60f).coerceAtLeast(8f)
+    var numPx = (radius * 0.60f).coerceAtLeast(4.5f)
     textPaint.textSize = numPx
     textPaint.getTextBounds(numberText, 0, numberText.length, numBounds)
-    while ((textPaint.measureText(numberText) > maxNumW || numBounds.height() > radius * 0.56f) && numPx > 6f) {
+    while ((textPaint.measureText(numberText) > maxNumW || numBounds.height() > radius * 0.56f) && numPx > 3.5f) {
       numPx *= 0.93f
       textPaint.textSize = numPx
       textPaint.getTextBounds(numberText, 0, numberText.length, numBounds)

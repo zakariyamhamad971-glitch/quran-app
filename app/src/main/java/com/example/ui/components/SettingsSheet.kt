@@ -88,6 +88,8 @@ fun SettingsSheet(
   onDismiss: () -> Unit,
   isCheckingUpdate: Boolean = false,
   onCheckForUpdate: () -> Unit = {},
+  isBetaChannelEnabled: Boolean = false,
+  onToggleBetaChannel: (Boolean) -> Unit = {},
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -347,6 +349,42 @@ fun SettingsSheet(
           Icon(Icons.Filled.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
           Spacer(Modifier.width(8.dp))
           Text("تحقق من التحديث")
+        }
+      }
+
+      Spacer(Modifier.height(10.dp))
+      Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        modifier = Modifier
+          .fillMaxWidth()
+          .clip(RoundedCornerShape(14.dp))
+          .clickable { onToggleBetaChannel(!isBetaChannelEnabled) },
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "قناة التجربة",
+              style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+              text = "استلام التحديثات التجريبية (Beta) قبل الإصدار الرسمي",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+          Spacer(Modifier.width(10.dp))
+          Switch(
+            checked = isBetaChannelEnabled,
+            onCheckedChange = onToggleBetaChannel,
+            modifier = Modifier.testTag("settings_beta_channel_switch"),
+          )
         }
       }
 

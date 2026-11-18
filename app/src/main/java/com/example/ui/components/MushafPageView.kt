@@ -3,6 +3,7 @@ package com.example.ui.components
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,10 +19,10 @@ import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
@@ -351,21 +352,25 @@ fun MushafPageFrame(
               }
             }
 
-            // Lightweight interactive bookmark toggle pinned over footer start corner
-            IconButton(
-              onClick = onToggleBookmark,
+            // Compact interactive bookmark toggle aligned strictly within the slim footer row
+            Box(
+              contentAlignment = Alignment.Center,
               modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 9.dp, bottom = 7.dp)
-                .minimumInteractiveComponentSize()
-                .size(30.dp)
+                .padding(start = 10.dp, bottom = 7.dp)
+                .size(width = 32.dp, height = 18.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(
+                  role = Role.Button,
+                  onClick = onToggleBookmark,
+                )
                 .testTag("bookmark_page_$pageNumber"),
             ) {
               Icon(
                 imageVector = if (isBookmarked) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
                 contentDescription = "علامة مرجعية للصفحة",
                 tint = if (isBookmarked) goldColor else mutedInk,
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(13.dp),
               )
             }
           }
