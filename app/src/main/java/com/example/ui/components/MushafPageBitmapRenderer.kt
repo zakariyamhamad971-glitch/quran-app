@@ -133,9 +133,13 @@ class MushafPageBitmapRenderer(
   private var cachedSurahNameV4: Typeface? = null
   @Volatile
   private var surahNameV4Attempted: Boolean = false
+  @Volatile
+  private var cachedQuranCommon: Typeface? = null
+  @Volatile
+  private var quranCommonAttempted: Boolean = false
 
   private fun ensureUiFontsLoaded() {
-    if (cachedAmiriNormal != null && cachedIbmNormal != null && surahNameV4Attempted) return
+    if (cachedAmiriNormal != null && cachedIbmNormal != null && surahNameV4Attempted && quranCommonAttempted) return
     synchronized(this) {
       if (cachedAmiriNormal == null) {
         val amiri = runCatching { ResourcesCompat.getFont(context, R.font.amiri) }.getOrNull()
@@ -152,6 +156,10 @@ class MushafPageBitmapRenderer(
       if (!surahNameV4Attempted) {
         cachedSurahNameV4 = runCatching { ResourcesCompat.getFont(context, R.font.surah_name_v4) }.getOrNull()
         surahNameV4Attempted = true
+      }
+      if (!quranCommonAttempted) {
+        cachedQuranCommon = runCatching { ResourcesCompat.getFont(context, R.font.quran_common) }.getOrNull()
+        quranCommonAttempted = true
       }
     }
   }
@@ -250,6 +258,7 @@ class MushafPageBitmapRenderer(
     val ibmNormal = cachedIbmNormal ?: Typeface.SANS_SERIF
     val ibmMedium = cachedIbmMedium ?: ibmNormal
     val surahNameV4 = cachedSurahNameV4
+    val quranCommon = cachedQuranCommon
 
     val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
@@ -505,13 +514,14 @@ class MushafPageBitmapRenderer(
             surah = line.surah,
             edition = spec.edition,
             effectiveDark = effectiveDark,
-            left = bodyLeft + dp(1f),
-            top = slotTop + dp(0.5f),
-            width = (contentWidth - dp(2f)).coerceAtLeast(1f),
-            height = (slotHeight - dp(1f)).coerceAtLeast(1f),
+            left = bodyLeft,
+            top = slotTop,
+            width = contentWidth,
+            height = slotHeight,
             amiriBold = amiriBold,
             ibmMedium = ibmMedium,
             surahNameV4 = surahNameV4,
+            quranCommon = quranCommon,
             dpFn = ::dp,
           )
         }

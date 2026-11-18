@@ -9,15 +9,86 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.text.TextPaint
-import java.util.Locale
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.SurahMeta
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.sin
+import java.util.Locale
 
 internal object SurahHeaderOrnamentRenderer {
+
+  private const val HEADER_LIGATURE = "header"
+  internal const val SURAH_ICON_LIGATURE = "surah-icon"
+  private const val GLYPH_UNITS_PER_EM = 1024f
+  private const val GLYPH_WIDTH_UNITS = 8240f
+  private const val GLYPH_HEIGHT_UNITS = 1016f
+  internal const val HEADER_GLYPH_ASPECT_RATIO = GLYPH_WIDTH_UNITS / GLYPH_HEIGHT_UNITS
+
+  // Exact normalized circle centers & radii extracted from glyph 40 ('header') contours C40 & C31
+  private const val LEFT_CIRCLE_NX = 0.20619f
+  private const val RIGHT_CIRCLE_NX = 0.79381f
+  private const val CIRCLE_NY = 0.50000f
+  private const val CIRCLE_RADIUS_H_RATIO = 0.292f
+
+  // Exact bounds of contour C35 (inner white panel of 'header')
+  internal const val CARTOUCHE_LEFT_NX = 0.25485f
+  internal const val CARTOUCHE_RIGHT_NX = 0.74515f
+  internal const val CARTOUCHE_TOP_NY = 0.12500f
+  internal const val CARTOUCHE_BOTTOM_NY = 0.87500f
+
+  // Exact TrueType spline points of contour C35 (inner center white cartouche cutout of 'header')
+  // Format: float triples [nx, ny, onCurve (1f or 0f)] normalized to glyph bbox (0..8240, 828..-188)
+  private val cartoucheContourPoints = floatArrayOf(
+    0.74515f, 0.49803f, 1f,
+    0.74515f, 0.41437f, 0f,
+    0.73859f, 0.33071f, 1f,
+    0.73192f, 0.24705f, 0f,
+    0.72039f, 0.21949f, 1f,
+    0.71711f, 0.21555f, 0f,
+    0.71129f, 0.20669f, 1f,
+    0.70995f, 0.20472f, 0f,
+    0.70583f, 0.16437f, 1f,
+    0.70158f, 0.12500f, 0f,
+    0.69794f, 0.12500f, 1f,
+    0.30206f, 0.12500f, 1f,
+    0.30012f, 0.12500f, 0f,
+    0.29709f, 0.13878f, 1f,
+    0.29393f, 0.15354f, 0f,
+    0.29272f, 0.17224f, 1f,
+    0.29066f, 0.20374f, 0f,
+    0.28871f, 0.20669f, 1f,
+    0.28544f, 0.21063f, 0f,
+    0.27961f, 0.21949f, 1f,
+    0.26796f, 0.24705f, 0f,
+    0.26141f, 0.33071f, 1f,
+    0.25485f, 0.41437f, 0f,
+    0.25485f, 0.49114f, 1f,
+    0.25485f, 0.56890f, 0f,
+    0.25898f, 0.63681f, 1f,
+    0.26299f, 0.70571f, 0f,
+    0.27100f, 0.74606f, 1f,
+    0.27900f, 0.78642f, 0f,
+    0.28434f, 0.79035f, 1f,
+    0.28981f, 0.79429f, 0f,
+    0.29163f, 0.79823f, 1f,
+    0.29211f, 0.79921f, 0f,
+    0.29539f, 0.83760f, 1f,
+    0.29867f, 0.87500f, 0f,
+    0.30085f, 0.87500f, 1f,
+    0.69915f, 0.87500f, 1f,
+    0.70146f, 0.87500f, 0f,
+    0.70473f, 0.83760f, 1f,
+    0.70801f, 0.79921f, 0f,
+    0.70837f, 0.79823f, 1f,
+    0.71117f, 0.79035f, 0f,
+    0.71578f, 0.78543f, 1f,
+    0.72039f, 0.77953f, 0f,
+    0.72160f, 0.77657f, 1f,
+    0.72621f, 0.76673f, 0f,
+    0.73277f, 0.72244f, 1f,
+    0.73932f, 0.67717f, 0f,
+    0.74090f, 0.63976f, 1f,
+    0.74405f, 0.56693f, 1f,
+    0.74515f, 0.53543f, 0f,
+  )
 
   private val arabicDigits = charArrayOf('٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩')
 
@@ -34,6 +105,14 @@ internal object SurahHeaderOrnamentRenderer {
   internal fun formatSurahLigature(surahId: Int): String =
     "surah${surahId.coerceIn(1, 114).toString().padStart(3, '0')}"
 
+  internal fun formatSurahHeaderTokens(surahId: Int): Pair<String, String> =
+    SURAH_ICON_LIGATURE to formatSurahLigature(surahId)
+
+  internal fun formatFallbackSurahTitle(nameArabic: String): String {
+    val cleaned = nameArabic.trim().removePrefix("سورة").trim()
+    return if (cleaned.isNotEmpty()) "سورة $cleaned" else nameArabic.trim()
+  }
+
   fun drawSurahHeaderBand(
     canvas: Canvas,
     surah: SurahMeta,
@@ -46,9 +125,16 @@ internal object SurahHeaderOrnamentRenderer {
     amiriBold: Typeface,
     ibmMedium: Typeface,
     surahNameV4: Typeface? = null,
+    quranCommon: Typeface? = null,
     dpFn: (Float) -> Float,
   ) {
     if (width <= 8f || height <= 8f) return
+
+    // Full page width while preserving exact original 'header' glyph aspect ratio (8240 : 1016)
+    val glyphW = width
+    val glyphH = glyphW / HEADER_GLYPH_ASPECT_RATIO
+    val glyphTop = top + (height - glyphH) * 0.5f
+    val glyphRect = RectF(left, glyphTop, left + glyphW, glyphTop + glyphH)
 
     val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -57,731 +143,172 @@ internal object SurahHeaderOrnamentRenderer {
       strokeCap = Paint.Cap.ROUND
     }
 
-    val outerRect = RectF(left, top, left + width, top + height)
-    val outerFrameStroke = (height * 0.026f).coerceIn(dpFn(0.9f), dpFn(1.8f))
-    val gapBetweenFrames = (height * 0.045f).coerceIn(dpFn(1.5f), dpFn(3.0f))
-    val innerRect = RectF(
-      outerRect.left + gapBetweenFrames,
-      outerRect.top + gapBetweenFrames,
-      outerRect.right - gapBetweenFrames,
-      outerRect.bottom - gapBetweenFrames,
+    val isTajweed = edition == MushafEdition.TAJWEED_V4
+
+    // Rich dark green backing for Tajweed, deep blue backing for Madinah
+    val bgTopBottomColor = if (isTajweed) 0xFF0A4E2F.toInt() else 0xFF0E4F8F.toInt()
+    val bgCenterColor = if (isTajweed) 0xFF05361F.toInt() else 0xFF083566.toInt()
+    val circleTopColor = if (isTajweed) 0xFF0D643C.toInt() else 0xFF1261AD.toInt()
+    val circleBottomColor = if (isTajweed) 0xFF073E24.toInt() else 0xFF093C70.toInt()
+    val glyphGoldColor = if (effectiveDark) 0xFFEDC96D.toInt() else 0xFFE6BF5A.toInt()
+    val panelWhiteColor = 0xFFFFFFFF.toInt()
+    val panelInkColor = 0xFF111514.toInt()
+
+    // 1. Colored frame background strictly inside the outer bounds of the glyph
+    val bgInset = (glyphH * 0.015f).coerceAtLeast(0.5f)
+    val bgRect = RectF(
+      glyphRect.left + bgInset,
+      glyphRect.top + bgInset,
+      glyphRect.right - bgInset,
+      glyphRect.bottom - bgInset,
     )
-
-    val frameDarkStroke = if (effectiveDark) 0xFFD9C38A.toInt() else 0xFF141816.toInt()
-    val panelWhite = if (effectiveDark) 0xFFF7F4EA.toInt() else 0xFFFFFFFF.toInt()
-    val panelInk = 0xFF121514.toInt()
-
-    // Crisp cream/paper frame mat between double outer border
-    fillPaint.color = if (effectiveDark) 0xFF181D1B.toInt() else 0xFFFAF8F2.toInt()
-    canvas.drawRect(outerRect, fillPaint)
-
-    when (edition) {
-      MushafEdition.TAJWEED_V4 -> drawTajweedOrnament(
-        canvas = canvas,
-        surah = surah,
-        innerRect = innerRect,
-        frameDarkStroke = frameDarkStroke,
-        panelWhite = panelWhite,
-        panelInk = panelInk,
-        amiriBold = amiriBold,
-        ibmMedium = ibmMedium,
-        surahNameV4 = surahNameV4,
-        fillPaint = fillPaint,
-        strokePaint = strokePaint,
-        dpFn = dpFn,
-      )
-
-      MushafEdition.MADINAH_1421 -> drawMadinahOrnament(
-        canvas = canvas,
-        surah = surah,
-        innerRect = innerRect,
-        frameDarkStroke = frameDarkStroke,
-        panelWhite = panelWhite,
-        panelInk = panelInk,
-        amiriBold = amiriBold,
-        surahNameV4 = surahNameV4,
-        fillPaint = fillPaint,
-        strokePaint = strokePaint,
-        dpFn = dpFn,
-      )
-    }
-
-    // Crisp outer and inner border lines
-    strokePaint.shader = null
-    strokePaint.color = frameDarkStroke
-    strokePaint.strokeWidth = outerFrameStroke
-    canvas.drawRect(outerRect, strokePaint)
-    canvas.drawRect(innerRect, strokePaint)
-  }
-
-  private fun drawTajweedOrnament(
-    canvas: Canvas,
-    surah: SurahMeta,
-    innerRect: RectF,
-    frameDarkStroke: Int,
-    panelWhite: Int,
-    panelInk: Int,
-    amiriBold: Typeface,
-    ibmMedium: Typeface,
-    surahNameV4: Typeface?,
-    fillPaint: Paint,
-    strokePaint: Paint,
-    dpFn: (Float) -> Float,
-  ) {
-    val w = innerRect.width()
-    val h = innerRect.height()
-    val cx = innerRect.centerX()
-    val cy = innerRect.centerY()
-
-    val emeraldDeep = 0xFF006D37.toInt()
-    val emeraldMid = 0xFF008F48.toInt()
-    val emeraldBright = 0xFF17A85B.toInt()
-    val goldBase = 0xFFD2A138.toInt()
-    val goldBright = 0xFFE6BF5A.toInt()
-    val darkOutline = 0xFF101914.toInt()
-
-    // 1. Clipped repeating emerald & gold botanical-geometric wings
-    canvas.save()
-    canvas.clipRect(innerRect)
-
     fillPaint.shader = LinearGradient(
-      innerRect.left,
-      innerRect.top,
-      innerRect.left,
-      innerRect.bottom,
-      intArrayOf(emeraldMid, emeraldDeep, emeraldMid),
+      bgRect.left,
+      bgRect.top,
+      bgRect.left,
+      bgRect.bottom,
+      intArrayOf(bgTopBottomColor, bgCenterColor, bgTopBottomColor),
       floatArrayOf(0f, 0.5f, 1f),
       Shader.TileMode.CLAMP,
     )
-    canvas.drawRect(innerRect, fillPaint)
+    canvas.drawRect(bgRect, fillPaint)
     fillPaint.shader = null
 
-    val tileW = (h * 0.92f).coerceAtLeast(18f)
-    val strokeThin = (h * 0.020f).coerceIn(dpFn(0.75f), dpFn(1.4f))
-    val numTilesHalf = ((w * 0.5f) / tileW).toInt() + 2
-
-    for (k in 0 until numTilesHalf) {
-      val rxLeft = cx + k * tileW
-      drawTajweedArabesqueTile(
-        canvas = canvas,
-        tileLeft = rxLeft,
-        tileTop = innerRect.top,
-        tileW = tileW,
-        tileH = h,
-        emeraldBright = emeraldBright,
-        emeraldDeep = emeraldDeep,
-        goldBase = goldBase,
-        goldBright = goldBright,
-        outline = darkOutline,
-        fillPaint = fillPaint,
-        strokePaint = strokePaint,
-        strokeThin = strokeThin,
+    // 2. Circle discs behind the left & right glyph medallions
+    val cy = glyphRect.top + glyphH * CIRCLE_NY
+    val leftCircleX = glyphRect.left + glyphW * LEFT_CIRCLE_NX
+    val rightCircleX = glyphRect.left + glyphW * RIGHT_CIRCLE_NX
+    val circleFillRadius = glyphH * (CIRCLE_RADIUS_H_RATIO + 0.012f)
+    for (cxCircle in floatArrayOf(leftCircleX, rightCircleX)) {
+      fillPaint.shader = LinearGradient(
+        cxCircle,
+        cy - circleFillRadius,
+        cxCircle,
+        cy + circleFillRadius,
+        intArrayOf(circleTopColor, circleBottomColor),
+        null,
+        Shader.TileMode.CLAMP,
       )
-      val lxRight = cx - (k + 1) * tileW
-      canvas.save()
-      canvas.scale(-1f, 1f, lxRight + tileW * 0.5f, cy)
-      drawTajweedArabesqueTile(
-        canvas = canvas,
-        tileLeft = lxRight,
-        tileTop = innerRect.top,
-        tileW = tileW,
-        tileH = h,
-        emeraldBright = emeraldBright,
-        emeraldDeep = emeraldDeep,
-        goldBase = goldBase,
-        goldBright = goldBright,
-        outline = darkOutline,
-        fillPaint = fillPaint,
-        strokePaint = strokePaint,
-        strokeThin = strokeThin,
-      )
-      canvas.restore()
+      canvas.drawCircle(cxCircle, cy, circleFillRadius, fillPaint)
+      fillPaint.shader = null
     }
-    canvas.restore()
 
-    // Inner dark green top/bottom rail bars for clean visual grounding
-    val railH = (h * 0.055f).coerceAtLeast(1.2f)
-    fillPaint.color = goldBase
-    canvas.drawRect(innerRect.left, innerRect.top, innerRect.right, innerRect.top + railH, fillPaint)
-    canvas.drawRect(innerRect.left, innerRect.bottom - railH, innerRect.right, innerRect.bottom, fillPaint)
-    strokePaint.color = darkOutline
-    strokePaint.strokeWidth = (h * 0.018f).coerceAtLeast(0.8f)
-    canvas.drawLine(innerRect.left, innerRect.top + railH, innerRect.right, innerRect.top + railH, strokePaint)
-    canvas.drawLine(innerRect.left, innerRect.bottom - railH, innerRect.right, innerRect.bottom - railH, strokePaint)
+    // 3. Center panel white fill fitted cleanly to C35 cartouche contours of 'header'
+    val cartouchePath = buildCartouchePathFromC35(glyphRect)
+    fillPaint.color = panelWhiteColor
+    canvas.drawPath(cartouchePath, fillPaint)
+    // Slight bleed stroke underneath the gold cartouche wall so zero green/blue hairlines show
+    strokePaint.color = panelWhiteColor
+    strokePaint.strokeWidth = (glyphH * 0.022f).coerceIn(dpFn(0.8f), dpFn(2.0f))
+    canvas.drawPath(cartouchePath, strokePaint)
 
-    // 2. Geometry for flanking medallions + central scalloped white cartouche
-    val circleRadius = min(h * 0.435f, w * 0.084f)
-    val medallionCenterOffset = (w * 0.292f).coerceIn(circleRadius * 2.5f, w * 0.34f)
-    val rightCircleX = cx + medallionCenterOffset
-    val leftCircleX = cx - medallionCenterOffset
+    // 4. Official QUL 'header' glyph drawn on top in bright gold
+    if (quranCommon != null) {
+      drawHeaderGlyphOnRect(
+        canvas = canvas,
+        glyphRect = glyphRect,
+        color = glyphGoldColor,
+        typeface = quranCommon,
+      )
+    } else {
+      // Fallback border only if Typeface failed to load
+      strokePaint.color = glyphGoldColor
+      strokePaint.strokeWidth = (glyphH * 0.036f).coerceAtLeast(1.2f)
+      canvas.drawRect(bgRect, strokePaint)
+      canvas.drawPath(cartouchePath, strokePaint)
+      canvas.drawCircle(leftCircleX, cy, glyphH * CIRCLE_RADIUS_H_RATIO, strokePaint)
+      canvas.drawCircle(rightCircleX, cy, glyphH * CIRCLE_RADIUS_H_RATIO, strokePaint)
+    }
 
-    val cartoucheHalfW = (medallionCenterOffset - circleRadius * 1.18f).coerceAtLeast(w * 0.16f)
-    val cartoucheRect = RectF(
-      cx - cartoucheHalfW,
-      innerRect.top + h * 0.06f,
-      cx + cartoucheHalfW,
-      innerRect.bottom - h * 0.06f,
-    )
-
-    // Draw scalloped cartouche with emerald/gold ribbon frame
-    val outerCartouchePath = buildScallopedCartouchePath(cartoucheRect, lobeRatio = 0.20f)
-    val borderInset = (h * 0.075f).coerceIn(dpFn(2f), dpFn(4.5f))
-    val innerCartoucheRect = RectF(
-      cartoucheRect.left + borderInset,
-      cartoucheRect.top + borderInset,
-      cartoucheRect.right - borderInset,
-      cartoucheRect.bottom - borderInset,
-    )
-    val innerCartouchePath = buildScallopedCartouchePath(innerCartoucheRect, lobeRatio = 0.20f)
-
-    // Outer white cushion halo
-    strokePaint.color = panelWhite
-    strokePaint.strokeWidth = borderInset * 0.9f
-    canvas.drawPath(outerCartouchePath, strokePaint)
-
-    // Emerald band fill + white center panel
-    fillPaint.color = emeraldMid
-    canvas.drawPath(outerCartouchePath, fillPaint)
-    fillPaint.color = panelWhite
-    canvas.drawPath(innerCartouchePath, fillPaint)
-
-    // Gold hairline inside the emerald collar + crisp dark borders
-    strokePaint.color = darkOutline
-    strokePaint.strokeWidth = (h * 0.022f).coerceAtLeast(0.9f)
-    canvas.drawPath(outerCartouchePath, strokePaint)
-    canvas.drawPath(innerCartouchePath, strokePaint)
-
-    val midGoldRect = RectF(
-      cartoucheRect.left + borderInset * 0.5f,
-      cartoucheRect.top + borderInset * 0.5f,
-      cartoucheRect.right - borderInset * 0.5f,
-      cartoucheRect.bottom - borderInset * 0.5f,
-    )
-    strokePaint.color = goldBright
-    strokePaint.strokeWidth = (h * 0.016f).coerceAtLeast(0.7f)
-    canvas.drawPath(buildScallopedCartouchePath(midGoldRect, lobeRatio = 0.20f), strokePaint)
-
-    // 3. Two circular medallions: Right = ترتيبها + surah.id, Left = آياتها + surah.versesCount
-    drawTajweedMedallion(
+    // 5. Text inside the two glyph circles: Right = "ترتيبها" + order, Left = "آياتها" + verses count
+    val textRadius = glyphH * CIRCLE_RADIUS_H_RATIO
+    drawCircleLabelAndNumber(
       canvas = canvas,
       cx = rightCircleX,
       cy = cy,
-      radius = circleRadius,
+      radius = textRadius,
       topLabel = "ترتيبها",
       numberText = toArabicIndicDigits(surah.id),
-      emeraldDeep = emeraldDeep,
-      emeraldMid = emeraldMid,
-      goldBase = goldBase,
-      goldBright = goldBright,
-      darkOutline = darkOutline,
-      panelWhite = panelWhite,
       ibmMedium = ibmMedium,
-      fillPaint = fillPaint,
-      strokePaint = strokePaint,
     )
-
-    drawTajweedMedallion(
+    drawCircleLabelAndNumber(
       canvas = canvas,
       cx = leftCircleX,
       cy = cy,
-      radius = circleRadius,
+      radius = textRadius,
       topLabel = "آياتها",
       numberText = toArabicIndicDigits(surah.versesCount),
-      emeraldDeep = emeraldDeep,
-      emeraldMid = emeraldMid,
-      goldBase = goldBase,
-      goldBright = goldBright,
-      darkOutline = darkOutline,
-      panelWhite = panelWhite,
       ibmMedium = ibmMedium,
-      fillPaint = fillPaint,
-      strokePaint = strokePaint,
     )
 
-    // 4. Surah Title centered in the white cartouche (QUL V4 ligature surah001..surah114)
+    // 6. Surah line inside the white cartouche (C35 full bounds):
+    // 'surah-icon' ("سورة") on the right + gap + 'surahNNN' on the left, same font & size,
+    // ~55% of white panel height, total width <= 65% of white panel width, evenly centered.
+    val whitePanelBox = RectF(
+      glyphRect.left + glyphW * CARTOUCHE_LEFT_NX,
+      glyphRect.top + glyphH * CARTOUCHE_TOP_NY,
+      glyphRect.left + glyphW * CARTOUCHE_RIGHT_NX,
+      glyphRect.top + glyphH * CARTOUCHE_BOTTOM_NY,
+    )
     if (surahNameV4 != null) {
-      drawFittedSurahLigatureTitle(
+      val (iconLigature, nameLigature) = formatSurahHeaderTokens(surah.id)
+      drawFittedSurahWordAndName(
         canvas = canvas,
-        ligatureText = formatSurahLigature(surah.id),
-        box = innerCartoucheRect,
-        color = panelInk,
+        iconLigature = iconLigature,
+        nameLigature = nameLigature,
+        whitePanelBox = whitePanelBox,
+        color = panelInkColor,
         typeface = surahNameV4,
       )
     } else {
-      val titleText = if (surah.nameArabic.startsWith("سورة")) {
-        surah.nameArabic
-      } else {
-        "سورة ${surah.nameArabic}"
-      }
       drawFittedCenteredTitle(
         canvas = canvas,
-        text = titleText,
-        box = innerCartoucheRect,
-        color = panelInk,
+        text = formatFallbackSurahTitle(surah.nameArabic),
+        box = whitePanelBox,
+        color = panelInkColor,
         typeface = amiriBold,
       )
     }
   }
 
-  private fun drawTajweedArabesqueTile(
-    canvas: Canvas,
-    tileLeft: Float,
-    tileTop: Float,
-    tileW: Float,
-    tileH: Float,
-    emeraldBright: Int,
-    emeraldDeep: Int,
-    goldBase: Int,
-    goldBright: Int,
-    outline: Int,
-    fillPaint: Paint,
-    strokePaint: Paint,
-    strokeThin: Float,
-  ) {
-    val midX = tileLeft + tileW * 0.5f
-    val midY = tileTop + tileH * 0.5f
+  private fun buildCartouchePathFromC35(glyphRect: RectF): Path {
+    val count = cartoucheContourPoints.size / 3
+    fun mapX(idx: Int): Float = glyphRect.left + cartoucheContourPoints[idx * 3] * glyphRect.width()
+    fun mapY(idx: Int): Float = glyphRect.top + cartoucheContourPoints[idx * 3 + 1] * glyphRect.height()
+    fun isOn(idx: Int): Boolean = cartoucheContourPoints[idx * 3 + 2] > 0.5f
 
-    // Geometric gold diamond petal backing
-    val diamond = Path().apply {
-      moveTo(midX, tileTop + tileH * 0.08f)
-      quadTo(tileLeft + tileW * 0.72f, tileTop + tileH * 0.30f, tileLeft + tileW * 0.96f, midY)
-      quadTo(tileLeft + tileW * 0.72f, tileTop + tileH * 0.70f, midX, tileTop + tileH * 0.92f)
-      quadTo(tileLeft + tileW * 0.28f, tileTop + tileH * 0.70f, tileLeft + tileW * 0.04f, midY)
-      quadTo(tileLeft + tileW * 0.28f, tileTop + tileH * 0.30f, midX, tileTop + tileH * 0.08f)
-      close()
-    }
-    fillPaint.color = goldBase
-    canvas.drawPath(diamond, fillPaint)
-    strokePaint.color = outline
-    strokePaint.strokeWidth = strokeThin
-    canvas.drawPath(diamond, strokePaint)
+    val path = Path()
+    // Index 0 is an on-curve point in C35
+    path.moveTo(mapX(0), mapY(0))
 
-    // Inner bright emerald quatrefoil leaf
-    val innerLeaf = Path().apply {
-      moveTo(midX, tileTop + tileH * 0.20f)
-      cubicTo(
-        tileLeft + tileW * 0.76f, tileTop + tileH * 0.20f,
-        tileLeft + tileW * 0.84f, tileTop + tileH * 0.50f,
-        midX, tileTop + tileH * 0.80f,
-      )
-      cubicTo(
-        tileLeft + tileW * 0.16f, tileTop + tileH * 0.50f,
-        tileLeft + tileW * 0.24f, tileTop + tileH * 0.20f,
-        midX, tileTop + tileH * 0.20f,
-      )
-      close()
-    }
-    fillPaint.color = emeraldBright
-    canvas.drawPath(innerLeaf, fillPaint)
-    canvas.drawPath(innerLeaf, strokePaint)
-
-    // Corner golden trefoil accents
-    val cornerR = tileH * 0.14f
-    fillPaint.color = goldBright
-    canvas.drawCircle(tileLeft, tileTop + tileH * 0.14f, cornerR * 0.55f, fillPaint)
-    canvas.drawCircle(tileLeft, tileTop + tileH * 0.86f, cornerR * 0.55f, fillPaint)
-
-    // Central dark-green & gold rosette core
-    fillPaint.color = emeraldDeep
-    canvas.drawCircle(midX, midY, tileH * 0.14f, fillPaint)
-    canvas.drawCircle(midX, midY, tileH * 0.14f, strokePaint)
-    fillPaint.color = goldBright
-    canvas.drawCircle(midX, midY, tileH * 0.065f, fillPaint)
-  }
-
-  private fun drawTajweedMedallion(
-    canvas: Canvas,
-    cx: Float,
-    cy: Float,
-    radius: Float,
-    topLabel: String,
-    numberText: String,
-    emeraldDeep: Int,
-    emeraldMid: Int,
-    goldBase: Int,
-    goldBright: Int,
-    darkOutline: Int,
-    panelWhite: Int,
-    ibmMedium: Typeface,
-    fillPaint: Paint,
-    strokePaint: Paint,
-  ) {
-    // Subtle scalloped gold rosette collar around the medallion
-    val scallops = 12
-    val rosettePath = Path()
-    for (i in 0 until scallops) {
-      val a1 = (i.toFloat() / scallops) * 2f * PI.toFloat()
-      val aMid = ((i + 0.5f) / scallops) * 2f * PI.toFloat()
-      val a2 = ((i + 1f) / scallops) * 2f * PI.toFloat()
-      val rBase = radius * 1.03f
-      val rPeak = radius * 1.16f
-      val x1 = cx + cos(a1) * rBase
-      val y1 = cy + sin(a1) * rBase
-      val xm = cx + cos(aMid) * rPeak
-      val ym = cy + sin(aMid) * rPeak
-      val x2 = cx + cos(a2) * rBase
-      val y2 = cy + sin(a2) * rBase
-      if (i == 0) rosettePath.moveTo(x1, y1)
-      rosettePath.quadTo(xm, ym, x2, y2)
-    }
-    rosettePath.close()
-
-    fillPaint.color = goldBright
-    canvas.drawPath(rosettePath, fillPaint)
-    strokePaint.color = darkOutline
-    strokePaint.strokeWidth = (radius * 0.06f).coerceAtLeast(0.8f)
-    canvas.drawPath(rosettePath, strokePaint)
-
-    // Crisp white separator ring + enlarged emerald interior disc for clear text readability
-    fillPaint.color = panelWhite
-    canvas.drawCircle(cx, cy, radius * 0.96f, fillPaint)
-    canvas.drawCircle(cx, cy, radius * 0.96f, strokePaint)
-
-    fillPaint.shader = LinearGradient(
-      cx,
-      cy - radius * 0.89f,
-      cx,
-      cy + radius * 0.89f,
-      intArrayOf(emeraldMid, emeraldDeep),
-      null,
-      Shader.TileMode.CLAMP,
-    )
-    canvas.drawCircle(cx, cy, radius * 0.88f, fillPaint)
-    fillPaint.shader = null
-
-    strokePaint.color = goldBase
-    strokePaint.strokeWidth = (radius * 0.055f).coerceAtLeast(0.75f)
-    canvas.drawCircle(cx, cy, radius * 0.88f, strokePaint)
-
-    // Two clear, enlarged centered white text lines inside the medallion
-    val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-      typeface = ibmMedium
-      color = 0xFFFFFFFF.toInt()
-      textAlign = Paint.Align.CENTER
-    }
-    val labelBounds = Rect()
-    val maxLabelW = radius * 1.54f
-    var labelPx = (radius * 0.56f).coerceAtLeast(8.5f)
-    textPaint.textSize = labelPx
-    textPaint.getTextBounds(topLabel, 0, topLabel.length, labelBounds)
-    while ((textPaint.measureText(topLabel) > maxLabelW || labelBounds.height() > radius * 0.56f) && labelPx > 6f) {
-      labelPx *= 0.93f
-      textPaint.textSize = labelPx
-      textPaint.getTextBounds(topLabel, 0, topLabel.length, labelBounds)
-    }
-    val labelBaseline = if (labelBounds.height() > 0) {
-      cy - radius * 0.24f - (labelBounds.top + labelBounds.bottom) * 0.5f
-    } else {
-      val labelFm = textPaint.fontMetrics
-      cy - radius * 0.22f - (labelFm.ascent + labelFm.descent) * 0.5f
-    }
-    canvas.drawText(topLabel, cx, labelBaseline, textPaint)
-
-    val numBounds = Rect()
-    val maxNumW = radius * 1.46f
-    var numPx = (radius * 0.62f).coerceAtLeast(9f)
-    textPaint.textSize = numPx
-    textPaint.getTextBounds(numberText, 0, numberText.length, numBounds)
-    while ((textPaint.measureText(numberText) > maxNumW || numBounds.height() > radius * 0.58f) && numPx > 6.5f) {
-      numPx *= 0.93f
-      textPaint.textSize = numPx
-      textPaint.getTextBounds(numberText, 0, numberText.length, numBounds)
-    }
-    val numBaseline = if (numBounds.height() > 0) {
-      cy + radius * 0.31f - (numBounds.top + numBounds.bottom) * 0.5f
-    } else {
-      val numFm = textPaint.fontMetrics
-      cy + radius * 0.30f - (numFm.ascent + numFm.descent) * 0.5f
-    }
-    canvas.drawText(numberText, cx, numBaseline, textPaint)
-  }
-
-  private fun drawMadinahOrnament(
-    canvas: Canvas,
-    surah: SurahMeta,
-    innerRect: RectF,
-    frameDarkStroke: Int,
-    panelWhite: Int,
-    panelInk: Int,
-    amiriBold: Typeface,
-    surahNameV4: Typeface?,
-    fillPaint: Paint,
-    strokePaint: Paint,
-    dpFn: (Float) -> Float,
-  ) {
-    val w = innerRect.width()
-    val h = innerRect.height()
-    val cx = innerRect.centerX()
-    val cy = innerRect.centerY()
-
-    val skyTurquoise = 0xFF43BAE8.toInt()
-    val deepAzure = 0xFF1477B0.toInt()
-    val darkNavy = 0xFF0E3E62.toInt()
-    val rosePetal = 0xFFEE87B5.toInt()
-    val roseLight = 0xFFFAD3E5.toInt()
-    val goldAccent = 0xFFE5BA52.toInt()
-
-    // 1. Clipped repeating turquoise & floral arabesque wings
-    canvas.save()
-    canvas.clipRect(innerRect)
-
-    fillPaint.shader = LinearGradient(
-      innerRect.left,
-      innerRect.top,
-      innerRect.left,
-      innerRect.bottom,
-      intArrayOf(skyTurquoise, deepAzure, skyTurquoise),
-      floatArrayOf(0f, 0.5f, 1f),
-      Shader.TileMode.CLAMP,
-    )
-    canvas.drawRect(innerRect, fillPaint)
-    fillPaint.shader = null
-
-    val tileW = (h * 0.96f).coerceAtLeast(20f)
-    val strokeThin = (h * 0.020f).coerceIn(dpFn(0.75f), dpFn(1.35f))
-    val numTilesHalf = ((w * 0.5f) / tileW).toInt() + 2
-
-    for (k in 0 until numTilesHalf) {
-      val rxLeft = cx + k * tileW
-      drawMadinahFloralTile(
-        canvas = canvas,
-        tileLeft = rxLeft,
-        tileTop = innerRect.top,
-        tileW = tileW,
-        tileH = h,
-        skyTurquoise = skyTurquoise,
-        darkNavy = darkNavy,
-        rosePetal = rosePetal,
-        roseLight = roseLight,
-        goldAccent = goldAccent,
-        fillPaint = fillPaint,
-        strokePaint = strokePaint,
-        strokeThin = strokeThin,
-      )
-      val lxRight = cx - (k + 1) * tileW
-      canvas.save()
-      canvas.scale(-1f, 1f, lxRight + tileW * 0.5f, cy)
-      drawMadinahFloralTile(
-        canvas = canvas,
-        tileLeft = lxRight,
-        tileTop = innerRect.top,
-        tileW = tileW,
-        tileH = h,
-        skyTurquoise = skyTurquoise,
-        darkNavy = darkNavy,
-        rosePetal = rosePetal,
-        roseLight = roseLight,
-        goldAccent = goldAccent,
-        fillPaint = fillPaint,
-        strokePaint = strokePaint,
-        strokeThin = strokeThin,
-      )
-      canvas.restore()
-    }
-    canvas.restore()
-
-    // Thin horizontal gold & navy trim strips inside the top & bottom edges
-    val railH = (h * 0.05f).coerceAtLeast(1.2f)
-    fillPaint.color = goldAccent
-    canvas.drawRect(innerRect.left, innerRect.top, innerRect.right, innerRect.top + railH, fillPaint)
-    canvas.drawRect(innerRect.left, innerRect.bottom - railH, innerRect.right, innerRect.bottom, fillPaint)
-    strokePaint.color = darkNavy
-    strokePaint.strokeWidth = (h * 0.018f).coerceAtLeast(0.8f)
-    canvas.drawLine(innerRect.left, innerRect.top + railH, innerRect.right, innerRect.top + railH, strokePaint)
-    canvas.drawLine(innerRect.left, innerRect.bottom - railH, innerRect.right, innerRect.bottom - railH, strokePaint)
-
-    // 2. Center scalloped white cartouche (NO circles on sides for Madinah)
-    val cartoucheHalfW = (w * 0.245f).coerceAtLeast(h * 1.8f).coerceAtMost(w * 0.34f)
-    val cartoucheRect = RectF(
-      cx - cartoucheHalfW,
-      innerRect.top + h * 0.06f,
-      cx + cartoucheHalfW,
-      innerRect.bottom - h * 0.06f,
-    )
-    val outerCartouchePath = buildScallopedCartouchePath(cartoucheRect, lobeRatio = 0.22f)
-    val borderInset = (h * 0.070f).coerceIn(dpFn(1.8f), dpFn(4.0f))
-    val innerCartoucheRect = RectF(
-      cartoucheRect.left + borderInset,
-      cartoucheRect.top + borderInset,
-      cartoucheRect.right - borderInset,
-      cartoucheRect.bottom - borderInset,
-    )
-    val innerCartouchePath = buildScallopedCartouchePath(innerCartoucheRect, lobeRatio = 0.22f)
-
-    // Crisp outer azure/turquoise border band around white cartouche
-    fillPaint.color = deepAzure
-    canvas.drawPath(outerCartouchePath, fillPaint)
-    fillPaint.color = panelWhite
-    canvas.drawPath(innerCartouchePath, fillPaint)
-
-    strokePaint.color = frameDarkStroke
-    strokePaint.strokeWidth = (h * 0.022f).coerceAtLeast(0.9f)
-    canvas.drawPath(outerCartouchePath, strokePaint)
-    canvas.drawPath(innerCartouchePath, strokePaint)
-
-    val midGoldRect = RectF(
-      cartoucheRect.left + borderInset * 0.5f,
-      cartoucheRect.top + borderInset * 0.5f,
-      cartoucheRect.right - borderInset * 0.5f,
-      cartoucheRect.bottom - borderInset * 0.5f,
-    )
-    strokePaint.color = goldAccent
-    strokePaint.strokeWidth = (h * 0.016f).coerceAtLeast(0.7f)
-    canvas.drawPath(buildScallopedCartouchePath(midGoldRect, lobeRatio = 0.22f), strokePaint)
-
-    // 3. Surah name only centered inside white cartouche (QUL V4 ligature surah001..surah114)
-    if (surahNameV4 != null) {
-      drawFittedSurahLigatureTitle(
-        canvas = canvas,
-        ligatureText = formatSurahLigature(surah.id),
-        box = innerCartoucheRect,
-        color = panelInk,
-        typeface = surahNameV4,
-      )
-    } else {
-      val titleText = if (surah.nameArabic.startsWith("سورة")) {
-        surah.nameArabic
+    var i = 1
+    while (i < count) {
+      val x = mapX(i)
+      val y = mapY(i)
+      if (isOn(i)) {
+        path.lineTo(x, y)
+        i++
       } else {
-        "سورة ${surah.nameArabic}"
+        val nextIdx = (i + 1) % count
+        val nx = mapX(nextIdx)
+        val ny = mapY(nextIdx)
+        if (isOn(nextIdx)) {
+          path.quadTo(x, y, nx, ny)
+          i += 2
+        } else {
+          // TrueType implied on-curve midpoint between two consecutive off-curve control points
+          path.quadTo(x, y, (x + nx) * 0.5f, (y + ny) * 0.5f)
+          i++
+        }
       }
-      drawFittedCenteredTitle(
-        canvas = canvas,
-        text = titleText,
-        box = innerCartoucheRect,
-        color = panelInk,
-        typeface = amiriBold,
-      )
     }
+    path.close()
+    return path
   }
 
-  private fun drawMadinahFloralTile(
+  private fun drawHeaderGlyphOnRect(
     canvas: Canvas,
-    tileLeft: Float,
-    tileTop: Float,
-    tileW: Float,
-    tileH: Float,
-    skyTurquoise: Int,
-    darkNavy: Int,
-    rosePetal: Int,
-    roseLight: Int,
-    goldAccent: Int,
-    fillPaint: Paint,
-    strokePaint: Paint,
-    strokeThin: Float,
-  ) {
-    val midX = tileLeft + tileW * 0.5f
-    val midY = tileTop + tileH * 0.5f
-
-    // Flowing arabesque vine ribbons
-    val upperScroll = Path().apply {
-      moveTo(tileLeft, midY)
-      cubicTo(
-        tileLeft + tileW * 0.24f, tileTop + tileH * 0.14f,
-        tileLeft + tileW * 0.76f, tileTop + tileH * 0.14f,
-        tileLeft + tileW, midY,
-      )
-    }
-    val lowerScroll = Path().apply {
-      moveTo(tileLeft, midY)
-      cubicTo(
-        tileLeft + tileW * 0.24f, tileTop + tileH * 0.86f,
-        tileLeft + tileW * 0.76f, tileTop + tileH * 0.86f,
-        tileLeft + tileW, midY,
-      )
-    }
-    strokePaint.color = darkNavy
-    strokePaint.strokeWidth = strokeThin * 1.35f
-    canvas.drawPath(upperScroll, strokePaint)
-    canvas.drawPath(lowerScroll, strokePaint)
-
-    strokePaint.color = skyTurquoise
-    strokePaint.strokeWidth = strokeThin * 0.7f
-    canvas.drawPath(upperScroll, strokePaint)
-    canvas.drawPath(lowerScroll, strokePaint)
-
-    // Golden corner leaves flanking the floral rosette
-    val leafTop = Path().apply {
-      moveTo(midX, tileTop + tileH * 0.11f)
-      quadTo(tileLeft + tileW * 0.65f, tileTop + tileH * 0.18f, midX, tileTop + tileH * 0.28f)
-      quadTo(tileLeft + tileW * 0.35f, tileTop + tileH * 0.18f, midX, tileTop + tileH * 0.11f)
-      close()
-    }
-    val leafBottom = Path().apply {
-      moveTo(midX, tileTop + tileH * 0.89f)
-      quadTo(tileLeft + tileW * 0.65f, tileTop + tileH * 0.82f, midX, tileTop + tileH * 0.72f)
-      quadTo(tileLeft + tileW * 0.35f, tileTop + tileH * 0.82f, midX, tileTop + tileH * 0.89f)
-      close()
-    }
-    fillPaint.color = goldAccent
-    canvas.drawPath(leafTop, fillPaint)
-    canvas.drawPath(leafBottom, fillPaint)
-    strokePaint.color = darkNavy
-    strokePaint.strokeWidth = strokeThin * 0.85f
-    canvas.drawPath(leafTop, strokePaint)
-    canvas.drawPath(leafBottom, strokePaint)
-
-    // Central 6-petal pink/rose flower rosette
-    val petalDist = tileH * 0.155f
-    val petalR = tileH * 0.095f
-    for (p in 0 until 6) {
-      val angle = (p * 60.0 * PI / 180.0).toFloat()
-      val px = midX + cos(angle) * petalDist
-      val py = midY + sin(angle) * petalDist
-      fillPaint.color = if (p % 2 == 0) rosePetal else roseLight
-      canvas.drawCircle(px, py, petalR, fillPaint)
-      canvas.drawCircle(px, py, petalR, strokePaint)
-    }
-    fillPaint.color = goldAccent
-    canvas.drawCircle(midX, midY, tileH * 0.085f, fillPaint)
-    canvas.drawCircle(midX, midY, tileH * 0.085f, strokePaint)
-  }
-
-  private fun buildScallopedCartouchePath(rect: RectF, lobeRatio: Float): Path {
-    val l = rect.left
-    val t = rect.top
-    val r = rect.right
-    val b = rect.bottom
-    val h = rect.height()
-    val midY = rect.centerY()
-    val shoulder = (h * lobeRatio).coerceAtMost(rect.width() * 0.18f)
-    val tipIndent = shoulder * 0.62f
-
-    return Path().apply {
-      // Top straight edge
-      moveTo(l + shoulder, t)
-      lineTo(r - shoulder, t)
-      // Right ogee/scalloped end: top corner -> waist -> tip -> bottom waist -> bottom corner
-      cubicTo(
-        r - shoulder * 0.45f, t,
-        r - tipIndent, t + h * 0.28f,
-        r, midY,
-      )
-      cubicTo(
-        r - tipIndent, b - h * 0.28f,
-        r - shoulder * 0.45f, b,
-        r - shoulder, b,
-      )
-      // Bottom straight edge
-      lineTo(l + shoulder, b)
-      // Left ogee/scalloped end
-      cubicTo(
-        l + shoulder * 0.45f, b,
-        l + tipIndent, b - h * 0.28f,
-        l, midY,
-      )
-      cubicTo(
-        l + tipIndent, t + h * 0.28f,
-        l + shoulder * 0.45f, t,
-        l + shoulder, t,
-      )
-      close()
-    }
-  }
-
-  private fun drawFittedSurahLigatureTitle(
-    canvas: Canvas,
-    ligatureText: String,
-    box: RectF,
+    glyphRect: RectF,
     color: Int,
     typeface: Typeface,
   ) {
@@ -791,51 +318,185 @@ internal object SurahHeaderOrnamentRenderer {
       this.textLocale = Locale.US
       this.fontFeatureSettings = "liga"
     }
-    val targetInkH = (box.height() * 0.70f).coerceAtLeast(8f)
-    val maxAvailW = (box.width() * 0.80f).coerceAtLeast(10f)
-    val maxInkH = (box.height() * 0.78f).coerceAtLeast(8f)
+    val targetW = glyphRect.width()
     val bounds = Rect()
 
-    var fontSizePx = targetInkH.coerceIn(10f, 120f)
+    var fontSizePx = (targetW * (GLYPH_UNITS_PER_EM / GLYPH_WIDTH_UNITS)).coerceAtLeast(8f)
     paint.textSize = fontSizePx
-    paint.getTextBounds(ligatureText, 0, ligatureText.length, bounds)
+    paint.getTextBounds(HEADER_LIGATURE, 0, HEADER_LIGATURE.length, bounds)
 
-    if (bounds.height() > 0) {
-      val scaled = fontSizePx * (targetInkH / bounds.height().toFloat())
-      fontSizePx = scaled.coerceIn(8f, box.height() * 1.6f)
+    if (bounds.width() > 0) {
+      fontSizePx *= targetW / bounds.width().toFloat()
       paint.textSize = fontSizePx
-      paint.getTextBounds(ligatureText, 0, ligatureText.length, bounds)
-    }
-
-    var measuredW = maxOf(paint.measureText(ligatureText), bounds.width().toFloat())
-    var inkH = bounds.height().toFloat()
-    if (measuredW > maxAvailW && measuredW > 0f) {
-      fontSizePx *= (maxAvailW / measuredW)
-      paint.textSize = fontSizePx
-      paint.getTextBounds(ligatureText, 0, ligatureText.length, bounds)
-      measuredW = maxOf(paint.measureText(ligatureText), bounds.width().toFloat())
-      inkH = bounds.height().toFloat()
-    }
-    while ((measuredW > maxAvailW || inkH > maxInkH) && fontSizePx > 7f) {
-      fontSizePx *= 0.94f
-      paint.textSize = fontSizePx
-      paint.getTextBounds(ligatureText, 0, ligatureText.length, bounds)
-      measuredW = maxOf(paint.measureText(ligatureText), bounds.width().toFloat())
-      inkH = bounds.height().toFloat()
+      paint.getTextBounds(HEADER_LIGATURE, 0, HEADER_LIGATURE.length, bounds)
     }
 
     val drawX = if (bounds.width() > 0) {
-      box.centerX() - (bounds.left + bounds.right) * 0.5f
+      glyphRect.left - bounds.left.toFloat()
     } else {
-      box.centerX() - paint.measureText(ligatureText) * 0.5f
+      glyphRect.left
     }
     val baseline = if (bounds.height() > 0) {
-      box.centerY() - (bounds.top + bounds.bottom) * 0.5f
+      glyphRect.centerY() - (bounds.top + bounds.bottom) * 0.5f
     } else {
       val fm = paint.fontMetrics
-      box.centerY() - (fm.ascent + fm.descent) * 0.5f
+      glyphRect.centerY() - (fm.ascent + fm.descent) * 0.5f
     }
-    canvas.drawText(ligatureText, drawX, baseline, paint)
+    canvas.drawText(HEADER_LIGATURE, drawX, baseline, paint)
+  }
+
+  private fun drawCircleLabelAndNumber(
+    canvas: Canvas,
+    cx: Float,
+    cy: Float,
+    radius: Float,
+    topLabel: String,
+    numberText: String,
+    ibmMedium: Typeface,
+  ) {
+    val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+      typeface = ibmMedium
+      color = 0xFFFFFFFF.toInt()
+      textAlign = Paint.Align.CENTER
+    }
+
+    val labelBounds = Rect()
+    val maxLabelW = radius * 1.48f
+    var labelPx = (radius * 0.54f).coerceAtLeast(7.5f)
+    textPaint.textSize = labelPx
+    textPaint.getTextBounds(topLabel, 0, topLabel.length, labelBounds)
+    while ((textPaint.measureText(topLabel) > maxLabelW || labelBounds.height() > radius * 0.52f) && labelPx > 5.5f) {
+      labelPx *= 0.93f
+      textPaint.textSize = labelPx
+      textPaint.getTextBounds(topLabel, 0, topLabel.length, labelBounds)
+    }
+    val labelBaseline = if (labelBounds.height() > 0) {
+      cy - radius * 0.25f - (labelBounds.top + labelBounds.bottom) * 0.5f
+    } else {
+      val fm = textPaint.fontMetrics
+      cy - radius * 0.24f - (fm.ascent + fm.descent) * 0.5f
+    }
+    canvas.drawText(topLabel, cx, labelBaseline, textPaint)
+
+    val numBounds = Rect()
+    val maxNumW = radius * 1.40f
+    var numPx = (radius * 0.60f).coerceAtLeast(8f)
+    textPaint.textSize = numPx
+    textPaint.getTextBounds(numberText, 0, numberText.length, numBounds)
+    while ((textPaint.measureText(numberText) > maxNumW || numBounds.height() > radius * 0.56f) && numPx > 6f) {
+      numPx *= 0.93f
+      textPaint.textSize = numPx
+      textPaint.getTextBounds(numberText, 0, numberText.length, numBounds)
+    }
+    val numBaseline = if (numBounds.height() > 0) {
+      cy + radius * 0.31f - (numBounds.top + numBounds.bottom) * 0.5f
+    } else {
+      val fm = textPaint.fontMetrics
+      cy + radius * 0.30f - (fm.ascent + fm.descent) * 0.5f
+    }
+    canvas.drawText(numberText, cx, numBaseline, textPaint)
+  }
+
+  private fun drawFittedSurahWordAndName(
+    canvas: Canvas,
+    iconLigature: String,
+    nameLigature: String,
+    whitePanelBox: RectF,
+    color: Int,
+    typeface: Typeface,
+  ) {
+    val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+      this.typeface = typeface
+      this.color = color
+      this.textLocale = Locale.US
+      this.fontFeatureSettings = "liga"
+    }
+
+    val targetLineH = (whitePanelBox.height() * 0.55f).coerceAtLeast(7f)
+    val maxCombinedW = (whitePanelBox.width() * 0.65f).coerceAtLeast(12f)
+    val maxLineH = (whitePanelBox.height() * 0.62f).coerceAtLeast(7f)
+
+    val iconBounds = Rect()
+    val nameBounds = Rect()
+    var iconW = 0f
+    var nameW = 0f
+    var gapPx = 0f
+    var totalW = 0f
+    var unionH = 0f
+
+    fun measureBothAt(sizePx: Float) {
+      paint.textSize = sizePx
+      paint.getTextBounds(iconLigature, 0, iconLigature.length, iconBounds)
+      paint.getTextBounds(nameLigature, 0, nameLigature.length, nameBounds)
+
+      iconW = if (iconBounds.width() > 0) {
+        iconBounds.width().toFloat()
+      } else {
+        paint.measureText(iconLigature)
+      }
+      nameW = if (nameBounds.width() > 0) {
+        nameBounds.width().toFloat()
+      } else {
+        paint.measureText(nameLigature)
+      }
+      // Note: space in surah_name_v4.ttf has 0 advanceWidth, so add explicit proportional visual gap
+      gapPx = sizePx * 0.14f
+      totalW = nameW + gapPx + iconW
+
+      val topY = minOf(iconBounds.top, nameBounds.top)
+      val botY = maxOf(iconBounds.bottom, nameBounds.bottom)
+      unionH = if (botY > topY) {
+        (botY - topY).toFloat()
+      } else {
+        val fm = paint.fontMetrics
+        fm.descent - fm.ascent
+      }
+    }
+
+    var fontSizePx = targetLineH.coerceIn(8f, 120f)
+    measureBothAt(fontSizePx)
+
+    if (unionH > 0f) {
+      fontSizePx = (fontSizePx * (targetLineH / unionH)).coerceIn(7f, whitePanelBox.height() * 1.4f)
+      measureBothAt(fontSizePx)
+    }
+
+    if (totalW > maxCombinedW && totalW > 0f) {
+      fontSizePx = (fontSizePx * (maxCombinedW / totalW)).coerceAtLeast(6f)
+      measureBothAt(fontSizePx)
+    }
+
+    while ((totalW > maxCombinedW || unionH > maxLineH) && fontSizePx > 6f) {
+      fontSizePx *= 0.94f
+      measureBothAt(fontSizePx)
+    }
+
+    // Center [nameLigature] (left) + [gap] + [iconLigature "سورة"] (right) horizontally in whitePanelBox
+    val startX = whitePanelBox.centerX() - totalW * 0.5f
+    val nameDrawX = if (nameBounds.width() > 0) {
+      startX - nameBounds.left.toFloat()
+    } else {
+      startX
+    }
+    val iconStartX = startX + nameW + gapPx
+    val iconDrawX = if (iconBounds.width() > 0) {
+      iconStartX - iconBounds.left.toFloat()
+    } else {
+      iconStartX
+    }
+
+    val unionTop = minOf(iconBounds.top, nameBounds.top)
+    val unionBottom = maxOf(iconBounds.bottom, nameBounds.bottom)
+    val baseline = if (unionBottom > unionTop) {
+      whitePanelBox.centerY() - (unionTop + unionBottom) * 0.5f
+    } else {
+      val fm = paint.fontMetrics
+      whitePanelBox.centerY() - (fm.ascent + fm.descent) * 0.5f
+    }
+
+    // RTL Arabic reading order on single horizontal line: "سورة" on right, surah name on left
+    canvas.drawText(nameLigature, nameDrawX, baseline, paint)
+    canvas.drawText(iconLigature, iconDrawX, baseline, paint)
   }
 
   private fun drawFittedCenteredTitle(
@@ -849,10 +510,10 @@ internal object SurahHeaderOrnamentRenderer {
       this.typeface = typeface
       this.color = color
     }
-    val availW = (box.width() * 0.78f).coerceAtLeast(10f)
-    val availH = (box.height() * 0.74f).coerceAtLeast(8f)
+    val availW = (box.width() * 0.65f).coerceAtLeast(10f)
+    val availH = (box.height() * 0.58f).coerceAtLeast(8f)
 
-    var fontSizePx = (box.height() * 0.56f).coerceIn(10f, 96f)
+    var fontSizePx = (box.height() * 0.55f).coerceIn(10f, 96f)
     paint.textSize = fontSizePx
     var measuredW = paint.measureText(text)
     var fm = paint.fontMetrics

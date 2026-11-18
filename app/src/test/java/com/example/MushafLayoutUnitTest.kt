@@ -116,35 +116,201 @@ class MushafLayoutUnitTest {
       assertEquals("SHA-256 mismatch for $name", manifestMap[name], actual)
     }
 
-    val fontCandidates = listOf(
+    val surahFontCandidates = listOf(
       File("src/main/res/font/surah_name_v4.ttf"),
       File("app/src/main/res/font/surah_name_v4.ttf"),
     )
-    val fontFile = fontCandidates.firstOrNull { it.exists() }
+    val surahFontFile = surahFontCandidates.firstOrNull { it.exists() }
       ?: error("Missing res/font/surah_name_v4.ttf")
-    val expectedFontSha = "026cfe8ac461531a7b1c8e4edd05ce3343f09e9c73447ff14c6bc93f3193d661"
-    val actualFontSha = Sha256Integrity.sha256Hex(fontFile)
-    assertEquals(expectedFontSha, actualFontSha)
-    assertEquals(expectedFontSha, manifestMap["res/font/surah_name_v4.ttf"])
+    val expectedSurahFontSha = "026cfe8ac461531a7b1c8e4edd05ce3343f09e9c73447ff14c6bc93f3193d661"
+    val actualSurahFontSha = Sha256Integrity.sha256Hex(surahFontFile)
+    assertEquals(expectedSurahFontSha, actualSurahFontSha)
+    assertEquals(expectedSurahFontSha, manifestMap["res/font/surah_name_v4.ttf"])
+
+    val commonFontCandidates = listOf(
+      File("src/main/res/font/quran_common.ttf"),
+      File("app/src/main/res/font/quran_common.ttf"),
+    )
+    val commonFontFile = commonFontCandidates.firstOrNull { it.exists() }
+      ?: error("Missing res/font/quran_common.ttf")
+    val expectedCommonFontSha = "b2e2730fab97d87f87b95d66ad42ecfc03b94284ad598ac3fd1c670d9354dda2"
+    val actualCommonFontSha = Sha256Integrity.sha256Hex(commonFontFile)
+    assertEquals(expectedCommonFontSha, actualCommonFontSha)
+    assertEquals(expectedCommonFontSha, manifestMap["res/font/quran_common.ttf"])
   }
 
   @Test
-  fun `surah name ligature formatter maps surah 1 to 114 and credits registers QUL V4 font`() {
+  fun `surah name ligature formatter maps surah 1 to 114 and credits registers QUL fonts`() {
     assertEquals(
-      "surah001",
-      com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahLigature(1),
+      "surah-icon",
+      com.example.ui.components.SurahHeaderOrnamentRenderer.SURAH_ICON_LIGATURE,
     )
     assertEquals(
-      "surah017",
-      com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahLigature(17),
+      "surah-icon" to "surah001",
+      com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahHeaderTokens(1),
     )
     assertEquals(
-      "surah114",
-      com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahLigature(114),
+      "surah-icon" to "surah017",
+      com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahHeaderTokens(17),
+    )
+    assertEquals(
+      "surah-icon" to "surah114",
+      com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahHeaderTokens(114),
+    )
+    assertEquals(
+      "سورة الفاتحة",
+      com.example.ui.components.SurahHeaderOrnamentRenderer.formatFallbackSurahTitle("سورة الفاتحة"),
+    )
+    assertEquals(
+      "سورة الإخلاص",
+      com.example.ui.components.SurahHeaderOrnamentRenderer.formatFallbackSurahTitle("الإخلاص"),
+    )
+    assertEquals(
+      8240f / 1016f,
+      com.example.ui.components.SurahHeaderOrnamentRenderer.HEADER_GLYPH_ASPECT_RATIO,
+      0.0001f,
     )
     val creditsText = locateQuranAsset("credits.json").readText()
     assertTrue(creditsText.contains("QUL V4 Surah Name Font"))
     assertTrue(creditsText.contains("qul_surah_name_v4"))
+    assertTrue(creditsText.contains("QUL quran-common font"))
+    assertTrue(creditsText.contains("qul_quran_common"))
+  }
+
+  @Test
+  fun `all 114 surah ligatures plus surah-icon fit within 65 percent of white cartouche panel`() {
+    val fontFile = listOf(
+      File("src/main/res/font/surah_name_v4.ttf"),
+      File("app/src/main/res/font/surah_name_v4.ttf"),
+    ).firstOrNull { it.exists() } ?: error("Missing res/font/surah_name_v4.ttf")
+
+    val bytes = fontFile.readBytes()
+    val buf = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.BIG_ENDIAN)
+    val numTables = buf.getShort(4).toInt() and 0xFFFF
+    val tables = HashMap<String, Pair<Int, Int>>()
+    for (i in 0 until numTables) {
+      val off = 12 + i * 16
+      val tag = String(bytes, off, 4, Charsets.ISO_8859_1)
+      tables[tag] = buf.getInt(off + 8) to buf.getInt(off + 12)
+    }
+
+    fun u16(o: Int): Int = buf.getShort(o).toInt() and 0xFFFF
+    fun s16(o: Int): Int = buf.getShort(o).toInt()
+    fun u32(o: Int): Int = buf.getInt(o)
+
+    val cmapOff = tables.getValue("cmap").first
+    val numSub = u16(cmapOff + 2)
+    val gidToChar = HashMap<Int, Char>()
+    for (i in 0 until numSub) {
+      val subOff = cmapOff + u32(cmapOff + 4 + i * 8 + 4)
+      if (u16(subOff) == 4) {
+        val segCount = u16(subOff + 6) / 2
+        val endBase = subOff + 14
+        val startBase = endBase + segCount * 2 + 2
+        val deltaBase = startBase + segCount * 2
+        val rangeBase = deltaBase + segCount * 2
+        for (j in 0 until segCount) {
+          val e = u16(endBase + j * 2)
+          if (e == 0xFFFF) continue
+          val s = u16(startBase + j * 2)
+          val d = s16(deltaBase + j * 2)
+          val ro = u16(rangeBase + j * 2)
+          for (cp in s..e) {
+            val gid = if (ro == 0) {
+              (cp + d) and 0xFFFF
+            } else {
+              val raw = u16(rangeBase + j * 2 + ro + (cp - s) * 2)
+              if (raw == 0) 0 else (raw + d) and 0xFFFF
+            }
+            if (cp in 32..126 && gid != 0) gidToChar[gid] = cp.toChar()
+          }
+        }
+        break
+      }
+    }
+
+    fun parseCoverage(covOff: Int): List<Int> {
+      val fmt = u16(covOff)
+      val out = mutableListOf<Int>()
+      if (fmt == 1) {
+        val cnt = u16(covOff + 2)
+        for (k in 0 until cnt) out += u16(covOff + 4 + k * 2)
+      } else if (fmt == 2) {
+        val cnt = u16(covOff + 2)
+        for (k in 0 until cnt) {
+          val s = u16(covOff + 4 + k * 6)
+          val e = u16(covOff + 6 + k * 6)
+          for (g in s..e) out += g
+        }
+      }
+      return out
+    }
+
+    val gsubOff = tables.getValue("GSUB").first
+    val lookupListOff = gsubOff + u16(gsubOff + 8)
+    val numLookups = u16(lookupListOff)
+    val ligatures = HashMap<String, Int>()
+    for (li in 0 until numLookups) {
+      val lOff = lookupListOff + u16(lookupListOff + 2 + li * 2)
+      if (u16(lOff) != 4) continue
+      val subCnt = u16(lOff + 4)
+      for (si in 0 until subCnt) {
+        val stOff = lOff + u16(lOff + 6 + si * 2)
+        val firstGids = parseCoverage(stOff + u16(stOff + 2))
+        val lsCnt = u16(stOff + 4)
+        for (idx in 0 until lsCnt) {
+          val lsOff = stOff + u16(stOff + 6 + idx * 2)
+          val ligCnt = u16(lsOff)
+          for (gi in 0 until ligCnt) {
+            val ligOff = lsOff + u16(lsOff + 2 + gi * 2)
+            val lgid = u16(ligOff)
+            val compCnt = u16(ligOff + 2)
+            val sb = StringBuilder()
+            sb.append(gidToChar[firstGids[idx]] ?: '?')
+            for (c in 0 until compCnt - 1) {
+              sb.append(gidToChar[u16(ligOff + 4 + c * 2)] ?: '?')
+            }
+            ligatures[sb.toString()] = lgid
+          }
+        }
+      }
+    }
+
+    val headOff = tables.getValue("head").first
+    val upem = u16(headOff + 18).toFloat()
+    val hmtxOff = tables.getValue("hmtx").first
+
+    val iconGid = ligatures[com.example.ui.components.SurahHeaderOrnamentRenderer.SURAH_ICON_LIGATURE]
+      ?: error("Missing surah-icon ligature in surah_name_v4.ttf")
+    val iconAdv = u16(hmtxOff + iconGid * 4).toFloat()
+
+    // White cartouche proportions inside 8240x1016 'header' glyph
+    val panelW = (com.example.ui.components.SurahHeaderOrnamentRenderer.CARTOUCHE_RIGHT_NX -
+      com.example.ui.components.SurahHeaderOrnamentRenderer.CARTOUCHE_LEFT_NX) * 8240f
+    val panelH = (com.example.ui.components.SurahHeaderOrnamentRenderer.CARTOUCHE_BOTTOM_NY -
+      com.example.ui.components.SurahHeaderOrnamentRenderer.CARTOUCHE_TOP_NY) * 1016f
+
+    val seenNameGids = HashSet<Int>()
+    for (surahId in 1..114) {
+      val (iconToken, nameToken) = com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahHeaderTokens(surahId)
+      assertEquals("surah-icon", iconToken)
+      val nameGid = ligatures[nameToken] ?: error("Missing ligature $nameToken in surah_name_v4.ttf")
+      assertFalse("Name ligature $nameToken must not duplicate surah-icon GID", nameGid == iconGid)
+      assertTrue("Duplicate GID for $nameToken", seenNameGids.add(nameGid))
+
+      val nameAdv = u16(hmtxOff + nameGid * 4).toFloat()
+      var fontSize = panelH * 0.55f
+      var combinedW = ((iconAdv + nameAdv) / upem) * fontSize + fontSize * 0.14f
+      val maxAllowedW = panelW * 0.65f
+      if (combinedW > maxAllowedW) {
+        fontSize *= (maxAllowedW / combinedW)
+        combinedW = ((iconAdv + nameAdv) / upem) * fontSize + fontSize * 0.14f
+      }
+      assertTrue("Combined width overflow for surah $surahId", combinedW <= maxAllowedW + 0.01f)
+      val sideMargin = (panelW - combinedW) * 0.5f
+      assertTrue("Insufficient margin inside panel for surah $surahId", sideMargin >= panelW * 0.17f)
+    }
+    assertEquals(114, seenNameGids.size)
   }
 
   @Test

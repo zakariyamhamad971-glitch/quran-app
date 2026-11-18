@@ -1,10 +1,11 @@
 {
   "algorithm": "SHA-256",
   "files": [
-    { "path": "credits.json", "sha256": "ae3925880282f2de94cfcb811640651dfffb2e3e2d02c501b2ea4b91225a84db" },
+    { "path": "credits.json", "sha256": "b060bf54aad28f769b7f34e2f1bd6c87ab2fb0ccace3130388f6240c3313f62c" },
     { "path": "tajweed_legend.json", "sha256": "4cf0182bef3712b04eea91790a4cb4f192c4915e7c2180222ad32cadc79ce2e9" },
     { "path": "layout_madinah_v2.json", "sha256": "2ad7ab0f1dcf22fc479f0a7823d487292f774beeaf83253c905648c1726ec7f7" },
     { "path": "layout_tajweed_v4.json", "sha256": "f20ae63bce13ef1b05dee90da6db28beef5906dcfad269846ca0afb5aa7e5ac3" },
-    { "path": "res/font/surah_name_v4.ttf", "sha256": "026cfe8ac461531a7b1c8e4edd05ce3343f09e9c73447ff14c6bc93f3193d661" }
+    { "path": "res/font/surah_name_v4.ttf", "sha256": "026cfe8ac461531a7b1c8e4edd05ce3343f09e9c73447ff14c6bc93f3193d661" },
+    { "path": "res/font/quran_common.ttf", "sha256": "b2e2730fab97d87f87b95d66ad42ecfc03b94284ad598ac3fd1c670d9354dda2" }
   ]
 }

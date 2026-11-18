@@ -47,6 +47,14 @@
       "url": "https://qul.tarteel.ai",
       "license": "تصريح استخدام مجاني مع عزو المصدر ومنع تعديل ملف الخط (surah_name_v4.ttf)",
       "usage": "عرض أسماء السور بالـligatures (surah001..surah114) داخل إطار عنوان السورة لمصحفي التجويد والمدينة"
+    },
+    {
+      "id": "qul_quran_common",
+      "title": "خط زخارف المصحف وإطار السورة الرسمي (QUL quran-common font)",
+      "organization": "Quranic Universal Library (Tarteel AI)",
+      "url": "https://qul.tarteel.ai",
+      "license": "تصريح استخدام مجاني مع عزو المصدر ومنع تعديل ملف الخط (quran_common.ttf)",
+      "usage": "رسم إطار عنوان السورة المزخرف (ligature: header) بنسبة أبعاده الأصلية لمصحفي التجويد والمدينة"
     }
   ]
 }
