@@ -180,6 +180,96 @@ class ExampleRobolectricTest {
   }
 
   @Test
+  fun `normal page sizes uniformly from average lines, caps long shrink within 8 percent, justifies medium lines, and centers sparse lines`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val renderer = MushafPageBitmapRenderer(context)
+    val surahs = mapOf(
+      2 to SurahMeta(2, "البقرة", 2, 286, false, 2, 5, true),
+    )
+
+    // Line 1: longer line (11 words)
+    val longWords = (1..11).map { idx ->
+      WordDto(idx, 1, if (idx == 11) "end" else "word", 3, 1, "كلمة", "كلمة$idx")
+    }
+    // Lines 2..5: average body lines (8 words each)
+    val avgVerseWords = (2..5).mapIndexed { lineOffset, vId ->
+      val lineNo = lineOffset + 2
+      VerseDto(
+        id = vId,
+        verse_key = "2:$vId",
+        page_number = 3,
+        juz_number = 1,
+        hizb_number = 1,
+        words = (1..8).map { idx ->
+          WordDto(vId * 20 + idx, lineNo, if (idx == 8) "end" else "word", 3, lineNo, "كلمة", "متوسط$idx")
+        },
+      )
+    }
+    // Line 6: slightly shorter line (7 words -> should justify edge-to-edge cleanly)
+    val mediumShortWords = (1..7).map { idx ->
+      WordDto(200 + idx, 6, if (idx == 7) "end" else "word", 3, 6, "كلمة", "قصير$idx")
+    }
+    // Line 7: sparse 2-word stub (huge remaining gap -> must remain centered, not edge-to-edge stretched)
+    val sparseWords = (1..2).map { idx ->
+      WordDto(300 + idx, 7, if (idx == 2) "end" else "word", 3, 7, "كلمة", "نهاية$idx")
+    }
+
+    val page3 = MushafPageBuilder.buildPage(
+      pageNumber = 3,
+      versesResponse = VersesByPageResponse(
+        verses = listOf(VerseDto(1, "2:1", 3, 1, 1, words = longWords)) +
+          avgVerseWords +
+          listOf(
+            VerseDto(6, "2:6", 3, 1, 1, words = mediumShortWords),
+            VerseDto(7, "2:7", 3, 1, 1, words = sparseWords),
+          ),
+      ),
+      chaptersById = surahs,
+      basmalahTokens = emptyList(),
+    )
+
+    val spec = PageRenderSpec(
+      widthPx = 720,
+      heightPx = 1200,
+      density = 2.0f,
+      fontScale = 1.0f,
+      edition = MushafEdition.MADINAH_1421,
+      isDarkTheme = false,
+      backgroundTheme = BackgroundTheme.WHITE,
+    )
+
+    val rendered = renderer.renderOrGet(
+      pageData = page3,
+      spec = spec,
+      pageTypeface = Typeface.SERIF,
+      basmalahTypeface = Typeface.SERIF,
+      usesTagFallbackTajweed = false,
+      surahsById = surahs,
+    )
+
+    val rectLong = rendered.verseHighlightRects["2:1"]!!
+    val rectAvg = rendered.verseHighlightRects["2:2"]!!
+    val rectMedShort = rendered.verseHighlightRects["2:6"]!!
+    val rectSparse = rendered.verseHighlightRects["2:7"]!!
+
+    // Long line never overflows frame horizontally and shrinks at most 8% from uniform height
+    assertTrue(rectLong[0] >= 0f && rectLong[2] <= spec.widthPx.toFloat())
+    val longH = rectLong[3] - rectLong[1]
+    val avgH = rectAvg[3] - rectAvg[1]
+    assertTrue(longH >= avgH * 0.90f)
+
+    // Medium-short line (7 words) justifies cleanly across majority of width
+    val medShortW = rectMedShort[2] - rectMedShort[0]
+    assertTrue(medShortW > spec.widthPx * 0.70f)
+
+    // Sparse 2-word line stays centered with reasonable gaps, NOT stretched edge-to-edge
+    val sparseW = rectSparse[2] - rectSparse[0]
+    assertTrue(sparseW < spec.widthPx * 0.55f)
+    val sparseCenter = (rectSparse[0] + rectSparse[2]) * 0.5f
+    assertEquals(spec.widthPx * 0.5f, sparseCenter, 25f)
+  }
+
+  @Test
   fun `offline setup manager tracks resumable progress in verified cache and setup flag persists`() = runBlocking {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val prefs = ReaderPreferences(context)

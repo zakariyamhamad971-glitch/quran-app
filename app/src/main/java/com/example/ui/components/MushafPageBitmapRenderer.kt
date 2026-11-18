@@ -456,11 +456,13 @@ class MushafPageBitmapRenderer(
       color = headerTintInt
     }
 
+    val isFramedIntroPage = pageData.pageNumber in 1..2
     val uniformPageSp = computeUniformPageFontSp(
       displayedLines = displayedLines,
       paint = lineTextPaint,
       renderVectorTajweedMarkers = renderVectorTajweedMarkers,
       usesTagFallbackTajweed = usesTagFallbackTajweed,
+      isFramedIntroPage = isFramedIntroPage,
       widthPx = bodyWidthInt,
       slotHeightPx = slotHeight,
       density = d,
@@ -515,6 +517,7 @@ class MushafPageBitmapRenderer(
             canvas = canvas,
             line = line,
             uniformPageSp = uniformPageSp,
+            isFramedIntroPage = isFramedIntroPage,
             paint = lineTextPaint,
             rosetteNumPaint = rosetteNumPaint,
             renderVectorTajweedMarkers = renderVectorTajweedMarkers,
@@ -694,6 +697,7 @@ class MushafPageBitmapRenderer(
     paint: TextPaint,
     renderVectorTajweedMarkers: Boolean,
     usesTagFallbackTajweed: Boolean,
+    isFramedIntroPage: Boolean,
     widthPx: Int,
     slotHeightPx: Float,
     density: Float,
@@ -712,11 +716,88 @@ class MushafPageBitmapRenderer(
       }
     }
     val tokenBounds = Rect()
+    val effectiveWidthPx = (widthPx - 2).coerceAtLeast(1).toFloat()
 
-    fun allLinesFitAt(candidateSp: Float): Boolean {
+    // For pages 1 & 2 (framed short Surahs), preserve original uniform longest-line fit untouched
+    if (isFramedIntroPage) {
+      fun allFramedLinesFitAt(candidateSp: Float): Boolean {
+        val fontSizePx = candidateSp * density * fontScale
+        paint.textSize = fontSizePx
+        val minGapPx = (fontSizePx * 0.14f).coerceAtLeast(2.5f)
+        val fm = paint.fontMetrics
+        val layoutLineH = fm.bottom - fm.top
+        val baselineInSlot = (slotHeightPx - layoutLineH) * 0.5f - fm.top
+
+        var inkMinTop = Int.MAX_VALUE
+        var inkMaxBottom = Int.MIN_VALUE
+        var hasMeasuredInk = false
+        var maxMarkerH = 0f
+
+        for (lineIdx in ayahLines.indices) {
+          val words = ayahLines[lineIdx].words
+          val tokens = lineTokens[lineIdx]
+          val n = words.size
+          var sumW = 0f
+
+          for (i in 0 until n) {
+            val w = words[i]
+            if (renderVectorTajweedMarkers && w.isEndMarker) {
+              sumW += fontSizePx * 1.32f
+              val mh = fontSizePx * 1.18f
+              if (mh > maxMarkerH) maxMarkerH = mh
+            } else {
+              val tok = tokens[i]
+              sumW += paint.measureText(tok)
+              if (tok.isNotEmpty()) {
+                paint.getTextBounds(tok, 0, tok.length, tokenBounds)
+                if (tokenBounds.top < inkMinTop) inkMinTop = tokenBounds.top
+                if (tokenBounds.bottom > inkMaxBottom) inkMaxBottom = tokenBounds.bottom
+                hasMeasuredInk = true
+              }
+            }
+          }
+
+          val totalMinW = sumW + minGapPx * (n - 1).coerceAtLeast(0)
+          if (totalMinW > widthPx.toFloat()) return false
+        }
+
+        if (maxMarkerH > slotHeightPx * 0.95f) return false
+        if (hasMeasuredInk) {
+          val inkH = (inkMaxBottom - inkMinTop).toFloat()
+          if (inkH > slotHeightPx * 0.90f) return false
+          val inkTopInSlot = baselineInSlot + inkMinTop.toFloat()
+          val inkBottomInSlot = baselineInSlot + inkMaxBottom.toFloat()
+          if (inkTopInSlot < slotHeightPx * 0.02f || inkBottomInSlot > slotHeightPx * 0.98f) {
+            return false
+          }
+        } else {
+          if ((fm.descent - fm.ascent) > slotHeightPx * 1.05f) return false
+        }
+        return true
+      }
+
+      if (allFramedLinesFitAt(maxSp)) return maxSp
+      var lo = minSp
+      var hi = maxSp
+      repeat(12) {
+        val mid = (lo + hi) * 0.5f
+        if (allFramedLinesFitAt(mid)) lo = mid else hi = mid
+      }
+      return lo.coerceAtLeast(minSp)
+    }
+
+    // Pages 3..604: size uniformly so typical/average body lines fill page width with small natural spacing,
+    // while guaranteeing every long line can still fit within at most 8% per-line shrink and minimal gap.
+    val bodyLineIndices = ayahLines.indices.filter { ayahLines[it].words.size >= 4 }
+      .ifEmpty { ayahLines.indices.toList() }
+    val isBodyLine = BooleanArray(ayahLines.size)
+    for (idx in bodyLineIndices) isBodyLine[idx] = true
+
+    fun pageUniformFitsAt(candidateSp: Float): Boolean {
       val fontSizePx = candidateSp * density * fontScale
       paint.textSize = fontSizePx
-      val minGapPx = (fontSizePx * 0.14f).coerceAtLeast(2.5f)
+      val naturalGapPx = (fontSizePx * 0.16f).coerceAtLeast(3f)
+      val minTouchGapPx = (fontSizePx * 0.025f).coerceAtLeast(1.5f)
       val fm = paint.fontMetrics
       val layoutLineH = fm.bottom - fm.top
       val baselineInSlot = (slotHeightPx - layoutLineH) * 0.5f - fm.top
@@ -725,6 +806,10 @@ class MushafPageBitmapRenderer(
       var inkMaxBottom = Int.MIN_VALUE
       var hasMeasuredInk = false
       var maxMarkerH = 0f
+
+      var bodyNaturalWidthSum = 0.0
+      var bodyCount = 0
+      var overflowLineIndices: MutableList<Int>? = null
 
       for (lineIdx in ayahLines.indices) {
         val words = ayahLines[lineIdx].words
@@ -750,8 +835,21 @@ class MushafPageBitmapRenderer(
           }
         }
 
-        val totalMinW = sumW + minGapPx * (n - 1).coerceAtLeast(0)
-        if (totalMinW > widthPx.toFloat()) return false
+        val gapSlots = (n - 1).coerceAtLeast(0)
+        if (isBodyLine[lineIdx]) {
+          bodyNaturalWidthSum += (sumW + naturalGapPx * gapSlots).toDouble()
+          bodyCount++
+        }
+
+        val minTouchLineW = sumW + minTouchGapPx * gapSlots
+        if (minTouchLineW > effectiveWidthPx) {
+          if (overflowLineIndices == null) overflowLineIndices = ArrayList(4)
+          overflowLineIndices.add(lineIdx)
+        }
+      }
+
+      if (bodyCount > 0 && (bodyNaturalWidthSum / bodyCount) > effectiveWidthPx.toDouble()) {
+        return false
       }
 
       if (maxMarkerH > slotHeightPx * 0.95f) return false
@@ -766,16 +864,41 @@ class MushafPageBitmapRenderer(
       } else {
         if ((fm.descent - fm.ascent) > slotHeightPx * 1.05f) return false
       }
+
+      // Verify any line wider than page at candidateSp still fits with <= 8% shrink + minimal touch gap
+      if (overflowLineIndices != null) {
+        val shrunkFontSizePx = fontSizePx * 0.92f
+        paint.textSize = shrunkFontSizePx
+        val shrunkTouchGapPx = (shrunkFontSizePx * 0.025f).coerceAtLeast(1.5f)
+        for (idx in overflowLineIndices) {
+          val words = ayahLines[idx].words
+          val tokens = lineTokens[idx]
+          val n = words.size
+          var shrunkSumW = 0f
+          for (i in 0 until n) {
+            shrunkSumW += if (renderVectorTajweedMarkers && words[i].isEndMarker) {
+              shrunkFontSizePx * 1.32f
+            } else {
+              paint.measureText(tokens[i])
+            }
+          }
+          val shrunkTotalW = shrunkSumW + shrunkTouchGapPx * (n - 1).coerceAtLeast(0)
+          if (shrunkTotalW > effectiveWidthPx) {
+            return false
+          }
+        }
+      }
+
       return true
     }
 
-    if (allLinesFitAt(maxSp)) return maxSp
+    if (pageUniformFitsAt(maxSp)) return maxSp
 
     var lo = minSp
     var hi = maxSp
     repeat(12) {
       val mid = (lo + hi) * 0.5f
-      if (allLinesFitAt(mid)) lo = mid else hi = mid
+      if (pageUniformFitsAt(mid)) lo = mid else hi = mid
     }
     return lo.coerceAtLeast(minSp)
   }
@@ -784,6 +907,7 @@ class MushafPageBitmapRenderer(
     canvas: Canvas,
     line: MushafLine.AyahWordsLine,
     uniformPageSp: Float,
+    isFramedIntroPage: Boolean,
     paint: TextPaint,
     rosetteNumPaint: Paint,
     renderVectorTajweedMarkers: Boolean,
@@ -814,43 +938,109 @@ class MushafPageBitmapRenderer(
       if (usesTagFallbackTajweed) w.textUthmani else w.codeV2
     }
 
-    val fittedSp = uniformPageSp
-    val fontSizePx = fittedSp * density * fontScale
-    paint.textSize = fontSizePx
+    val effectiveWidthF = (widthPx - 2).coerceAtLeast(1).toFloat()
+    val wordWidths = FloatArray(n)
+
+    fun measureLineWidthsAt(candidateSp: Float): Pair<Float, Float> {
+      val px = candidateSp * density * fontScale
+      paint.textSize = px
+      val mw = px * 1.32f
+      var sum = 0f
+      for (i in 0 until n) {
+        val ww = if (renderVectorTajweedMarkers && words[i].isEndMarker) mw else paint.measureText(tokens[i])
+        wordWidths[i] = ww
+        sum += ww
+      }
+      return sum to px
+    }
+
+    var fittedSp = uniformPageSp
+    var (sumWordWidths, fontSizePx) = measureLineWidthsAt(fittedSp)
+
+    val justifyEdgeToEdge: Boolean
+    val gaps = IntArray((n - 1).coerceAtLeast(0))
+
+    if (isFramedIntroPage) {
+      // Framed pages 1 & 2 remain unchanged
+      val defaultGapPx = (fontSizePx * 0.20f).roundToInt().coerceAtLeast(3)
+      val leftoverWidth = (widthPx.toFloat() - sumWordWidths).coerceAtLeast(0f)
+      justifyEdgeToEdge = n >= 4 || (n >= 2 && sumWordWidths >= widthPx.toFloat() * 0.45f)
+      if (justifyEdgeToEdge && n > 1 && widthPx.toFloat() >= sumWordWidths) {
+        val totalGap = leftoverWidth.toDouble()
+        var prevCum = 0
+        for (i in 0 until n - 1) {
+          val cum = ((totalGap * (i + 1)) / (n - 1)).roundToInt()
+          gaps[i] = (cum - prevCum).coerceAtLeast(0)
+          prevCum = cum
+        }
+      } else {
+        for (i in 0 until n - 1) {
+          gaps[i] = defaultGapPx
+        }
+      }
+    } else {
+      val gapSlots = (n - 1).coerceAtLeast(0)
+      val minTouchGapAtUniform = (fontSizePx * 0.025f).coerceAtLeast(1.5f)
+      val minLineWidthAtUniform = sumWordWidths + minTouchGapAtUniform * gapSlots
+
+      if (minLineWidthAtUniform > effectiveWidthF && n > 0) {
+        // Longer outlier line: shrink up to 8% (minimum 0.92 * uniformPageSp) with minimal touch gap
+        val minAllowedSp = uniformPageSp * 0.92f
+        var lo = minAllowedSp
+        var hi = uniformPageSp
+        repeat(9) {
+          val mid = (lo + hi) * 0.5f
+          val (midSum, midPx) = measureLineWidthsAt(mid)
+          val midTouchGap = (midPx * 0.025f).coerceAtLeast(1.5f)
+          if (midSum + midTouchGap * gapSlots <= effectiveWidthF) {
+            lo = mid
+          } else {
+            hi = mid
+          }
+        }
+        fittedSp = lo
+        val measured = measureLineWidthsAt(fittedSp)
+        sumWordWidths = measured.first
+        fontSizePx = measured.second
+
+        val leftover = (effectiveWidthF - sumWordWidths).coerceAtLeast(0f)
+        justifyEdgeToEdge = n > 1
+        if (n > 1) {
+          val totalGap = leftover.toDouble()
+          var prevCum = 0
+          for (i in 0 until n - 1) {
+            val cum = ((totalGap * (i + 1)) / (n - 1)).roundToInt()
+            gaps[i] = (cum - prevCum).coerceAtLeast(1)
+            prevCum = cum
+          }
+        }
+      } else {
+        val naturalGapPx = (fontSizePx * 0.16f).roundToInt().coerceAtLeast(3)
+        val maxJustifyGapPx = (fontSizePx * 1.45f).coerceAtLeast(12f)
+        val leftover = (widthPx.toFloat() - sumWordWidths).coerceAtLeast(0f)
+        val evenGap = if (n > 1) leftover / (n - 1).toFloat() else Float.MAX_VALUE
+
+        if (n >= 2 && evenGap <= maxJustifyGapPx) {
+          justifyEdgeToEdge = true
+          val totalGap = leftover.toDouble()
+          var prevCum = 0
+          for (i in 0 until n - 1) {
+            val cum = ((totalGap * (i + 1)) / (n - 1)).roundToInt()
+            gaps[i] = (cum - prevCum).coerceAtLeast(1)
+            prevCum = cum
+          }
+        } else {
+          // Short line with large remaining space after max reasonable gap stays centered like printed Mushaf
+          justifyEdgeToEdge = false
+          for (i in 0 until n - 1) {
+            gaps[i] = naturalGapPx
+          }
+        }
+      }
+    }
 
     val markerWidthF = fontSizePx * 1.32f
     val markerHeightF = fontSizePx * 1.18f
-    val wordWidths = FloatArray(n)
-    var sumWordWidths = 0f
-    for (i in 0 until n) {
-      val w = words[i]
-      val ww = if (renderVectorTajweedMarkers && w.isEndMarker) {
-        markerWidthF
-      } else {
-        paint.measureText(tokens[i])
-      }
-      wordWidths[i] = ww
-      sumWordWidths += ww
-    }
-
-    val defaultGapPx = (fontSizePx * 0.20f).roundToInt().coerceAtLeast(3)
-    val leftoverWidth = (widthPx.toFloat() - sumWordWidths).coerceAtLeast(0f)
-    val justifyEdgeToEdge = n >= 4 || (n >= 2 && sumWordWidths >= widthPx.toFloat() * 0.45f)
-
-    val gaps = IntArray((n - 1).coerceAtLeast(0))
-    if (justifyEdgeToEdge && n > 1 && widthPx.toFloat() >= sumWordWidths) {
-      val totalGap = leftoverWidth.toDouble()
-      var prevCum = 0
-      for (i in 0 until n - 1) {
-        val cum = ((totalGap * (i + 1)) / (n - 1)).roundToInt()
-        gaps[i] = (cum - prevCum).coerceAtLeast(0)
-        prevCum = cum
-      }
-    } else {
-      for (i in 0 until n - 1) {
-        gaps[i] = defaultGapPx
-      }
-    }
 
     var sumGaps = 0
     for (g in gaps) sumGaps += g
