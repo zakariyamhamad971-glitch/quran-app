@@ -43,6 +43,7 @@ data class PageRenderSpec(
   val edition: MushafEdition = MushafEdition.MADINAH_1421,
   val isDarkTheme: Boolean = false,
   val backgroundTheme: BackgroundTheme = BackgroundTheme.WHITE,
+  val isTwoPageMode: Boolean = false,
 ) {
   val isValid: Boolean
     get() = widthPx > 32 && heightPx > 32 && density > 0f
@@ -59,6 +60,7 @@ data class PageBitmapKey(
   val fontScaleBits: Int,
   val edition: MushafEdition,
   val effectiveDark: Boolean,
+  val isTwoPageMode: Boolean,
 )
 
 @Immutable
@@ -154,6 +156,7 @@ class MushafPageBitmapRenderer(
       fontScaleBits = spec.fontScale.toRawBits(),
       edition = spec.edition,
       effectiveDark = spec.effectiveDark,
+      isTwoPageMode = spec.isTwoPageMode,
     )
 
   private fun ensureCacheCapacityFor(spec: PageRenderSpec) {
@@ -457,12 +460,14 @@ class MushafPageBitmapRenderer(
     }
 
     val isFramedIntroPage = pageData.pageNumber in 1..2
+    val isTwoPageMode = spec.isTwoPageMode
     val uniformPageSp = computeUniformPageFontSp(
       displayedLines = displayedLines,
       paint = lineTextPaint,
       renderVectorTajweedMarkers = renderVectorTajweedMarkers,
       usesTagFallbackTajweed = usesTagFallbackTajweed,
       isFramedIntroPage = isFramedIntroPage,
+      isTwoPageMode = isTwoPageMode,
       widthPx = bodyWidthInt,
       slotHeightPx = slotHeight,
       density = d,
@@ -518,6 +523,7 @@ class MushafPageBitmapRenderer(
             line = line,
             uniformPageSp = uniformPageSp,
             isFramedIntroPage = isFramedIntroPage,
+            isTwoPageMode = isTwoPageMode,
             paint = lineTextPaint,
             rosetteNumPaint = rosetteNumPaint,
             renderVectorTajweedMarkers = renderVectorTajweedMarkers,
@@ -698,6 +704,7 @@ class MushafPageBitmapRenderer(
     renderVectorTajweedMarkers: Boolean,
     usesTagFallbackTajweed: Boolean,
     isFramedIntroPage: Boolean,
+    isTwoPageMode: Boolean,
     widthPx: Int,
     slotHeightPx: Float,
     density: Float,
@@ -787,14 +794,15 @@ class MushafPageBitmapRenderer(
     }
 
     // Pages 3..604: size uniformly so typical/average body lines fill page width with small natural spacing,
-    // while guaranteeing every long line can still fit within at most 8% per-line shrink and minimal gap.
+    // while guaranteeing every long line can still fit within at most 8% (or 10% in two-page mode) per-line shrink and minimal gap.
     val bodyLineIndices = ayahLines.indices.filter { ayahLines[it].words.size >= 4 }
       .ifEmpty { ayahLines.indices.toList() }
     val isBodyLine = BooleanArray(ayahLines.size)
     for (idx in bodyLineIndices) isBodyLine[idx] = true
 
     fun pageUniformFitsAt(candidateSp: Float): Boolean {
-      val fontSizePx = candidateSp * density * fontScale
+      val effectiveCandidateSp = if (isTwoPageMode) candidateSp * 1.25f else candidateSp
+      val fontSizePx = effectiveCandidateSp * density * fontScale
       paint.textSize = fontSizePx
       val naturalGapPx = (fontSizePx * 0.16f).coerceAtLeast(3f)
       val minTouchGapPx = (fontSizePx * 0.025f).coerceAtLeast(1.5f)
@@ -865,9 +873,10 @@ class MushafPageBitmapRenderer(
         if ((fm.descent - fm.ascent) > slotHeightPx * 1.05f) return false
       }
 
-      // Verify any line wider than page at candidateSp still fits with <= 8% shrink + minimal touch gap
+      // Verify any line wider than page at effectiveCandidateSp still fits with shrink limit (8% single, 10% two page) + minimal touch gap
       if (overflowLineIndices != null) {
-        val shrunkFontSizePx = fontSizePx * 0.92f
+        val shrinkFactor = if (isTwoPageMode) 0.90f else 0.92f
+        val shrunkFontSizePx = fontSizePx * shrinkFactor
         paint.textSize = shrunkFontSizePx
         val shrunkTouchGapPx = (shrunkFontSizePx * 0.025f).coerceAtLeast(1.5f)
         for (idx in overflowLineIndices) {
@@ -908,6 +917,7 @@ class MushafPageBitmapRenderer(
     line: MushafLine.AyahWordsLine,
     uniformPageSp: Float,
     isFramedIntroPage: Boolean,
+    isTwoPageMode: Boolean,
     paint: TextPaint,
     rosetteNumPaint: Paint,
     renderVectorTajweedMarkers: Boolean,
@@ -954,7 +964,8 @@ class MushafPageBitmapRenderer(
       return sum to px
     }
 
-    var fittedSp = uniformPageSp
+    val baseSp = if (isTwoPageMode) uniformPageSp * 1.25f else uniformPageSp
+    var fittedSp = baseSp
     var (sumWordWidths, fontSizePx) = measureLineWidthsAt(fittedSp)
 
     val justifyEdgeToEdge: Boolean
@@ -984,10 +995,11 @@ class MushafPageBitmapRenderer(
       val minLineWidthAtUniform = sumWordWidths + minTouchGapAtUniform * gapSlots
 
       if (minLineWidthAtUniform > effectiveWidthF && n > 0) {
-        // Longer outlier line: shrink up to 8% (minimum 0.92 * uniformPageSp) with minimal touch gap
-        val minAllowedSp = uniformPageSp * 0.92f
+        // Longer outlier line: shrink up to 10% in two-page mode (0.90) or 8% in single-page mode (0.92) with minimal touch gap
+        val shrinkMinFactor = if (isTwoPageMode) 0.90f else 0.92f
+        val minAllowedSp = baseSp * shrinkMinFactor
         var lo = minAllowedSp
-        var hi = uniformPageSp
+        var hi = baseSp
         repeat(9) {
           val mid = (lo + hi) * 0.5f
           val (midSum, midPx) = measureLineWidthsAt(mid)
@@ -1020,7 +1032,8 @@ class MushafPageBitmapRenderer(
         val leftover = (widthPx.toFloat() - sumWordWidths).coerceAtLeast(0f)
         val evenGap = if (n > 1) leftover / (n - 1).toFloat() else Float.MAX_VALUE
 
-        if (n >= 2 && evenGap <= maxJustifyGapPx) {
+        val justifyCondition = if (isTwoPageMode) (n >= 2) else (n >= 2 && evenGap <= maxJustifyGapPx)
+        if (justifyCondition) {
           justifyEdgeToEdge = true
           val totalGap = leftover.toDouble()
           var prevCum = 0

@@ -39,7 +39,8 @@ data class PersistedReaderState(
   val lastSurahId: Int = 1,
   val lastPositionMs: Long = 0L,
   val playbackSpeed: Float = 1.0f,
-  val mushafSetupCompleted: Boolean = false,
+  val downloadedMushafIds: Set<String> = emptySet(),
+  val activeMushafId: String = "madinah_1421",
 )
 
 class ReaderPreferences(private val context: Context) {
@@ -54,7 +55,8 @@ class ReaderPreferences(private val context: Context) {
     val LAST_SURAH_ID = intPreferencesKey("last_surah_id")
     val LAST_POSITION_MS = longPreferencesKey("last_position_ms")
     val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
-    val MUSHAF_SETUP_COMPLETED = booleanPreferencesKey("mushaf_setup_completed")
+    val DOWNLOADED_MUSHAF_IDS = stringSetPreferencesKey("downloaded_mushaf_ids")
+    val ACTIVE_MUSHAF_ID = stringPreferencesKey("active_mushaf_id")
   }
 
   val stateFlow: Flow<PersistedReaderState> = context.dataStore.data.map { prefs ->
@@ -77,6 +79,9 @@ class ReaderPreferences(private val context: Context) {
       .filter { it in 1..604 }
       .sorted()
 
+    val downloadedIds = prefs[Keys.DOWNLOADED_MUSHAF_IDS] ?: emptySet()
+    val activeId = prefs[Keys.ACTIVE_MUSHAF_ID] ?: (downloadedIds.firstOrNull() ?: "madinah_1421")
+
     PersistedReaderState(
       lastPage = (prefs[Keys.LAST_PAGE] ?: 1).coerceIn(1, 604),
       bookmarks = bookmarks,
@@ -88,7 +93,8 @@ class ReaderPreferences(private val context: Context) {
       lastSurahId = (prefs[Keys.LAST_SURAH_ID] ?: 1).coerceIn(1, 114),
       lastPositionMs = (prefs[Keys.LAST_POSITION_MS] ?: 0L).coerceAtLeast(0L),
       playbackSpeed = (prefs[Keys.PLAYBACK_SPEED] ?: 1.0f).coerceIn(0.75f, 1.25f),
-      mushafSetupCompleted = prefs[Keys.MUSHAF_SETUP_COMPLETED] ?: false,
+      downloadedMushafIds = downloadedIds,
+      activeMushafId = activeId,
     )
   }
 
@@ -115,6 +121,39 @@ class ReaderPreferences(private val context: Context) {
 
   suspend fun setMushafEdition(edition: MushafEdition) {
     context.dataStore.edit { it[Keys.MUSHAF_EDITION] = edition.name }
+  }
+
+  suspend fun addDownloadedMushaf(id: String) {
+    context.dataStore.edit { prefs ->
+      val current = prefs[Keys.DOWNLOADED_MUSHAF_IDS].orEmpty().toMutableSet()
+      current.add(id)
+      prefs[Keys.DOWNLOADED_MUSHAF_IDS] = current
+      if (prefs[Keys.ACTIVE_MUSHAF_ID].isNullOrBlank()) {
+        prefs[Keys.ACTIVE_MUSHAF_ID] = id
+      }
+    }
+  }
+
+  suspend fun removeDownloadedMushaf(id: String) {
+    context.dataStore.edit { prefs ->
+      val current = prefs[Keys.DOWNLOADED_MUSHAF_IDS].orEmpty().toMutableSet()
+      if (current.size > 1 && current.contains(id)) {
+        current.remove(id)
+        prefs[Keys.DOWNLOADED_MUSHAF_IDS] = current
+        if (prefs[Keys.ACTIVE_MUSHAF_ID] == id) {
+          prefs[Keys.ACTIVE_MUSHAF_ID] = current.first()
+        }
+      }
+    }
+  }
+
+  suspend fun setActiveMushaf(id: String) {
+    context.dataStore.edit { prefs ->
+      val current = prefs[Keys.DOWNLOADED_MUSHAF_IDS].orEmpty()
+      if (current.contains(id)) {
+        prefs[Keys.ACTIVE_MUSHAF_ID] = id
+      }
+    }
   }
 
   suspend fun setDarkMode(isDark: Boolean) {
@@ -148,12 +187,6 @@ class ReaderPreferences(private val context: Context) {
       surahId?.let { prefs[Keys.LAST_SURAH_ID] = it.coerceIn(1, 114) }
       positionMs?.let { prefs[Keys.LAST_POSITION_MS] = it.coerceAtLeast(0L) }
       speed?.let { prefs[Keys.PLAYBACK_SPEED] = it.coerceIn(0.75f, 1.25f) }
-    }
-  }
-
-  suspend fun setMushafSetupCompleted(completed: Boolean) {
-    context.dataStore.edit {
-      it[Keys.MUSHAF_SETUP_COMPLETED] = completed
     }
   }
 }

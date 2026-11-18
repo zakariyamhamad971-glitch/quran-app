@@ -18,7 +18,9 @@ import com.example.data.prefs.PersistedReaderState
 import com.example.data.prefs.ReaderPreferences
 import com.example.data.quran.CreditSourceInfo
 import com.example.data.quran.JuzMeta
+import com.example.data.quran.MushafDownloadManager
 import com.example.data.quran.MushafEdition
+import com.example.data.quran.MushafItem
 import com.example.data.quran.MushafOfflineSetupManager
 import com.example.data.quran.MushafSetupState
 import com.example.data.quran.PageFontManager
@@ -142,6 +144,23 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     fontManager = fontManager,
     scope = viewModelScope,
   )
+
+  val mushafDownloadManager = MushafDownloadManager(
+    diskCache = diskCache,
+    quranRepository = quranRepository,
+    fontManager = fontManager,
+    scope = viewModelScope,
+  )
+
+  val downloadedMushafIdsState: StateFlow<Set<String>> = preferences.stateFlow
+    .map { it.downloadedMushafIds }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+  val activeMushafIdState: StateFlow<String> = preferences.stateFlow
+    .map { it.activeMushafId }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, "madinah_1421")
 
   val setupState: StateFlow<MushafSetupState> = setupManager.state
 
@@ -347,21 +366,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         }
       }
 
-      if (!saved.mushafSetupCompleted) {
-        setupManager.startOrResume {
-          completeSetupAndBootstrap(saved)
-        }
-        return@launch
-      }
-
-      setupManager.markCompleted()
       finishPostSetupBootstrap(saved)
     }
-  }
-
-  private suspend fun completeSetupAndBootstrap(saved: PersistedReaderState) {
-    preferences.setMushafSetupCompleted(true)
-    finishPostSetupBootstrap(saved)
   }
 
   private suspend fun finishPostSetupBootstrap(saved: PersistedReaderState) {
