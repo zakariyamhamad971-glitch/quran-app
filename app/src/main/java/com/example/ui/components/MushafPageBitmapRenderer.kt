@@ -320,15 +320,49 @@ class MushafPageBitmapRenderer(
     val headerTitle = if (surahHeaderNames.isNotBlank()) "سورة $surahHeaderNames" else ""
     val juzHizbText = "الجزء ${toArabicIndicDigits(pageData.juzNumber)} • الحزب ${toArabicIndicDigits(pageData.hizbNumber)}"
 
+    val baseTitleSp = 13f * 0.60f // 40% smaller: 7.8sp
+    val basePillSp = 11f * 0.60f  // 40% smaller: 6.6sp
     val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-      typeface = amiriBold
-      textSize = sp(13f)
+      typeface = amiriNormal
+      textSize = sp(baseTitleSp)
       color = headerTintInt
     }
     val pillPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-      typeface = ibmMedium
-      textSize = sp(11f)
+      typeface = amiriNormal
+      textSize = sp(basePillSp)
       color = mutedInkInt
+    }
+
+    val pillLeft = contentLeft + dp(4f)
+    val titleRight = contentRight - dp(4f)
+    val availableHeaderW = (titleRight - pillLeft).coerceAtLeast(1f)
+    val minSafeGap = dp(8f)
+    var pillPadH = dp(6f)
+    val pillPadV = dp(1f)
+
+    var pillTextW = pillPaint.measureText(juzHizbText)
+    var headerTitleW = if (headerTitle.isNotEmpty()) titlePaint.measureText(headerTitle) else 0f
+    var pillW = pillTextW + pillPadH * 2f
+
+    // Prevent any overlap between Juz/Hizb pill and multi-surah title (e.g. 3 surahs on page 604 or two-page mode)
+    if (headerTitle.isNotEmpty() && (pillW + minSafeGap + headerTitleW) > availableHeaderW) {
+      val minReadablePx = dp(4.5f)
+      val scale = ((availableHeaderW - minSafeGap - pillPadH * 2f) / (pillTextW + headerTitleW))
+        .coerceIn(0.45f, 0.96f)
+      titlePaint.textSize = (sp(baseTitleSp) * scale).coerceAtLeast(minReadablePx)
+      pillPaint.textSize = (sp(basePillSp) * scale).coerceAtLeast(minReadablePx * 0.85f)
+      pillPadH = (dp(6f) * scale).coerceAtLeast(dp(3.5f))
+      pillTextW = pillPaint.measureText(juzHizbText)
+      headerTitleW = titlePaint.measureText(headerTitle)
+      pillW = pillTextW + pillPadH * 2f
+
+      while ((pillW + minSafeGap + headerTitleW) > availableHeaderW && titlePaint.textSize > minReadablePx) {
+        titlePaint.textSize = (titlePaint.textSize * 0.94f).coerceAtLeast(minReadablePx)
+        pillPaint.textSize = (pillPaint.textSize * 0.94f).coerceAtLeast(minReadablePx * 0.85f)
+        pillTextW = pillPaint.measureText(juzHizbText)
+        headerTitleW = titlePaint.measureText(headerTitle)
+        pillW = pillTextW + pillPadH * 2f
+      }
     }
 
     val titleFm = titlePaint.fontMetrics
@@ -338,13 +372,8 @@ class MushafPageBitmapRenderer(
       (pillFm.descent - pillFm.ascent) + dp(4f),
     )
 
-    val pillPadH = dp(8f)
-    val pillPadV = dp(1f)
-    val pillTextW = pillPaint.measureText(juzHizbText)
     val pillTextH = pillFm.descent - pillFm.ascent
-    val pillW = pillTextW + pillPadH * 2f
     val pillH = pillTextH + pillPadV * 2f
-    val pillLeft = contentLeft + dp(4f)
     val pillTop = contentTop + (topHeaderHeight - pillH) * 0.5f
     fillPaint.color = withAlpha(goldInt, if (effectiveDark) 0.14f else 0.11f)
     canvas.drawRoundRect(
@@ -361,10 +390,20 @@ class MushafPageBitmapRenderer(
     )
 
     if (headerTitle.isNotEmpty()) {
-      val headerTitleW = titlePaint.measureText(headerTitle)
-      val titleRight = contentRight - dp(4f)
+      val maxAllowedTitleW = (availableHeaderW - pillW - minSafeGap).coerceAtLeast(0f)
+      val drawTitle = if (headerTitleW <= maxAllowedTitleW) {
+        headerTitle
+      } else {
+        android.text.TextUtils.ellipsize(
+          headerTitle,
+          titlePaint,
+          maxAllowedTitleW,
+          android.text.TextUtils.TruncateAt.END,
+        ).toString()
+      }
+      val drawTitleW = titlePaint.measureText(drawTitle)
       val titleBaseline = contentTop + (topHeaderHeight - (titleFm.descent - titleFm.ascent)) * 0.5f - titleFm.ascent
-      canvas.drawText(headerTitle, titleRight - headerTitleW, titleBaseline, titlePaint)
+      canvas.drawText(drawTitle, titleRight - drawTitleW, titleBaseline, titlePaint)
     }
 
     // 4. Bottom Footer Row (centered Page Number Pill + RTL-left long-press hint; RTL-right slot kept clear for interactive Bookmark button)
