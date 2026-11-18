@@ -90,6 +90,7 @@ import com.example.ui.components.AudioPickerSheetMode
 import com.example.ui.components.CreditsAndIntegrityDialog
 import com.example.ui.components.FullScreenQuranIndex
 import com.example.ui.components.MushafPageFrame
+import com.example.ui.components.MushafSelectorScreen
 import com.example.ui.components.MushafSetupScreen
 import com.example.ui.components.PersistentAudioBar
 import com.example.ui.components.ReciterPickerSheet
@@ -116,26 +117,17 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 fun ReaderScreen(
   viewModel: QabasatViewModel,
 ) {
-  val setupState by viewModel.setupState.collectAsStateWithLifecycle()
-  when (val currentSetup = setupState) {
-    MushafSetupState.Checking -> {
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .background(MaterialTheme.colorScheme.background),
-      )
-    }
+  val downloadedMushafIds by viewModel.downloadedMushafIdsState.collectAsStateWithLifecycle()
+  val downloadStates by viewModel.mushafDownloadManager.states.collectAsStateWithLifecycle()
 
-    is MushafSetupState.Required -> {
-      MushafSetupScreen(
-        state = currentSetup,
-        onRetry = remember(viewModel) { { viewModel.retryOfflineSetup() } },
-      )
-    }
-
-    MushafSetupState.Completed -> {
-      ReaderScreenContent(viewModel = viewModel)
-    }
+  if (downloadedMushafIds.isEmpty()) {
+    MushafSelectorScreen(
+      downloadStates = downloadStates,
+      onStartDownload = remember(viewModel) { { item -> viewModel.startMushafDownload(item) } },
+      onCancelDownload = remember(viewModel) { { id -> viewModel.cancelMushafDownload(id) } },
+    )
+  } else {
+    ReaderScreenContent(viewModel = viewModel)
   }
 }
 
@@ -250,11 +242,9 @@ private fun ReaderScreenContent(
         modifier = Modifier.align(Alignment.TopCenter),
       ) {
         QabasatTopBar(
-          mushafEdition = uiState.mushafEdition,
           isDarkTheme = isDarkTheme,
           effectiveTwoPageMode = effectiveTwoPageMode,
           isCompactWidth = maxWidth < 560.dp,
-          onToggleEdition = remember(viewModel) { { edition -> viewModel.setMushafEdition(edition) } },
           onSelectPageViewMode = remember(viewModel) { { mode -> viewModel.setPageViewMode(mode) } },
           onOpenIndex = remember { { isIndexOpen = true } },
           onOpenSettings = remember { { showSettingsSheet = true } },
@@ -392,7 +382,6 @@ private fun ReaderScreenContent(
         viewModel = viewModel,
         isDarkMode = isDarkTheme,
         backgroundTheme = uiState.backgroundTheme,
-        mushafEdition = uiState.mushafEdition,
         effectiveTwoPageMode = effectiveTwoPageMode,
         onOpenTajweedLegend = {
           viewModel.ensureTajweedLegendLoaded()
@@ -674,21 +663,29 @@ private fun ReaderSettingsHost(
   viewModel: QabasatViewModel,
   isDarkMode: Boolean,
   backgroundTheme: com.example.data.prefs.BackgroundTheme,
-  mushafEdition: MushafEdition,
   effectiveTwoPageMode: Boolean,
   onOpenTajweedLegend: () -> Unit,
   onOpenCredits: () -> Unit,
   onDismiss: () -> Unit,
 ) {
   val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+  val downloadedIds by viewModel.downloadedMushafIdsState.collectAsStateWithLifecycle()
+  val activeId by viewModel.activeMushafIdState.collectAsStateWithLifecycle()
+  val downloadStates by viewModel.mushafDownloadManager.states.collectAsStateWithLifecycle()
+
   SettingsSheet(
     isDarkMode = isDarkMode,
     backgroundTheme = backgroundTheme,
-    mushafEdition = mushafEdition,
     effectiveTwoPageMode = effectiveTwoPageMode,
+    downloadedMushafIds = downloadedIds,
+    activeMushafId = activeId,
+    downloadStates = downloadStates,
+    onStartDownload = { item -> viewModel.startMushafDownload(item) },
+    onCancelDownload = { id -> viewModel.cancelMushafDownload(id) },
+    onSelectActiveMushaf = { id -> viewModel.selectActiveMushaf(id) },
+    onRemoveMushaf = { id -> viewModel.removeMushaf(id) },
     onToggleDarkMode = { viewModel.toggleDarkMode() },
     onSelectBackgroundTheme = { theme -> viewModel.setBackgroundTheme(theme) },
-    onSelectEdition = { edition -> viewModel.setMushafEdition(edition) },
     onSelectPageViewMode = { mode -> viewModel.setPageViewMode(mode) },
     onOpenTajweedLegend = onOpenTajweedLegend,
     onOpenCredits = onOpenCredits,
@@ -890,11 +887,9 @@ private fun ReaderReciterPickerHost(
 
 @Composable
 private fun QabasatTopBar(
-  mushafEdition: MushafEdition,
   isDarkTheme: Boolean,
   effectiveTwoPageMode: Boolean,
   isCompactWidth: Boolean,
-  onToggleEdition: (MushafEdition) -> Unit,
   onSelectPageViewMode: (PageViewMode) -> Unit,
   onOpenIndex: () -> Unit,
   onOpenSettings: () -> Unit,
@@ -945,10 +940,6 @@ private fun QabasatTopBar(
         }
 
         if (!isCompactWidth) {
-          EditionSwitcherPill(
-            mushafEdition = mushafEdition,
-            onToggleEdition = onToggleEdition,
-          )
           PageViewModeSwitcherPill(
             effectiveTwoPageMode = effectiveTwoPageMode,
             onSelectPageViewMode = onSelectPageViewMode,
@@ -1021,49 +1012,15 @@ private fun QabasatTopBar(
           modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 2.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
+          horizontalArrangement = Arrangement.Center,
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          EditionSwitcherPill(
-            mushafEdition = mushafEdition,
-            onToggleEdition = onToggleEdition,
-          )
           PageViewModeSwitcherPill(
             effectiveTwoPageMode = effectiveTwoPageMode,
             onSelectPageViewMode = onSelectPageViewMode,
           )
         }
       }
-    }
-  }
-}
-
-@Composable
-private fun EditionSwitcherPill(
-  mushafEdition: MushafEdition,
-  onToggleEdition: (MushafEdition) -> Unit,
-) {
-  Surface(
-    shape = RoundedCornerShape(18.dp),
-    color = MaterialTheme.colorScheme.surfaceVariant,
-    modifier = Modifier.padding(horizontal = 2.dp),
-  ) {
-    Row(
-      modifier = Modifier.padding(3.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      EditionPill(
-        label = "المدينة",
-        selected = mushafEdition == MushafEdition.MADINAH_1421,
-        onClick = { onToggleEdition(MushafEdition.MADINAH_1421) },
-        testTag = "edition_madinah_button",
-      )
-      EditionPill(
-        label = "التجويد",
-        selected = mushafEdition == MushafEdition.TAJWEED_V4,
-        onClick = { onToggleEdition(MushafEdition.TAJWEED_V4) },
-        testTag = "edition_tajweed_button",
-      )
     }
   }
 }

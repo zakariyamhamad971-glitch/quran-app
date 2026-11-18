@@ -180,7 +180,7 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `normal page sizes uniformly from average lines, caps long shrink within 8 percent, justifies medium lines, and centers sparse lines`() = runBlocking {
+  fun `single page mode uses strictly uniform font size across all lines and justifies lines`() = runBlocking {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val renderer = MushafPageBitmapRenderer(context)
     val surahs = mapOf(
@@ -205,13 +205,13 @@ class ExampleRobolectricTest {
         },
       )
     }
-    // Line 6: slightly shorter line (7 words -> should justify edge-to-edge cleanly)
+    // Line 6: slightly shorter line (7 words)
     val mediumShortWords = (1..7).map { idx ->
       WordDto(200 + idx, 6, if (idx == 7) "end" else "word", 3, 6, "كلمة", "قصير$idx")
     }
-    // Line 7: sparse 2-word stub (huge remaining gap -> must remain centered, not edge-to-edge stretched)
-    val sparseWords = (1..2).map { idx ->
-      WordDto(300 + idx, 7, if (idx == 2) "end" else "word", 3, 7, "كلمة", "نهاية$idx")
+    // Line 7: 3-word line
+    val shortWords = (1..3).map { idx ->
+      WordDto(300 + idx, 7, if (idx == 3) "end" else "word", 3, 7, "كلمة", "نهاية$idx")
     }
 
     val page3 = MushafPageBuilder.buildPage(
@@ -221,7 +221,7 @@ class ExampleRobolectricTest {
           avgVerseWords +
           listOf(
             VerseDto(6, "2:6", 3, 1, 1, words = mediumShortWords),
-            VerseDto(7, "2:7", 3, 1, 1, words = sparseWords),
+            VerseDto(7, "2:7", 3, 1, 1, words = shortWords),
           ),
       ),
       chaptersById = surahs,
@@ -236,6 +236,7 @@ class ExampleRobolectricTest {
       edition = MushafEdition.MADINAH_1421,
       isDarkTheme = false,
       backgroundTheme = BackgroundTheme.WHITE,
+      isTwoPageMode = false,
     )
 
     val rendered = renderer.renderOrGet(
@@ -250,30 +251,27 @@ class ExampleRobolectricTest {
     val rectLong = rendered.verseHighlightRects["2:1"]!!
     val rectAvg = rendered.verseHighlightRects["2:2"]!!
     val rectMedShort = rendered.verseHighlightRects["2:6"]!!
-    val rectSparse = rendered.verseHighlightRects["2:7"]!!
+    val rectShort = rendered.verseHighlightRects["2:7"]!!
 
-    // Long line never overflows frame horizontally and shrinks at most 8% from uniform height
+    // Long line never overflows frame horizontally
     assertTrue(rectLong[0] >= 0f && rectLong[2] <= spec.widthPx.toFloat())
     val longH = rectLong[3] - rectLong[1]
     val avgH = rectAvg[3] - rectAvg[1]
-    assertTrue(longH >= avgH * 0.90f)
+    // All lines in single-page mode share the exact same uniform font size and vertical text height
+    assertEquals(longH, avgH, 1.0f)
 
-    // Medium-short line (7 words) justifies cleanly across majority of width
+    // Lines justify across the width
     val medShortW = rectMedShort[2] - rectMedShort[0]
     assertTrue(medShortW > spec.widthPx * 0.70f)
-
-    // Sparse 2-word line stays centered with reasonable gaps, NOT stretched edge-to-edge
-    val sparseW = rectSparse[2] - rectSparse[0]
-    assertTrue(sparseW < spec.widthPx * 0.55f)
-    val sparseCenter = (rectSparse[0] + rectSparse[2]) * 0.5f
-    assertEquals(spec.widthPx * 0.5f, sparseCenter, 25f)
+    val shortW = rectShort[2] - rectShort[0]
+    assertTrue(shortW > spec.widthPx * 0.70f)
   }
 
   @Test
   fun `offline setup manager tracks resumable progress in verified cache and setup flag persists`() = runBlocking {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val prefs = ReaderPreferences(context)
-    assertFalse(prefs.stateFlow.first().mushafSetupCompleted)
+    assertTrue(prefs.stateFlow.first().downloadedMushafIds.isEmpty())
 
     val diskCache = VerifiedDiskCache(context)
     val fontManager = PageFontManager(diskCache)
@@ -328,7 +326,7 @@ class ExampleRobolectricTest {
     assertEquals(1, repo.getJuzs().getOrThrow().size)
     assertTrue(repo.getPage(1, includeTajweedFallback = false).isSuccess)
 
-    prefs.setMushafSetupCompleted(true)
-    assertTrue(prefs.stateFlow.first().mushafSetupCompleted)
+    prefs.addDownloadedMushaf("madinah_1421")
+    assertTrue(prefs.stateFlow.first().downloadedMushafIds.contains("madinah_1421"))
   }
 }

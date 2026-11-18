@@ -22,6 +22,7 @@ import com.example.data.quran.MushafDownloadManager
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafItem
 import com.example.data.quran.MushafOfflineSetupManager
+import com.example.data.quran.MushafRegistry
 import com.example.data.quran.MushafSetupState
 import com.example.data.quran.PageFontManager
 import com.example.data.quran.QuranRepository
@@ -397,13 +398,45 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     appUpdateManager.checkForUpdatesInBackground()
   }
 
-  fun retryOfflineSetup() {
-    viewModelScope.launch {
-      val saved = preferences.stateFlow.first()
-      setupManager.retry {
-        completeSetupAndBootstrap(saved)
-      }
+  fun startMushafDownload(item: MushafItem) {
+    mushafDownloadManager.startDownload(item) {
+      preferences.addDownloadedMushaf(item.id)
+      preferences.setActiveMushaf(item.id)
+      preferences.setMushafEdition(item.edition)
+      _uiState.update { it.copy(mushafEdition = item.edition) }
+      val nextSpec = rebuildRenderSpec()
+      onRenderSpecUpdated(nextSpec)
     }
+  }
+
+  fun cancelMushafDownload(id: String) {
+    mushafDownloadManager.cancelDownload(id)
+  }
+
+  fun selectActiveMushaf(id: String) {
+    val item = MushafRegistry.getById(id)
+    viewModelScope.launch {
+      preferences.setActiveMushaf(id)
+      preferences.setMushafEdition(item.edition)
+      _uiState.update { it.copy(mushafEdition = item.edition) }
+      val nextSpec = rebuildRenderSpec()
+      onRenderSpecUpdated(nextSpec)
+    }
+  }
+
+  fun removeMushaf(id: String) {
+    viewModelScope.launch {
+      preferences.removeDownloadedMushaf(id)
+      val currentActive = preferences.stateFlow.first().activeMushafId
+      val item = MushafRegistry.getById(currentActive)
+      _uiState.update { it.copy(mushafEdition = item.edition) }
+      val nextSpec = rebuildRenderSpec()
+      onRenderSpecUpdated(nextSpec)
+    }
+  }
+
+  fun retryOfflineSetup() {
+    // Retained for backward compatibility
   }
 
   fun ensureCurrentPageLoaded() {

@@ -394,10 +394,28 @@ class MushafPageBitmapRenderer(
       footerBadgePaint,
     )
 
-    val hintText = "اضغط مطولاً على الآية للتفسير"
-    val hintFm = hintPaint.fontMetrics
-    val hintBaseline = footerTop + (footerHeight - (hintFm.descent - hintFm.ascent)) * 0.5f - hintFm.ascent
-    canvas.drawText(hintText, contentLeft, hintBaseline, hintPaint)
+    // Footer hint on the left side: strictly guarded to maintain safe gap and never overlap the centered badge
+    val safeGapFromBadge = dp(16f)
+    val maxHintW = (badgeLeft - contentLeft - safeGapFromBadge).coerceAtLeast(0f)
+    if (maxHintW > dp(40f)) {
+      var hintText = "اضغط مطولاً على الآية للتفسير"
+      hintPaint.textSize = sp(10f)
+      if (hintPaint.measureText(hintText) > maxHintW) {
+        hintPaint.textSize = sp(9f)
+      }
+      if (hintPaint.measureText(hintText) > maxHintW) {
+        hintText = "اضغط مطولاً للتفسير"
+        hintPaint.textSize = sp(9f)
+      }
+      if (hintPaint.measureText(hintText) > maxHintW) {
+        hintPaint.textSize = sp(8f)
+      }
+      if (hintPaint.measureText(hintText) <= maxHintW) {
+        val hintFm = hintPaint.fontMetrics
+        val hintBaseline = footerTop + (footerHeight - (hintFm.descent - hintFm.ascent)) * 0.5f - hintFm.ascent
+        canvas.drawText(hintText, contentLeft, hintBaseline, hintPaint)
+      }
+    }
 
     // 5. Mushaf 15-Line (or 7-line for p1..p2) Body Area
     val bodyTop = contentTop + topHeaderHeight + dp(1f)
@@ -793,15 +811,82 @@ class MushafPageBitmapRenderer(
       return lo.coerceAtLeast(minSp)
     }
 
-    // Pages 3..604: size uniformly so typical/average body lines fill page width with small natural spacing,
-    // while guaranteeing every long line can still fit within at most 8% (or 10% in two-page mode) per-line shrink and minimal gap.
+    // Single-page mode: restore clean uniform font size across all lines based on longest line fit
+    if (!isTwoPageMode) {
+      fun allSinglePageLinesFitAt(candidateSp: Float): Boolean {
+        val fontSizePx = candidateSp * density * fontScale
+        paint.textSize = fontSizePx
+        val minGapPx = (fontSizePx * 0.14f).coerceAtLeast(2.5f)
+        val fm = paint.fontMetrics
+        val layoutLineH = fm.bottom - fm.top
+        val baselineInSlot = (slotHeightPx - layoutLineH) * 0.5f - fm.top
+
+        var inkMinTop = Int.MAX_VALUE
+        var inkMaxBottom = Int.MIN_VALUE
+        var hasMeasuredInk = false
+        var maxMarkerH = 0f
+
+        for (lineIdx in ayahLines.indices) {
+          val words = ayahLines[lineIdx].words
+          val tokens = lineTokens[lineIdx]
+          val n = words.size
+          var sumW = 0f
+
+          for (i in 0 until n) {
+            val w = words[i]
+            if (renderVectorTajweedMarkers && w.isEndMarker) {
+              sumW += fontSizePx * 1.32f
+              val mh = fontSizePx * 1.18f
+              if (mh > maxMarkerH) maxMarkerH = mh
+            } else {
+              val tok = tokens[i]
+              sumW += paint.measureText(tok)
+              if (tok.isNotEmpty()) {
+                paint.getTextBounds(tok, 0, tok.length, tokenBounds)
+                if (tokenBounds.top < inkMinTop) inkMinTop = tokenBounds.top
+                if (tokenBounds.bottom > inkMaxBottom) inkMaxBottom = tokenBounds.bottom
+                hasMeasuredInk = true
+              }
+            }
+          }
+
+          val totalMinW = sumW + minGapPx * (n - 1).coerceAtLeast(0)
+          if (totalMinW > effectiveWidthPx) return false
+        }
+
+        if (maxMarkerH > slotHeightPx * 0.95f) return false
+        if (hasMeasuredInk) {
+          val inkH = (inkMaxBottom - inkMinTop).toFloat()
+          if (inkH > slotHeightPx * 0.90f) return false
+          val inkTopInSlot = baselineInSlot + inkMinTop.toFloat()
+          val inkBottomInSlot = baselineInSlot + inkMaxBottom.toFloat()
+          if (inkTopInSlot < slotHeightPx * 0.02f || inkBottomInSlot > slotHeightPx * 0.98f) {
+            return false
+          }
+        } else {
+          if ((fm.descent - fm.ascent) > slotHeightPx * 1.05f) return false
+        }
+        return true
+      }
+
+      if (allSinglePageLinesFitAt(maxSp)) return maxSp
+      var lo = minSp
+      var hi = maxSp
+      repeat(12) {
+        val mid = (lo + hi) * 0.5f
+        if (allSinglePageLinesFitAt(mid)) lo = mid else hi = mid
+      }
+      return lo.coerceAtLeast(minSp)
+    }
+
+    // Two-page mode: sized with 25% font enlargement and up to 10% outlier shrink
     val bodyLineIndices = ayahLines.indices.filter { ayahLines[it].words.size >= 4 }
       .ifEmpty { ayahLines.indices.toList() }
     val isBodyLine = BooleanArray(ayahLines.size)
     for (idx in bodyLineIndices) isBodyLine[idx] = true
 
-    fun pageUniformFitsAt(candidateSp: Float): Boolean {
-      val effectiveCandidateSp = if (isTwoPageMode) candidateSp * 1.25f else candidateSp
+    fun twoPageUniformFitsAt(candidateSp: Float): Boolean {
+      val effectiveCandidateSp = candidateSp * 1.25f
       val fontSizePx = effectiveCandidateSp * density * fontScale
       paint.textSize = fontSizePx
       val naturalGapPx = (fontSizePx * 0.16f).coerceAtLeast(3f)
@@ -873,10 +958,9 @@ class MushafPageBitmapRenderer(
         if ((fm.descent - fm.ascent) > slotHeightPx * 1.05f) return false
       }
 
-      // Verify any line wider than page at effectiveCandidateSp still fits with shrink limit (8% single, 10% two page) + minimal touch gap
+      // In two-page mode, allow outlier lines to shrink up to 10% (0.90f)
       if (overflowLineIndices != null) {
-        val shrinkFactor = if (isTwoPageMode) 0.90f else 0.92f
-        val shrunkFontSizePx = fontSizePx * shrinkFactor
+        val shrunkFontSizePx = fontSizePx * 0.90f
         paint.textSize = shrunkFontSizePx
         val shrunkTouchGapPx = (shrunkFontSizePx * 0.025f).coerceAtLeast(1.5f)
         for (idx in overflowLineIndices) {
@@ -901,13 +985,13 @@ class MushafPageBitmapRenderer(
       return true
     }
 
-    if (pageUniformFitsAt(maxSp)) return maxSp
+    if (twoPageUniformFitsAt(maxSp)) return maxSp
 
     var lo = minSp
     var hi = maxSp
     repeat(12) {
       val mid = (lo + hi) * 0.5f
-      if (pageUniformFitsAt(mid)) lo = mid else hi = mid
+      if (twoPageUniformFitsAt(mid)) lo = mid else hi = mid
     }
     return lo.coerceAtLeast(minSp)
   }
@@ -989,15 +1073,39 @@ class MushafPageBitmapRenderer(
           gaps[i] = defaultGapPx
         }
       }
+    } else if (!isTwoPageMode) {
+      // Single-page mode: strictly uniform font size for ALL lines of the whole page (no line shrinks)
+      // Shorter lines distributed evenly across full width (Justify edge-to-edge)
+      fittedSp = uniformPageSp
+      val measured = measureLineWidthsAt(fittedSp)
+      sumWordWidths = measured.first
+      fontSizePx = measured.second
+
+      justifyEdgeToEdge = n >= 2
+      if (justifyEdgeToEdge && n > 1) {
+        val leftoverWidth = (effectiveWidthF - sumWordWidths).coerceAtLeast(0f)
+        val totalGap = leftoverWidth.toDouble()
+        var prevCum = 0
+        for (i in 0 until n - 1) {
+          val cum = ((totalGap * (i + 1)) / (n - 1)).roundToInt()
+          gaps[i] = (cum - prevCum).coerceAtLeast(0)
+          prevCum = cum
+        }
+      } else {
+        val defaultGapPx = (fontSizePx * 0.20f).roundToInt().coerceAtLeast(3)
+        for (i in 0 until n - 1) {
+          gaps[i] = defaultGapPx
+        }
+      }
     } else {
+      // Two-page mode: enlarged font with outlier shrink up to 10% and edge-to-edge justification
       val gapSlots = (n - 1).coerceAtLeast(0)
       val minTouchGapAtUniform = (fontSizePx * 0.025f).coerceAtLeast(1.5f)
       val minLineWidthAtUniform = sumWordWidths + minTouchGapAtUniform * gapSlots
 
       if (minLineWidthAtUniform > effectiveWidthF && n > 0) {
-        // Longer outlier line: shrink up to 10% in two-page mode (0.90) or 8% in single-page mode (0.92) with minimal touch gap
-        val shrinkMinFactor = if (isTwoPageMode) 0.90f else 0.92f
-        val minAllowedSp = baseSp * shrinkMinFactor
+        // Outlier line in two-page mode: shrink up to 10% (0.90) with minimal touch gap
+        val minAllowedSp = baseSp * 0.90f
         var lo = minAllowedSp
         var hi = baseSp
         repeat(9) {
@@ -1027,14 +1135,9 @@ class MushafPageBitmapRenderer(
           }
         }
       } else {
-        val naturalGapPx = (fontSizePx * 0.16f).roundToInt().coerceAtLeast(3)
-        val maxJustifyGapPx = (fontSizePx * 1.45f).coerceAtLeast(12f)
-        val leftover = (widthPx.toFloat() - sumWordWidths).coerceAtLeast(0f)
-        val evenGap = if (n > 1) leftover / (n - 1).toFloat() else Float.MAX_VALUE
-
-        val justifyCondition = if (isTwoPageMode) (n >= 2) else (n >= 2 && evenGap <= maxJustifyGapPx)
-        if (justifyCondition) {
-          justifyEdgeToEdge = true
+        justifyEdgeToEdge = n >= 2
+        if (justifyEdgeToEdge && n > 1) {
+          val leftover = (effectiveWidthF - sumWordWidths).coerceAtLeast(0f)
           val totalGap = leftover.toDouble()
           var prevCum = 0
           for (i in 0 until n - 1) {
@@ -1043,8 +1146,7 @@ class MushafPageBitmapRenderer(
             prevCum = cum
           }
         } else {
-          // Short line with large remaining space after max reasonable gap stays centered like printed Mushaf
-          justifyEdgeToEdge = false
+          val naturalGapPx = (fontSizePx * 0.16f).roundToInt().coerceAtLeast(3)
           for (i in 0 until n - 1) {
             gaps[i] = naturalGapPx
           }
