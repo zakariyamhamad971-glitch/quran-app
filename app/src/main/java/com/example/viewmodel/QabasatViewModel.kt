@@ -168,6 +168,11 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     .distinctUntilChanged()
     .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+  val betaChannelUnlockedState: StateFlow<Boolean> = preferences.stateFlow
+    .map { it.betaChannelUnlocked || it.betaChannelEnabled }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
   val setupState: StateFlow<MushafSetupState> = setupManager.state
 
   private val _uiState = MutableStateFlow(ReaderUiState())
@@ -908,6 +913,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   fun setBetaChannelEnabled(enabled: Boolean) {
     viewModelScope.launch {
       preferences.setBetaChannelEnabled(enabled)
+    }
+  }
+
+  fun unlockBetaChannel() {
+    viewModelScope.launch {
+      preferences.setBetaChannelUnlocked(true)
     }
   }
 

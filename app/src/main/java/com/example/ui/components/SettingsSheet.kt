@@ -61,11 +61,36 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import android.os.SystemClock
+import androidx.compose.ui.text.style.TextAlign
+import com.example.BuildConfig
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.PageViewMode
 import com.example.data.quran.MushafDownloadState
 import com.example.data.quran.MushafItem
 import com.example.data.quran.MushafRegistry
+
+internal object BetaUnlockTapTracker {
+  const val REQUIRED_TAPS = 10
+  const val MAX_INTERVAL_MS = 2_000L
+
+  data class TapState(
+    val count: Int = 0,
+    val lastTapMs: Long = 0L,
+    val unlocked: Boolean = false,
+  )
+
+  fun onTap(current: TapState, nowMs: Long): TapState {
+    if (current.unlocked) return current
+    val withinWindow = current.count > 0 && (nowMs - current.lastTapMs) in 0L until MAX_INTERVAL_MS
+    val nextCount = if (withinWindow) current.count + 1 else 1
+    return if (nextCount >= REQUIRED_TAPS) {
+      TapState(count = 0, lastTapMs = nowMs, unlocked = true)
+    } else {
+      TapState(count = nextCount, lastTapMs = nowMs, unlocked = false)
+    }
+  }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,13 +113,22 @@ fun SettingsSheet(
   onDismiss: () -> Unit,
   isCheckingUpdate: Boolean = false,
   onCheckForUpdate: () -> Unit = {},
+  isBetaChannelUnlocked: Boolean = false,
   isBetaChannelEnabled: Boolean = false,
+  onUnlockBetaChannel: () -> Unit = {},
   onToggleBetaChannel: (Boolean) -> Unit = {},
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var searchQuery by remember { mutableStateOf("") }
   var deleteWarningMessage by remember { mutableStateOf<String?>(null) }
+  var tapState by remember(isBetaChannelUnlocked, isBetaChannelEnabled) {
+    mutableStateOf(
+      BetaUnlockTapTracker.TapState(
+        unlocked = isBetaChannelUnlocked || isBetaChannelEnabled,
+      ),
+    )
+  }
 
   if (deleteWarningMessage != null) {
     AlertDialog(
@@ -352,43 +386,89 @@ fun SettingsSheet(
         }
       }
 
-      Spacer(Modifier.height(10.dp))
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        modifier = Modifier
-          .fillMaxWidth()
-          .clip(RoundedCornerShape(14.dp))
-          .clickable { onToggleBetaChannel(!isBetaChannelEnabled) },
-      ) {
-        Row(
+      val showBetaSwitch = isBetaChannelUnlocked || isBetaChannelEnabled || tapState.unlocked
+      if (showBetaSwitch) {
+        Spacer(Modifier.height(10.dp))
+        Surface(
+          shape = RoundedCornerShape(14.dp),
+          color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
           modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
+            .clip(RoundedCornerShape(14.dp))
+            .clickable { onToggleBetaChannel(!isBetaChannelEnabled) },
         ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = "قناة التجربة",
-              style = MaterialTheme.typography.titleSmall,
-            )
-            Text(
-              text = "استلام التحديثات التجريبية (Beta) قبل الإصدار الرسمي",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "قناة التجربة",
+                style = MaterialTheme.typography.titleSmall,
+              )
+              Text(
+                text = "استلام التحديثات التجريبية (Beta) قبل الإصدار الرسمي",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+            Spacer(Modifier.width(10.dp))
+            Switch(
+              checked = isBetaChannelEnabled,
+              onCheckedChange = onToggleBetaChannel,
+              modifier = Modifier.testTag("settings_beta_channel_switch"),
             )
           }
-          Spacer(Modifier.width(10.dp))
-          Switch(
-            checked = isBetaChannelEnabled,
-            onCheckedChange = onToggleBetaChannel,
-            modifier = Modifier.testTag("settings_beta_channel_switch"),
-          )
         }
       }
 
-      Spacer(Modifier.height(26.dp))
+      Spacer(Modifier.height(14.dp))
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+      Spacer(Modifier.height(8.dp))
+
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+      ) {
+        Box(
+          contentAlignment = Alignment.Center,
+          modifier = Modifier
+            .fillMaxWidth()
+            .minimumInteractiveComponentSize()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable {
+              val next = BetaUnlockTapTracker.onTap(tapState, SystemClock.elapsedRealtime())
+              tapState = next
+              if (next.unlocked && !isBetaChannelUnlocked) {
+                onUnlockBetaChannel()
+              }
+            }
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .testTag("settings_version_row"),
+        ) {
+          Text(
+            text = "رقم الإصدار ${BuildConfig.VERSION_NAME}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+          )
+        }
+        Text(
+          text = "تم صنعه و تطويره بواسطه محمد زكريا المخزنجي.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+          textAlign = TextAlign.Center,
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .testTag("settings_developer_credit"),
+        )
+      }
+
+      Spacer(Modifier.height(22.dp))
     }
   }
 }

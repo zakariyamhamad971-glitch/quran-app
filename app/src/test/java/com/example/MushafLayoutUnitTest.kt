@@ -735,4 +735,44 @@ class MushafLayoutUnitTest {
     val upToDate = com.example.update.AppUpdateManager.evaluateCandidateAgainstBuild(equal, currentBuild)
     assertEquals(com.example.update.AppUpdateState.UpToDate, upToDate)
   }
+
+  @Test
+  fun `beta channel unlocked preference defaults to false`() {
+    val defaultState = com.example.data.prefs.PersistedReaderState()
+    assertFalse(defaultState.betaChannelUnlocked)
+    assertFalse(defaultState.betaChannelEnabled)
+  }
+
+  @Test
+  fun `beta unlock requires 10 consecutive taps within less than 2 seconds and resets on timeout`() {
+    var state = com.example.ui.components.BetaUnlockTapTracker.TapState()
+    var t = 1_000L
+
+    // 9 fast taps do not unlock yet
+    repeat(9) {
+      t += 300L
+      state = com.example.ui.components.BetaUnlockTapTracker.onTap(state, t)
+      assertFalse(state.unlocked)
+    }
+    assertEquals(9, state.count)
+
+    // Waiting >= 2000ms resets counter back to 1 on next tap
+    t += 2_000L
+    state = com.example.ui.components.BetaUnlockTapTracker.onTap(state, t)
+    assertFalse(state.unlocked)
+    assertEquals(1, state.count)
+
+    // 8 more fast taps (total 9 consecutive) still locked
+    repeat(8) {
+      t += 500L
+      state = com.example.ui.components.BetaUnlockTapTracker.onTap(state, t)
+      assertFalse(state.unlocked)
+    }
+    assertEquals(9, state.count)
+
+    // 10th consecutive fast tap (< 2000ms) unlocks
+    t += 1_999L
+    state = com.example.ui.components.BetaUnlockTapTracker.onTap(state, t)
+    assertTrue(state.unlocked)
+  }
 }

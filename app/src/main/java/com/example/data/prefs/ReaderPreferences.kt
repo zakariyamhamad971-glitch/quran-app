@@ -43,6 +43,7 @@ data class PersistedReaderState(
   val activeMushafId: String = "madinah_1421",
   val layoutCacheVersion: Int = 1,
   val betaChannelEnabled: Boolean = false,
+  val betaChannelUnlocked: Boolean = false,
 )
 
 class ReaderPreferences(private val context: Context) {
@@ -61,6 +62,7 @@ class ReaderPreferences(private val context: Context) {
     val ACTIVE_MUSHAF_ID = stringPreferencesKey("active_mushaf_id")
     val LAYOUT_CACHE_VERSION = intPreferencesKey("layout_cache_version")
     val BETA_CHANNEL_ENABLED = booleanPreferencesKey("beta_channel_enabled")
+    val BETA_CHANNEL_UNLOCKED = booleanPreferencesKey("beta_channel_unlocked")
   }
 
   val stateFlow: Flow<PersistedReaderState> = context.dataStore.data.map { prefs ->
@@ -101,6 +103,7 @@ class ReaderPreferences(private val context: Context) {
       activeMushafId = activeId,
       layoutCacheVersion = prefs[Keys.LAYOUT_CACHE_VERSION] ?: 1,
       betaChannelEnabled = prefs[Keys.BETA_CHANNEL_ENABLED] ?: false,
+      betaChannelUnlocked = (prefs[Keys.BETA_CHANNEL_UNLOCKED] ?: false) || (prefs[Keys.BETA_CHANNEL_ENABLED] ?: false),
     )
   }
 
@@ -201,6 +204,13 @@ class ReaderPreferences(private val context: Context) {
   }
 
   suspend fun setBetaChannelEnabled(enabled: Boolean) {
-    context.dataStore.edit { it[Keys.BETA_CHANNEL_ENABLED] = enabled }
+    context.dataStore.edit { prefs ->
+      prefs[Keys.BETA_CHANNEL_ENABLED] = enabled
+      prefs[Keys.BETA_CHANNEL_UNLOCKED] = true
+    }
+  }
+
+  suspend fun setBetaChannelUnlocked(unlocked: Boolean) {
+    context.dataStore.edit { it[Keys.BETA_CHANNEL_UNLOCKED] = unlocked }
   }
 }
