@@ -111,10 +111,40 @@ class MushafLayoutUnitTest {
       }
       r.endObject()
     }
-    for (name in listOf("layout_madinah_v2.json", "layout_tajweed_v4.json")) {
+    for (name in listOf("credits.json", "layout_madinah_v2.json", "layout_tajweed_v4.json")) {
       val actual = Sha256Integrity.sha256Hex(locateQuranAsset(name))
       assertEquals("SHA-256 mismatch for $name", manifestMap[name], actual)
     }
+
+    val fontCandidates = listOf(
+      File("src/main/res/font/surah_name_v4.ttf"),
+      File("app/src/main/res/font/surah_name_v4.ttf"),
+    )
+    val fontFile = fontCandidates.firstOrNull { it.exists() }
+      ?: error("Missing res/font/surah_name_v4.ttf")
+    val expectedFontSha = "026cfe8ac461531a7b1c8e4edd05ce3343f09e9c73447ff14c6bc93f3193d661"
+    val actualFontSha = Sha256Integrity.sha256Hex(fontFile)
+    assertEquals(expectedFontSha, actualFontSha)
+    assertEquals(expectedFontSha, manifestMap["res/font/surah_name_v4.ttf"])
+  }
+
+  @Test
+  fun `surah name ligature formatter maps surah 1 to 114 and credits registers QUL V4 font`() {
+    assertEquals(
+      "surah001",
+      com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahLigature(1),
+    )
+    assertEquals(
+      "surah017",
+      com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahLigature(17),
+    )
+    assertEquals(
+      "surah114",
+      com.example.ui.components.SurahHeaderOrnamentRenderer.formatSurahLigature(114),
+    )
+    val creditsText = locateQuranAsset("credits.json").readText()
+    assertTrue(creditsText.contains("QUL V4 Surah Name Font"))
+    assertTrue(creditsText.contains("qul_surah_name_v4"))
   }
 
   @Test

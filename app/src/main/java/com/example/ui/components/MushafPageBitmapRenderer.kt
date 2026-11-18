@@ -129,9 +129,13 @@ class MushafPageBitmapRenderer(
   private var cachedIbmNormal: Typeface? = null
   @Volatile
   private var cachedIbmMedium: Typeface? = null
+  @Volatile
+  private var cachedSurahNameV4: Typeface? = null
+  @Volatile
+  private var surahNameV4Attempted: Boolean = false
 
   private fun ensureUiFontsLoaded() {
-    if (cachedAmiriNormal != null && cachedIbmNormal != null) return
+    if (cachedAmiriNormal != null && cachedIbmNormal != null && surahNameV4Attempted) return
     synchronized(this) {
       if (cachedAmiriNormal == null) {
         val amiri = runCatching { ResourcesCompat.getFont(context, R.font.amiri) }.getOrNull()
@@ -144,6 +148,10 @@ class MushafPageBitmapRenderer(
           ?: Typeface.SANS_SERIF
         cachedIbmNormal = ibm
         cachedIbmMedium = Typeface.create(ibm, Typeface.BOLD)
+      }
+      if (!surahNameV4Attempted) {
+        cachedSurahNameV4 = runCatching { ResourcesCompat.getFont(context, R.font.surah_name_v4) }.getOrNull()
+        surahNameV4Attempted = true
       }
     }
   }
@@ -241,6 +249,7 @@ class MushafPageBitmapRenderer(
     val amiriBold = cachedAmiriBold ?: amiriNormal
     val ibmNormal = cachedIbmNormal ?: Typeface.SANS_SERIF
     val ibmMedium = cachedIbmMedium ?: ibmNormal
+    val surahNameV4 = cachedSurahNameV4
 
     val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
@@ -467,16 +476,6 @@ class MushafPageBitmapRenderer(
       color = inkInt
       textAlign = Paint.Align.CENTER
     }
-    val surahBandTitlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-      typeface = amiriBold
-      textSize = sp(17f)
-      color = headerTintInt
-    }
-    val surahBandSidePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-      typeface = ibmMedium
-      textSize = sp(10f)
-      color = headerTintInt
-    }
 
     val isFramedIntroPage = pageData.pageNumber in 1..2
     val isTwoPageMode = spec.isTwoPageMode
@@ -501,18 +500,18 @@ class MushafPageBitmapRenderer(
         is MushafLine.EmptyLine -> Unit
 
         is MushafLine.SurahHeaderLine -> {
-          drawSurahHeaderBand(
+          SurahHeaderOrnamentRenderer.drawSurahHeaderBand(
             canvas = canvas,
             surah = line.surah,
-            left = bodyLeft + dp(2f),
-            top = slotTop + dp(1f),
-            width = (contentWidth - dp(4f)).coerceAtLeast(1f),
-            height = (slotHeight - dp(2f)).coerceAtLeast(1f),
-            goldInt = goldInt,
-            fillPaint = fillPaint,
-            strokePaint = strokePaint,
-            titlePaint = surahBandTitlePaint,
-            sidePaint = surahBandSidePaint,
+            edition = spec.edition,
+            effectiveDark = effectiveDark,
+            left = bodyLeft + dp(1f),
+            top = slotTop + dp(0.5f),
+            width = (contentWidth - dp(2f)).coerceAtLeast(1f),
+            height = (slotHeight - dp(1f)).coerceAtLeast(1f),
+            amiriBold = amiriBold,
+            ibmMedium = ibmMedium,
+            surahNameV4 = surahNameV4,
             dpFn = ::dp,
           )
         }
@@ -597,74 +596,6 @@ class MushafPageBitmapRenderer(
         codeV2Lines = hitCodeV2Lines,
       ),
     )
-  }
-
-  private fun drawSurahHeaderBand(
-    canvas: Canvas,
-    surah: SurahMeta,
-    left: Float,
-    top: Float,
-    width: Float,
-    height: Float,
-    goldInt: Int,
-    fillPaint: Paint,
-    strokePaint: Paint,
-    titlePaint: TextPaint,
-    sidePaint: TextPaint,
-    dpFn: (Float) -> Float,
-  ) {
-    val inset = dpFn(9f)
-    val innerPad = dpFn(2.5f)
-    val right = left + width
-    val bottom = top + height
-    val midY = top + height * 0.5f
-
-    val outerPath = Path().apply {
-      moveTo(left + inset, top)
-      lineTo(right - inset, top)
-      lineTo(right, midY)
-      lineTo(right - inset, bottom)
-      lineTo(left + inset, bottom)
-      lineTo(left, midY)
-      close()
-    }
-    val innerPath = Path().apply {
-      moveTo(left + inset + innerPad, top + innerPad)
-      lineTo(right - inset - innerPad, top + innerPad)
-      lineTo(right - innerPad, midY)
-      lineTo(right - inset - innerPad, bottom - innerPad)
-      lineTo(left + inset + innerPad, bottom - innerPad)
-      lineTo(left + innerPad, midY)
-      close()
-    }
-
-    fillPaint.color = withAlpha(goldInt, 0.16f)
-    canvas.drawPath(outerPath, fillPaint)
-
-    strokePaint.color = goldInt
-    strokePaint.strokeWidth = dpFn(1.25f)
-    canvas.drawPath(outerPath, strokePaint)
-
-    strokePaint.color = withAlpha(goldInt, 0.45f)
-    strokePaint.strokeWidth = dpFn(0.6f)
-    canvas.drawPath(innerPath, strokePaint)
-
-    val textPad = dpFn(16f)
-    val sideFm = sidePaint.fontMetrics
-    val sideBaseline = top + (height - (sideFm.descent - sideFm.ascent)) * 0.5f - sideFm.ascent
-
-    val ayahsLabel = "${toArabicIndicDigits(surah.versesCount)} آية"
-    canvas.drawText(ayahsLabel, left + textPad, sideBaseline, sidePaint)
-
-    val revLabel = "ترتيبها ${toArabicIndicDigits(surah.revelationOrder)}"
-    val revW = sidePaint.measureText(revLabel)
-    canvas.drawText(revLabel, right - textPad - revW, sideBaseline, sidePaint)
-
-    val titleText = "سورة ${surah.nameArabic}"
-    val titleFm = titlePaint.fontMetrics
-    val titleW = titlePaint.measureText(titleText)
-    val titleBaseline = top + (height - (titleFm.descent - titleFm.ascent)) * 0.5f - titleFm.ascent
-    canvas.drawText(titleText, left + (width - titleW) * 0.5f, titleBaseline, titlePaint)
   }
 
   private fun drawBasmalahStaticLayout(

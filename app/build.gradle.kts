@@ -158,6 +158,7 @@ tasks.register("verifyQuranAssetHashes") {
   group = "verification"
   description = "Verifies SHA-256 digests of all files in src/main/assets/quran against manifest.sha256.json"
   val quranAssetsDir = layout.projectDirectory.dir("src/main/assets/quran").asFile
+  val mainResRootDir = layout.projectDirectory.dir("src/main").asFile
   val manifestFile = layout.projectDirectory.file("src/main/assets/quran/manifest.sha256.json").asFile
   doLast {
     if (!manifestFile.exists()) {
@@ -186,12 +187,25 @@ tasks.register("verifyQuranAssetHashes") {
         throw GradleException("SHA-256 mismatch for $relPath: expected=$exp actual=$hash")
       }
     }
+    var verifiedFontCount = 0
     for (expPath in expected.keys) {
-      if (!actualPaths.contains(expPath)) {
+      if (expPath.startsWith("res/font/")) {
+        val fontFile = File(mainResRootDir, expPath)
+        if (!fontFile.exists()) {
+          throw GradleException("Missing font file listed in manifest: $expPath")
+        }
+        val hash = digest.digest(fontFile.readBytes()).joinToString("") { b -> "%02x".format(b) }
+        digest.reset()
+        val exp = expected[expPath]!!
+        if (exp != hash) {
+          throw GradleException("SHA-256 mismatch for $expPath: expected=$exp actual=$hash")
+        }
+        verifiedFontCount++
+      } else if (!actualPaths.contains(expPath)) {
         throw GradleException("Missing Quran asset file listed in manifest: $expPath")
       }
     }
-    logger.lifecycle("Verified SHA-256 integrity for ${actualPaths.size} Quran asset files.")
+    logger.lifecycle("Verified SHA-256 integrity for ${actualPaths.size} Quran asset files and $verifiedFontCount font resources.")
   }
 }
 

@@ -121,7 +121,17 @@ class VerifiedDiskCache(private val context: Context) {
       val path = item.getString("path")
       val expected = item.getString("sha256").lowercase()
       val actual = runCatching {
-        context.assets.open("quran/$path").use { Sha256Integrity.sha256Hex(it.readBytes()) }
+        if (path.startsWith("res/font/")) {
+          val fontName = path.substringAfter("res/font/").substringBeforeLast('.')
+          val resId = context.resources.getIdentifier(fontName, "font", context.packageName)
+          if (resId != 0) {
+            context.resources.openRawResource(resId).use { Sha256Integrity.sha256Hex(it.readBytes()) }
+          } else {
+            "MISSING"
+          }
+        } else {
+          context.assets.open("quran/$path").use { Sha256Integrity.sha256Hex(it.readBytes()) }
+        }
       }.getOrDefault("MISSING")
       results += AssetHashStatus(
         path = path,

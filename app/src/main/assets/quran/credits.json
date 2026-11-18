@@ -39,6 +39,14 @@
       "url": "https://fonts.google.com",
       "license": "SIL Open Font License 1.1",
       "usage": "عناصر الواجهة والأزرار (IBM Plex Sans Arabic) وعناوين السور (Amiri) فقط دون المساس بنص القرآن"
+    },
+    {
+      "id": "qul_surah_name_v4",
+      "title": "خط أسماء السور الرسمي (QUL V4 Surah Name Font)",
+      "organization": "Quranic Universal Library (Tarteel AI) / مجمع الملك فهد لطباعة المصحف الشريف",
+      "url": "https://qul.tarteel.ai",
+      "license": "تصريح استخدام مجاني مع عزو المصدر ومنع تعديل ملف الخط (surah_name_v4.ttf)",
+      "usage": "عرض أسماء السور بالـligatures (surah001..surah114) داخل إطار عنوان السورة لمصحفي التجويد والمدينة"
     }
   ]
 }
