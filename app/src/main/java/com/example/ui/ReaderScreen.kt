@@ -35,6 +35,9 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.GraphicEq
+import com.example.ui.components.CombinedAudioAndRecitersSheet
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Brightness7
 import androidx.compose.material.icons.filled.ColorLens
@@ -150,6 +153,7 @@ private fun ReaderScreenContent(
   var isIndexOpen by rememberSaveable { mutableStateOf(true) }
   var hasSelectedSurah by rememberSaveable { mutableStateOf(false) }
   var isChromeVisible by rememberSaveable { mutableStateOf(true) }
+  var showCombinedAudioSheet by remember { mutableStateOf(false) }
   var audioSheetMode by remember { mutableStateOf<AudioPickerSheetMode?>(null) }
   var showSettingsSheet by remember { mutableStateOf(false) }
   var showTajweedLegend by remember { mutableStateOf(false) }
@@ -264,26 +268,38 @@ private fun ReaderScreenContent(
         )
       }
 
-      // Bottom audio overlay bar (slides up from bottom without shifting the page)
+      // Floating audio action button on right edge of screen (middle vertically), with space reserved next to it for future legend
       AnimatedVisibility(
         visible = isChromeVisible && !isIndexOpen,
-        enter = slideInVertically(animationSpec = tween(durationMillis = 240)) { it } +
-          fadeIn(animationSpec = tween(durationMillis = 180)),
-        exit = slideOutVertically(animationSpec = tween(durationMillis = 220)) { it } +
-          fadeOut(animationSpec = tween(durationMillis = 160)),
-        modifier = Modifier.align(Alignment.BottomCenter),
+        enter = fadeIn(animationSpec = tween(durationMillis = 180)),
+        exit = fadeOut(animationSpec = tween(durationMillis = 160)),
+        modifier = Modifier
+          .align(Alignment.CenterEnd)
+          .padding(end = 6.dp),
       ) {
-        ReaderBottomAudioHost(
-          audioStateFlow = viewModel.audioState,
-          onTogglePlayPause = remember(viewModel) { { viewModel.playbackController.togglePlayPause() } },
-          onSeekTo = remember(viewModel) { { pos -> viewModel.playbackController.seekTo(pos) } },
-          onSeekDelta = remember(viewModel) { { delta -> viewModel.playbackController.seekByDelta(delta) } },
-          onNextSurah = remember(viewModel) { { viewModel.playbackController.nextSurah() } },
-          onPrevSurah = remember(viewModel) { { viewModel.playbackController.prevSurah() } },
-          onCycleSpeed = onCycleSpeed,
-          onOpenReciterPicker = remember { { audioSheetMode = AudioPickerSheetMode.RECITERS_ONLY } },
-          onOpenRangePicker = remember { { audioSheetMode = AudioPickerSheetMode.AYAH_RANGE_ONLY } },
-        )
+        Surface(
+          shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp),
+          color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
+          tonalElevation = 6.dp,
+          shadowElevation = 8.dp,
+          border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+          modifier = Modifier
+            .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
+            .clickable { showCombinedAudioSheet = true }
+            .testTag("floating_audio_button"),
+        ) {
+          Box(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.Filled.GraphicEq,
+              contentDescription = "فتح لوحة التشغيل والقراء",
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(24.dp),
+            )
+          }
+        }
       }
     }
 
@@ -349,6 +365,38 @@ private fun ReaderScreenContent(
         onPrevSurah = { viewModel.playbackController.prevSurah() },
         onCycleSpeed = onCycleSpeed,
         onOpenReciterPicker = { audioSheetMode = AudioPickerSheetMode.RECITERS_ONLY },
+      )
+    }
+
+    if (showCombinedAudioSheet) {
+      val audioState by viewModel.audioState.collectAsStateWithLifecycle()
+      CombinedAudioAndRecitersSheet(
+        audioState = audioState,
+        primaryReciters = uiState.primaryReciters,
+        additionalReciters = uiState.additionalReciters,
+        isLoading = uiState.recitersLoading,
+        errorMessage = uiState.recitersError,
+        onTogglePlayPause = { viewModel.playbackController.togglePlayPause() },
+        onSeekTo = { pos -> viewModel.playbackController.seekTo(pos) },
+        onSeekDelta = { delta -> viewModel.playbackController.seekByDelta(delta) },
+        onNextSurah = { viewModel.playbackController.nextSurah() },
+        onPrevSurah = { viewModel.playbackController.prevSurah() },
+        onCycleSpeed = {
+          val curSpeed = audioState.playbackSpeed
+          val nextSpeed = when {
+            curSpeed < 0.9f -> 1.0f
+            curSpeed < 1.1f -> 1.15f
+            curSpeed < 1.2f -> 1.25f
+            else -> 0.75f
+          }
+          viewModel.playbackController.setSpeed(nextSpeed)
+        },
+        onSelectReciter = { reciter -> viewModel.selectReciter(reciter) },
+        onOpenRangePicker = {
+          showCombinedAudioSheet = false
+          audioSheetMode = AudioPickerSheetMode.AYAH_RANGE_ONLY
+        },
+        onDismiss = { showCombinedAudioSheet = false },
       )
     }
 
