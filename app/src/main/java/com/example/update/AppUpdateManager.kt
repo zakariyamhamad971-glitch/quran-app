@@ -1,7 +1,9 @@
 package com.example.update
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -24,6 +26,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -43,7 +46,9 @@ sealed interface AppUpdateState {
     val downloadedBytes: Long = 0L,
     val totalBytes: Long = -1L,
   ) : AppUpdateState
-  data object NeedsInstallPermission : AppUpdateState
+  data object PreparingInstall : AppUpdateState
+  data class OpeningInstaller(val apkFile: File) : AppUpdateState
+  data class NeedsInstallPermission(val autoLaunchPending: Boolean = true) : AppUpdateState
   data class Error(val message: String) : AppUpdateState
 }
 
@@ -68,7 +73,51 @@ class AppUpdateManager(
       "https://api.github.com/repos/zakariyamhamad971-glitch/quran-app/releases/tags/latest"
     private const val BETA_RELEASE_API_URL =
       "https://api.github.com/repos/zakariyamhamad971-glitch/quran-app/releases/tags/beta"
+    private const val PREFS_NAME = "qabasat_update_prefs"
+    private const val KEY_PENDING_APK_PATH = "pending_apk_path"
+    private const val KEY_PENDING_BUILD = "pending_apk_build"
+    private const val KEY_AWAITING_PERMISSION = "awaiting_install_permission"
+    private const val MIN_APK_BYTES = 1024L
+
     private val BUILD_NUMBER_REGEX = Regex("""Build\s+(\d+)""", RegexOption.IGNORE_CASE)
+
+    internal fun buildTargetApkFileName(remoteBuildNumber: Int, originalFileName: String): String {
+      val clean = originalFileName.replace(Regex("""[^A-Za-z0-9._-]"""), "_").let {
+        if (it.endsWith(".apk", ignoreCase = true)) it else "$it.apk"
+      }
+      return "build-${remoteBuildNumber}-$clean"
+    }
+
+    internal fun hasZipMagicHeader(file: File): Boolean {
+      if (!file.exists() || !file.isFile || file.length() < 4L) return false
+      return runCatching {
+        FileInputStream(file).use { input ->
+          val header = ByteArray(4)
+          val read = input.read(header)
+          read == 4 &&
+            header[0] == 0x50.toByte() &&
+            header[1] == 0x4B.toByte() &&
+            header[2] == 0x03.toByte() &&
+            header[3] == 0x04.toByte()
+        }
+      }.getOrDefault(false)
+    }
+
+    internal fun findCachedValidApk(
+      targetFile: File,
+      apkValidator: (File) -> Boolean,
+    ): File? {
+      return if (targetFile.exists() && apkValidator(targetFile)) targetFile else null
+    }
+
+    internal fun shouldResumePendingInstall(
+      awaitingPermission: Boolean,
+      pendingBuild: Int,
+      currentBuild: Int,
+      fileExists: Boolean,
+    ): Boolean {
+      return awaitingPermission && fileExists && pendingBuild > currentBuild
+    }
 
     internal fun parseReleaseCandidateJson(rawJson: String): ReleaseCandidate? {
       val json = JSONObject(rawJson)
@@ -134,6 +183,10 @@ class AppUpdateManager(
     }
   }
 
+  private val prefs by lazy {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+  }
+
   private val _state = MutableStateFlow<AppUpdateState>(AppUpdateState.Idle)
   val state: StateFlow<AppUpdateState> = _state.asStateFlow()
 
@@ -150,6 +203,7 @@ class AppUpdateManager(
   fun checkForUpdatesInBackground(betaChannelEnabled: Boolean = false) {
     if (hasAutoChecked) return
     hasAutoChecked = true
+    if (hasPendingInstallAwaitingPermission()) return
     if (_state.value !is AppUpdateState.Idle) return
 
     autoCheckJob = scope.launch(Dispatchers.IO) {
@@ -157,7 +211,7 @@ class AppUpdateManager(
       val result = fetchReleaseUpdateState(betaChannelEnabled)
       if (result is AppUpdateState.UpdateAvailable) {
         withContext(Dispatchers.Main) {
-          if (_state.value is AppUpdateState.Idle) {
+          if (_state.value is AppUpdateState.Idle && !hasPendingInstallAwaitingPermission()) {
             _state.value = result
           }
         }
@@ -169,7 +223,12 @@ class AppUpdateManager(
    * User-triggered check from Settings. Shows progress, up-to-date notice, or Arabic error messages.
    */
   fun checkForUpdates(betaChannelEnabled: Boolean = false) {
-    if (_state.value is AppUpdateState.Checking || _state.value is AppUpdateState.Downloading) return
+    if (_state.value is AppUpdateState.Checking ||
+      _state.value is AppUpdateState.Downloading ||
+      _state.value is AppUpdateState.PreparingInstall ||
+      _state.value is AppUpdateState.OpeningInstaller
+    ) return
+
     autoCheckJob?.cancel()
     checkJob?.cancel()
     checkJob = scope.launch {
@@ -248,35 +307,52 @@ class AppUpdateManager(
   }
 
   /**
-   * Downloads the APK in-app over OkHttp with progress updates, then launches Android installer via FileProvider.
+   * One-tap update flow:
+   * 1. Reuses a previously downloaded & verified APK for the same build if already on disk.
+   * 2. Otherwise downloads with live percentage, verifies APK integrity, then immediately opens installer
+   *    (or opens Unknown Sources settings if permission is not granted yet and resumes automatically on return).
    */
   fun startDownloadAndInstall(update: AppUpdateState.UpdateAvailable) {
-    if (_state.value is AppUpdateState.Downloading) return
-    if (!hasActiveNetwork()) {
-      _state.value = AppUpdateState.Error("لا يوجد اتصال بالإنترنت")
-      return
-    }
+    if (_state.value is AppUpdateState.Downloading ||
+      _state.value is AppUpdateState.PreparingInstall ||
+      _state.value is AppUpdateState.OpeningInstaller
+    ) return
 
     downloadJob?.cancel()
-    val safeName = update.fileName.replace(Regex("""[^A-Za-z0-9._-]"""), "_").let {
-      if (it.endsWith(".apk", ignoreCase = true)) it else "$it.apk"
-    }
     val updatesDir = File(context.filesDir, "updates")
-    if (!updatesDir.exists()) updatesDir.mkdirs()
-    val targetFile = File(updatesDir, safeName)
-    val tempFile = File(updatesDir, "$safeName.part")
+    val targetFileName = buildTargetApkFileName(update.remoteBuildNumber, update.fileName)
+    val targetFile = File(updatesDir, targetFileName)
+    val tempFile = File(updatesDir, "$targetFileName.part")
 
-    _state.value = AppUpdateState.Downloading(progressPercent = 0)
+    _state.value = AppUpdateState.PreparingInstall
 
     downloadJob = scope.launch(Dispatchers.IO) {
+      if (!updatesDir.exists()) updatesDir.mkdirs()
+
+      // Fast path: if already downloaded from an earlier attempt, verify and launch installer without re-downloading
+      val existingValid = findCachedValidApk(targetFile, ::isValidUpdateApk)
+      if (existingValid != null) {
+        withContext(Dispatchers.Main) {
+          onVerifiedApkReady(existingValid, update.remoteBuildNumber)
+        }
+        return@launch
+      }
+
+      if (!hasActiveNetwork()) {
+        _state.value = AppUpdateState.Error("لا يوجد اتصال بالإنترنت")
+        return@launch
+      }
+
+      _state.value = AppUpdateState.Downloading(progressPercent = 0)
+
       try {
-        // Clean stale update APKs to avoid wasted internal storage
+        if (targetFile.exists()) runCatching { targetFile.delete() }
         updatesDir.listFiles()?.forEach { old ->
-          if (old.name != safeName && old.name != tempFile.name) {
+          if (old.name != targetFile.name && old.name != tempFile.name) {
             runCatching { old.delete() }
           }
         }
-        if (tempFile.exists()) tempFile.delete()
+        if (tempFile.exists()) runCatching { tempFile.delete() }
 
         val request = Request.Builder()
           .url(update.apkUrl)
@@ -284,17 +360,19 @@ class AppUpdateManager(
           .header("User-Agent", "Qabasat-Android")
           .build()
 
+        var downloaded = 0L
+        var expectedTotalBytes = -1L
+
         QuranApiClient.okHttpClient.newCall(request).execute().use { response ->
           if (!response.isSuccessful) {
             throw IllegalStateException("HTTP ${response.code}")
           }
           val body = response.body ?: throw IllegalStateException("Empty APK body")
-          val totalBytes = body.contentLength()
+          expectedTotalBytes = body.contentLength()
 
           body.byteStream().use { input ->
             FileOutputStream(tempFile).use { output ->
               val buffer = ByteArray(16 * 1024)
-              var downloaded = 0L
               var lastEmitMs = 0L
               var lastPercent = -1
 
@@ -306,8 +384,8 @@ class AppUpdateManager(
                 downloaded += read
 
                 val now = SystemClock.elapsedRealtime()
-                val pct = if (totalBytes > 0L) {
-                  ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                val pct = if (expectedTotalBytes > 0L) {
+                  ((downloaded * 100L) / expectedTotalBytes).toInt().coerceIn(0, 99)
                 } else {
                   null
                 }
@@ -319,7 +397,7 @@ class AppUpdateManager(
                   _state.value = AppUpdateState.Downloading(
                     progressPercent = pct,
                     downloadedBytes = downloaded,
-                    totalBytes = totalBytes,
+                    totalBytes = expectedTotalBytes,
                   )
                 }
               }
@@ -328,13 +406,25 @@ class AppUpdateManager(
           }
         }
 
-        if (targetFile.exists()) targetFile.delete()
-        if (!tempFile.renameTo(targetFile) || !targetFile.exists() || targetFile.length() == 0L) {
-          throw IllegalStateException("Failed to finalize APK file")
+        // Transition immediately out of download percentage UI before verifying & launching installer
+        _state.value = AppUpdateState.PreparingInstall
+
+        if (expectedTotalBytes > 0L && downloaded != expectedTotalBytes) {
+          runCatching { tempFile.delete() }
+          _state.value = AppUpdateState.Error("اكتمل تنزيل التحديث بشكل غير مكتمل، يرجى المحاولة مرة أخرى")
+          return@launch
+        }
+
+        if (targetFile.exists()) runCatching { targetFile.delete() }
+        if (!tempFile.renameTo(targetFile) || !isValidUpdateApk(targetFile)) {
+          runCatching { tempFile.delete() }
+          runCatching { targetFile.delete() }
+          _state.value = AppUpdateState.Error("ملف التحديث تالف أو غير صالح للتثبيت")
+          return@launch
         }
 
         withContext(Dispatchers.Main) {
-          onApkDownloaded(targetFile)
+          onVerifiedApkReady(targetFile, update.remoteBuildNumber)
         }
       } catch (ce: CancellationException) {
         runCatching { tempFile.delete() }
@@ -355,74 +445,189 @@ class AppUpdateManager(
     }
   }
 
+  private fun isValidUpdateApk(apkFile: File): Boolean {
+    if (!apkFile.exists() || !apkFile.isFile || apkFile.length() < MIN_APK_BYTES) return false
+    if (!hasZipMagicHeader(apkFile)) return false
+
+    return try {
+      val pm = context.packageManager
+      val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.PackageInfoFlags.of(0L))
+      } else {
+        @Suppress("DEPRECATION")
+        pm.getPackageArchiveInfo(apkFile.absolutePath, 0)
+      }
+      pkgInfo != null && pkgInfo.packageName == context.packageName
+    } catch (_: Exception) {
+      false
+    }
+  }
+
+  private fun onVerifiedApkReady(apkFile: File, remoteBuildNumber: Int) {
+    pendingInstallFile = apkFile
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+      persistPendingInstall(apkFile, remoteBuildNumber, awaitingPermission = true)
+      _state.value = AppUpdateState.NeedsInstallPermission(autoLaunchPending = true)
+      return
+    }
+
+    persistPendingInstall(apkFile, remoteBuildNumber, awaitingPermission = false)
+    _state.value = AppUpdateState.OpeningInstaller(apkFile)
+  }
+
   fun cancelDownload() {
     downloadJob?.cancel()
     downloadJob = null
-    if (_state.value is AppUpdateState.Downloading) {
+    if (_state.value is AppUpdateState.Downloading || _state.value is AppUpdateState.PreparingInstall) {
       _state.value = AppUpdateState.Idle
     }
   }
 
-  private fun onApkDownloaded(apkFile: File) {
-    pendingInstallFile = apkFile
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-      _state.value = AppUpdateState.NeedsInstallPermission
-      return
+  fun openUnknownSourcesSettings(activity: Activity? = null, markLaunchedFromAuto: Boolean = false) {
+    if (markLaunchedFromAuto && _state.value is AppUpdateState.NeedsInstallPermission) {
+      _state.value = AppUpdateState.NeedsInstallPermission(autoLaunchPending = false)
     }
-
-    launchApkInstaller(apkFile)
-  }
-
-  fun openUnknownSourcesSettings() {
     try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         val intent = Intent(
           Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
           Uri.parse("package:${context.packageName}"),
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
+        ).apply {
+          if (activity == null) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        (activity ?: context).startActivity(intent)
       }
     } catch (_: Exception) {
+      clearPendingInstall()
       _state.value = AppUpdateState.Error("تعذر فتح إعدادات التثبيت")
     }
   }
 
-  fun retryPendingInstallIfPermitted() {
-    val file = pendingInstallFile ?: return
-    if (_state.value !is AppUpdateState.NeedsInstallPermission) return
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()) {
-      launchApkInstaller(file)
+  /**
+   * Called on Activity ON_RESUME (including after process restart caused by granting Unknown Sources permission).
+   * Automatically resumes installation without requiring a second tap on Update.
+   */
+  fun resumePendingInstallIfNeeded() {
+    val awaitingPermission = prefs.getBoolean(KEY_AWAITING_PERMISSION, false)
+    val savedPath = prefs.getString(KEY_PENDING_APK_PATH, null)
+    val savedBuild = prefs.getInt(KEY_PENDING_BUILD, 0)
+    val savedFile = savedPath?.let { File(it) } ?: pendingInstallFile
+
+    if (savedFile == null ||
+      !shouldResumePendingInstall(
+        awaitingPermission = awaitingPermission,
+        pendingBuild = savedBuild,
+        currentBuild = BuildConfig.BUILD_NUMBER,
+        fileExists = savedFile.exists(),
+      )
+    ) {
+      if (awaitingPermission) {
+        clearPendingInstall()
+      }
+      return
     }
+
+    val permitted = Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+      context.packageManager.canRequestPackageInstalls()
+    if (!permitted) {
+      if (_state.value is AppUpdateState.Idle) {
+        pendingInstallFile = savedFile
+        _state.value = AppUpdateState.NeedsInstallPermission(autoLaunchPending = false)
+      }
+      return
+    }
+
+    if (!isValidUpdateApk(savedFile)) {
+      runCatching { savedFile.delete() }
+      clearPendingInstall()
+      _state.value = AppUpdateState.Error("ملف التحديث تالف أو غير صالح للتثبيت")
+      return
+    }
+
+    pendingInstallFile = savedFile
+    persistPendingInstall(savedFile, savedBuild, awaitingPermission = false)
+    _state.value = AppUpdateState.OpeningInstaller(savedFile)
   }
 
-  private fun launchApkInstaller(apkFile: File) {
+  /**
+   * Launches Android's system package installer directly from the foreground Activity (when available)
+   * using FileProvider so the confirmation sheet appears reliably on the first try.
+   */
+  fun launchApkInstallerFromUi(activity: Activity?, apkFile: File) {
+    val hostContext: Context = activity ?: context
     try {
+      if (!apkFile.exists() || !isValidUpdateApk(apkFile)) {
+        clearPendingInstall()
+        _state.value = AppUpdateState.Error("ملف التحديث غير صالح أو غير موجود")
+        return
+      }
+
       val contentUri = FileProvider.getUriForFile(
-        context,
-        "${context.packageName}.fileprovider",
+        hostContext,
+        "${hostContext.packageName}.fileprovider",
         apkFile,
       )
-      val installIntent = Intent(Intent.ACTION_VIEW).apply {
+
+      val viewIntent = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(contentUri, "application/vnd.android.package-archive")
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+        if (activity == null) {
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
       }
-      context.startActivity(installIntent)
-      pendingInstallFile = null
+
+      val installIntent = if (viewIntent.resolveActivity(hostContext.packageManager) != null) {
+        viewIntent
+      } else {
+        @Suppress("DEPRECATION")
+        Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+          data = contentUri
+          addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+          putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+          if (activity == null) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          }
+        }
+      }
+
+      hostContext.startActivity(installIntent)
+      clearPendingInstall()
       _state.value = AppUpdateState.Idle
     } catch (_: Exception) {
-      pendingInstallFile = null
+      clearPendingInstall()
       _state.value = AppUpdateState.Error("تعذر تشغيل مثبت التحديث")
     }
   }
 
   fun dismiss() {
-    if (_state.value is AppUpdateState.Downloading) {
+    if (_state.value is AppUpdateState.Downloading || _state.value is AppUpdateState.PreparingInstall) {
       cancelDownload()
       return
     }
-    pendingInstallFile = null
+    clearPendingInstall()
     _state.value = AppUpdateState.Idle
+  }
+
+  private fun hasPendingInstallAwaitingPermission(): Boolean =
+    prefs.getBoolean(KEY_AWAITING_PERMISSION, false)
+
+  private fun persistPendingInstall(apkFile: File, remoteBuildNumber: Int, awaitingPermission: Boolean) {
+    prefs.edit()
+      .putString(KEY_PENDING_APK_PATH, apkFile.absolutePath)
+      .putInt(KEY_PENDING_BUILD, remoteBuildNumber)
+      .putBoolean(KEY_AWAITING_PERMISSION, awaitingPermission)
+      .apply()
+  }
+
+  private fun clearPendingInstall() {
+    pendingInstallFile = null
+    prefs.edit()
+      .remove(KEY_PENDING_APK_PATH)
+      .remove(KEY_PENDING_BUILD)
+      .putBoolean(KEY_AWAITING_PERMISSION, false)
+      .apply()
   }
 
   private fun hasActiveNetwork(): Boolean {

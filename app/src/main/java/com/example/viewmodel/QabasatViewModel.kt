@@ -934,12 +934,16 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     appUpdateManager.cancelDownload()
   }
 
-  fun openUnknownSourcesSettings() {
-    appUpdateManager.openUnknownSourcesSettings()
+  fun openUnknownSourcesSettings(activity: android.app.Activity? = null, markLaunchedFromAuto: Boolean = false) {
+    appUpdateManager.openUnknownSourcesSettings(activity, markLaunchedFromAuto)
   }
 
-  fun retryPendingUpdateInstall() {
-    appUpdateManager.retryPendingInstallIfPermitted()
+  fun resumePendingUpdateInstall() {
+    appUpdateManager.resumePendingInstallIfNeeded()
+  }
+
+  fun launchApkInstaller(activity: android.app.Activity?, apkFile: java.io.File) {
+    appUpdateManager.launchApkInstallerFromUi(activity, apkFile)
   }
 
   fun dismissUpdateDialog() {

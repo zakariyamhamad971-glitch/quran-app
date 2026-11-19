@@ -64,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
@@ -92,7 +93,8 @@ import com.example.ui.components.FullScreenQuranIndex
 import com.example.ui.components.MushafPageFrame
 import com.example.ui.components.MushafSelectorScreen
 import com.example.ui.components.MushafSetupScreen
-import com.example.ui.components.PersistentAudioBar
+import com.example.ui.components.PlaybackControlSheet
+import com.example.ui.components.ReaderBottomAudioButtons
 import com.example.ui.components.ReciterPickerSheet
 import com.example.ui.components.SettingsSheet
 import com.example.ui.components.TajweedLegendSheet
@@ -104,8 +106,14 @@ import com.example.viewmodel.QabasatViewModel
 import com.example.viewmodel.VerseInsightsUiState
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 private const val MUSHAF_PAGE_ASPECT_RATIO = 0.62f
+
+private enum class ReaderAudioSheet {
+  RECITERS,
+  PLAYBACK,
+}
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
   is Activity -> this
@@ -150,7 +158,7 @@ private fun ReaderScreenContent(
   var isIndexOpen by rememberSaveable { mutableStateOf(true) }
   var hasSelectedSurah by rememberSaveable { mutableStateOf(false) }
   var isChromeVisible by rememberSaveable { mutableStateOf(true) }
-  var audioSheetMode by remember { mutableStateOf<AudioPickerSheetMode?>(null) }
+  var activeAudioSheet by remember { mutableStateOf<ReaderAudioSheet?>(null) }
   var showSettingsSheet by remember { mutableStateOf(false) }
   var showTajweedLegend by remember { mutableStateOf(false) }
   var showCreditsDialog by remember { mutableStateOf(false) }
@@ -264,7 +272,7 @@ private fun ReaderScreenContent(
         )
       }
 
-      // Bottom audio overlay bar (slides up from bottom without shifting the page)
+      // Bottom circular audio buttons ("القرّاء" & "التشغيل") overlayed cleanly at bottom center
       AnimatedVisibility(
         visible = isChromeVisible && !isIndexOpen,
         enter = slideInVertically(animationSpec = tween(durationMillis = 240)) { it } +
@@ -273,16 +281,10 @@ private fun ReaderScreenContent(
           fadeOut(animationSpec = tween(durationMillis = 160)),
         modifier = Modifier.align(Alignment.BottomCenter),
       ) {
-        ReaderBottomAudioHost(
+        ReaderBottomAudioButtonsHost(
           audioStateFlow = viewModel.audioState,
-          onTogglePlayPause = remember(viewModel) { { viewModel.playbackController.togglePlayPause() } },
-          onSeekTo = remember(viewModel) { { pos -> viewModel.playbackController.seekTo(pos) } },
-          onSeekDelta = remember(viewModel) { { delta -> viewModel.playbackController.seekByDelta(delta) } },
-          onNextSurah = remember(viewModel) { { viewModel.playbackController.nextSurah() } },
-          onPrevSurah = remember(viewModel) { { viewModel.playbackController.prevSurah() } },
-          onCycleSpeed = onCycleSpeed,
-          onOpenReciterPicker = remember { { audioSheetMode = AudioPickerSheetMode.RECITERS_ONLY } },
-          onOpenRangePicker = remember { { audioSheetMode = AudioPickerSheetMode.AYAH_RANGE_ONLY } },
+          onOpenReciters = remember { { activeAudioSheet = ReaderAudioSheet.RECITERS } },
+          onOpenPlayback = remember { { activeAudioSheet = ReaderAudioSheet.PLAYBACK } },
         )
       }
     }
@@ -341,40 +343,69 @@ private fun ReaderScreenContent(
           viewModel.ensureCreditsLoaded()
           showCreditsDialog = true
         },
-        onOpenRangePicker = { audioSheetMode = AudioPickerSheetMode.AYAH_RANGE_ONLY },
+        onOpenRangePicker = { activeAudioSheet = ReaderAudioSheet.PLAYBACK },
         onTogglePlayPause = { viewModel.playbackController.togglePlayPause() },
         onSeekTo = { pos -> viewModel.playbackController.seekTo(pos) },
         onSeekDelta = { delta -> viewModel.playbackController.seekByDelta(delta) },
         onNextSurah = { viewModel.playbackController.nextSurah() },
         onPrevSurah = { viewModel.playbackController.prevSurah() },
         onCycleSpeed = onCycleSpeed,
-        onOpenReciterPicker = { audioSheetMode = AudioPickerSheetMode.RECITERS_ONLY },
+        onOpenReciterPicker = { activeAudioSheet = ReaderAudioSheet.RECITERS },
       )
     }
 
-    audioSheetMode?.let { activeSheetMode ->
-      ReaderReciterPickerHost(
-        audioStateFlow = viewModel.audioState,
-        primaryReciters = uiState.primaryReciters,
-        additionalReciters = uiState.additionalReciters,
-        surahs = uiState.surahs,
-        isLoading = uiState.recitersLoading,
-        errorMessage = uiState.recitersError,
-        mode = activeSheetMode,
-        onSelectReciter = { reciter -> viewModel.selectReciter(reciter) },
-        onPlayFromAyah = { surahId, ayahNum ->
-          hasSelectedSurah = true
-          isIndexOpen = false
-          viewModel.playFromAyah(surahId, ayahNum)
-        },
-        onPlayRange = { range ->
-          hasSelectedSurah = true
-          isIndexOpen = false
-          viewModel.playAyahRange(range)
-        },
-        onClearRange = { viewModel.clearAyahRange() },
-        onDismiss = { audioSheetMode = null },
-      )
+    when (activeAudioSheet) {
+      ReaderAudioSheet.RECITERS -> {
+        ReaderReciterPickerHost(
+          audioStateFlow = viewModel.audioState,
+          primaryReciters = uiState.primaryReciters,
+          additionalReciters = uiState.additionalReciters,
+          surahs = uiState.surahs,
+          isLoading = uiState.recitersLoading,
+          errorMessage = uiState.recitersError,
+          mode = AudioPickerSheetMode.RECITERS_ONLY,
+          onSelectReciter = { reciter -> viewModel.selectReciter(reciter) },
+          onPlayFromAyah = { surahId, ayahNum ->
+            hasSelectedSurah = true
+            isIndexOpen = false
+            viewModel.playFromAyah(surahId, ayahNum)
+          },
+          onPlayRange = { range ->
+            hasSelectedSurah = true
+            isIndexOpen = false
+            viewModel.playAyahRange(range)
+          },
+          onClearRange = { viewModel.clearAyahRange() },
+          onDismiss = { activeAudioSheet = null },
+        )
+      }
+
+      ReaderAudioSheet.PLAYBACK -> {
+        ReaderPlaybackSheetHost(
+          audioStateFlow = viewModel.audioState,
+          surahs = uiState.surahs,
+          onTogglePlayPause = remember(viewModel) { { viewModel.playbackController.togglePlayPause() } },
+          onSeekTo = remember(viewModel) { { pos -> viewModel.playbackController.seekTo(pos) } },
+          onSeekDelta = remember(viewModel) { { delta -> viewModel.playbackController.seekByDelta(delta) } },
+          onNextSurah = remember(viewModel) { { viewModel.playbackController.nextSurah() } },
+          onPrevSurah = remember(viewModel) { { viewModel.playbackController.prevSurah() } },
+          onCycleSpeed = onCycleSpeed,
+          onPlayFromAyah = { surahId, ayahNum ->
+            hasSelectedSurah = true
+            isIndexOpen = false
+            viewModel.playFromAyah(surahId, ayahNum)
+          },
+          onPlayRange = { range ->
+            hasSelectedSurah = true
+            isIndexOpen = false
+            viewModel.playAyahRange(range)
+          },
+          onClearRange = { viewModel.clearAyahRange() },
+          onDismiss = { activeAudioSheet = null },
+        )
+      }
+
+      null -> Unit
     }
 
     if (showSettingsSheet) {
@@ -416,7 +447,7 @@ private fun ReaderScreenContent(
       onPlaySingleAyah = remember(viewModel) { { surahId, ayahNum -> viewModel.playSingleAyah(surahId, ayahNum) } },
       onPlayFromAyah = remember(viewModel) { { surahId, ayahNum -> viewModel.playFromAyah(surahId, ayahNum) } },
       onPlayAyahRange = remember(viewModel) { { range -> viewModel.playAyahRange(range) } },
-      onOpenRangePicker = remember { { audioSheetMode = AudioPickerSheetMode.AYAH_RANGE_ONLY } },
+      onOpenRangePicker = remember { { activeAudioSheet = ReaderAudioSheet.PLAYBACK } },
       onDismiss = remember(viewModel) { { viewModel.dismissVerseInsights() } },
     )
 
@@ -707,11 +738,13 @@ private fun AppUpdateDialogHost(
 ) {
   val updateState by viewModel.updateState.collectAsStateWithLifecycle()
   val lifecycleOwner = LocalLifecycleOwner.current
+  val context = LocalContext.current
+  val activity = remember(context) { context.findActivity() }
 
-  DisposableEffect(lifecycleOwner, updateState is AppUpdateState.NeedsInstallPermission) {
+  DisposableEffect(lifecycleOwner, viewModel) {
     val observer = LifecycleEventObserver { _, event ->
-      if (event == Lifecycle.Event.ON_RESUME && updateState is AppUpdateState.NeedsInstallPermission) {
-        viewModel.retryPendingUpdateInstall()
+      if (event == Lifecycle.Event.ON_RESUME) {
+        viewModel.resumePendingUpdateInstall()
       }
     }
     lifecycleOwner.lifecycle.addObserver(observer)
@@ -726,14 +759,18 @@ private fun AppUpdateDialogHost(
     is AppUpdateState.UpdateAvailable -> {
       AlertDialog(
         onDismissRequest = { viewModel.dismissUpdateDialog() },
-        title = { Text("يوجد تحديث جديد") },
-        text = { Text("يتوفر إصدار جديد (Build ${state.remoteBuildNumber}).") },
+        text = {
+          Text(
+            text = "يتوفر تحديث جديد للتطبيق",
+            style = MaterialTheme.typography.bodyLarge,
+          )
+        },
         confirmButton = {
           TextButton(
             onClick = { viewModel.downloadUpdate(state) },
             modifier = Modifier.testTag("update_download_button"),
           ) {
-            Text("تحديث الآن")
+            Text("تحديث")
           }
         },
         dismissButton = {
@@ -796,13 +833,67 @@ private fun AppUpdateDialogHost(
       )
     }
 
-    AppUpdateState.NeedsInstallPermission -> {
+    AppUpdateState.PreparingInstall -> {
+      AlertDialog(
+        onDismissRequest = {},
+        title = { Text("تحديث التطبيق") },
+        text = {
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            LinearProgressIndicator(
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("update_preparing_progress_bar"),
+            )
+            Text(text = "جارٍ فتح التثبيت...")
+          }
+        },
+        confirmButton = {
+          TextButton(onClick = { viewModel.cancelUpdateDownload() }) {
+            Text("إلغاء")
+          }
+        },
+      )
+    }
+
+    is AppUpdateState.OpeningInstaller -> {
+      LaunchedEffect(state) {
+        viewModel.launchApkInstaller(activity, state.apkFile)
+      }
+      AlertDialog(
+        onDismissRequest = {},
+        title = { Text("تحديث التطبيق") },
+        text = {
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            LinearProgressIndicator(
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("update_opening_progress_bar"),
+            )
+            Text(text = "جارٍ فتح التثبيت...")
+          }
+        },
+        confirmButton = {},
+      )
+    }
+
+    is AppUpdateState.NeedsInstallPermission -> {
+      if (state.autoLaunchPending) {
+        LaunchedEffect(state) {
+          viewModel.openUnknownSourcesSettings(activity, markLaunchedFromAuto = true)
+        }
+      }
       AlertDialog(
         onDismissRequest = { viewModel.dismissUpdateDialog() },
         title = { Text("إذن التثبيت") },
-        text = { Text("يرجى السماح بالتثبيت من مصدر غير معروف لتثبيت التحديث.") },
+        text = { Text("يرجى السماح بالتثبيت من مصدر غير معروف لإكمال التحديث.") },
         confirmButton = {
-          TextButton(onClick = { viewModel.openUnknownSourcesSettings() }) {
+          TextButton(onClick = { viewModel.openUnknownSourcesSettings(activity) }) {
             Text("فتح الإعدادات")
           }
         },
@@ -830,30 +921,54 @@ private fun AppUpdateDialogHost(
 }
 
 @Composable
-private fun ReaderBottomAudioHost(
+private fun ReaderBottomAudioButtonsHost(
   audioStateFlow: StateFlow<AudioPlaybackUiState>,
+  onOpenReciters: () -> Unit,
+  onOpenPlayback: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val playIndicator by remember(audioStateFlow) {
+    audioStateFlow.map { it.isPlaying to it.isBuffering }.distinctUntilChanged()
+  }.collectAsStateWithLifecycle(initialValue = audioStateFlow.value.isPlaying to audioStateFlow.value.isBuffering)
+
+  ReaderBottomAudioButtons(
+    isPlaying = playIndicator.first,
+    isBuffering = playIndicator.second,
+    onOpenReciters = onOpenReciters,
+    onOpenPlayback = onOpenPlayback,
+    modifier = modifier,
+  )
+}
+
+@Composable
+private fun ReaderPlaybackSheetHost(
+  audioStateFlow: StateFlow<AudioPlaybackUiState>,
+  surahs: List<SurahMeta>,
   onTogglePlayPause: () -> Unit,
   onSeekTo: (Long) -> Unit,
   onSeekDelta: (Long) -> Unit,
   onNextSurah: () -> Unit,
   onPrevSurah: () -> Unit,
   onCycleSpeed: (Float) -> Unit,
-  onOpenReciterPicker: () -> Unit,
-  onOpenRangePicker: () -> Unit,
-  modifier: Modifier = Modifier,
+  onPlayFromAyah: (Int, Int) -> Unit,
+  onPlayRange: (RecitationRange) -> Unit,
+  onClearRange: () -> Unit,
+  onDismiss: () -> Unit,
 ) {
   val audioState by audioStateFlow.collectAsStateWithLifecycle()
-  PersistentAudioBar(
+  PlaybackControlSheet(
     audioState = audioState,
+    surahs = surahs,
     onTogglePlayPause = onTogglePlayPause,
     onSeekTo = onSeekTo,
     onSeekDelta = onSeekDelta,
     onNextSurah = onNextSurah,
     onPrevSurah = onPrevSurah,
     onCycleSpeed = { onCycleSpeed(audioState.playbackSpeed) },
-    onOpenReciterPicker = onOpenReciterPicker,
-    onOpenRangePicker = onOpenRangePicker,
-    modifier = modifier,
+    onPlayFromAyah = onPlayFromAyah,
+    onPlayRange = onPlayRange,
+    onClearRange = onClearRange,
+    onDismiss = onDismiss,
   )
 }
 

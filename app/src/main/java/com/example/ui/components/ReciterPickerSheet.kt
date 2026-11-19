@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -156,7 +158,7 @@ fun ReciterPickerSheet(
         Column(modifier = Modifier.weight(1f)) {
           Text(
             text = when (mode) {
-              AudioPickerSheetMode.RECITERS_ONLY -> "اختيار القارئ"
+              AudioPickerSheetMode.RECITERS_ONLY -> "القرّاء"
               AudioPickerSheetMode.AYAH_RANGE_ONLY -> "تحديد الآيات"
               AudioPickerSheetMode.COMBINED -> "القراء ونطاق الآيات والسور"
             },
@@ -177,7 +179,48 @@ fun ReciterPickerSheet(
           Icon(Icons.Filled.Close, contentDescription = "إغلاق")
         }
       }
-      Spacer(Modifier.height(10.dp))
+      Spacer(Modifier.height(8.dp))
+
+      if (mode == AudioPickerSheetMode.RECITERS_ONLY) {
+        // Reserved bar at top for Qira'at color legend
+        Surface(
+          shape = RoundedCornerShape(12.dp),
+          color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(38.dp)
+            .testTag("qiraat_legend_reserved_slot"),
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+          ) {
+            Text(
+              text = "شريط ألوان القراءات",
+              style = MaterialTheme.typography.labelMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              repeat(4) {
+                Box(
+                  modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)),
+                )
+              }
+            }
+          }
+        }
+        Spacer(Modifier.height(8.dp))
+      }
 
       if (mode != AudioPickerSheetMode.RECITERS_ONLY) {
         // Range selection: Where recitation starts & ends
@@ -384,11 +427,12 @@ fun ReciterPickerSheet(
               Row(
                 modifier = Modifier
                   .fillMaxWidth()
+                  .heightIn(min = 50.dp)
                   .alpha(if (enabled) 1f else 0.52f)
                   .clickable(enabled = enabled) {
                     onSelectReciter(reciter)
                   }
-                  .padding(horizontal = 8.dp, vertical = 11.dp)
+                  .padding(horizontal = 8.dp, vertical = 6.dp)
                   .testTag("reciter_row_${reciter.orderIndex}"),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -396,18 +440,21 @@ fun ReciterPickerSheet(
                 Column(modifier = Modifier.weight(1f)) {
                   Text(
                     text = reciter.displayName,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                   )
-                  Spacer(Modifier.height(2.dp))
                   Text(
                     text = reciter.statusNote,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     color = if (reciter.status == ReciterMatchStatus.VERIFIED) {
                       MaterialTheme.colorScheme.onSurfaceVariant
                     } else {
                       MaterialTheme.colorScheme.error
                     },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                   )
                 }
 
@@ -423,8 +470,8 @@ fun ReciterPickerSheet(
                       contentDescription = "القارئ المختار",
                       tint = MaterialTheme.colorScheme.primary,
                       modifier = Modifier
-                        .padding(6.dp)
-                        .size(18.dp),
+                        .padding(5.dp)
+                        .size(16.dp),
                     )
                   }
                 } else if (!enabled) {
@@ -432,11 +479,11 @@ fun ReciterPickerSheet(
                     imageVector = Icons.Filled.ErrorOutline,
                     contentDescription = "غير متاح",
                     tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(18.dp),
                   )
                 }
               }
-              HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+              HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
             }
           }
         }
@@ -508,7 +555,7 @@ fun ReciterPickerSheet(
 }
 
 @Composable
-private fun RangeEndpointRow(
+internal fun RangeEndpointRow(
   label: String,
   surah: SurahMeta?,
   surahId: Int,
@@ -607,7 +654,7 @@ private fun RangeEndpointRow(
 }
 
 @Composable
-private fun SearchableSurahPickerDialog(
+internal fun SearchableSurahPickerDialog(
   title: String,
   surahs: List<SurahMeta>,
   selectedSurahId: Int,
@@ -676,7 +723,7 @@ private fun SearchableSurahPickerDialog(
 }
 
 @Composable
-private fun AyahGridPickerDialog(
+internal fun AyahGridPickerDialog(
   title: String,
   versesCount: Int,
   selectedAyah: Int,

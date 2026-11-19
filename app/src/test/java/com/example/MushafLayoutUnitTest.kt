@@ -775,4 +775,78 @@ class MushafLayoutUnitTest {
     state = com.example.ui.components.BetaUnlockTapTracker.onTap(state, t)
     assertTrue(state.unlocked)
   }
+
+  @Test
+  fun `app update manager builds per-build apk name and detects valid zip header and cached apk`() {
+    val fileName = com.example.update.AppUpdateManager.buildTargetApkFileName(
+      remoteBuildNumber = 42,
+      originalFileName = "qabasat release.apk",
+    )
+    assertEquals("build-42-qabasat_release.apk", fileName)
+
+    val tempDir = createTempDir(prefix = "qabasat_update_test_")
+    try {
+      val validZipFile = File(tempDir, fileName).apply {
+        writeBytes(byteArrayOf(0x50, 0x4B, 0x03, 0x04, 0x14, 0x00))
+      }
+      val corruptFile = File(tempDir, "corrupt.apk").apply {
+        writeBytes(byteArrayOf(0x00, 0x01, 0x02, 0x03))
+      }
+      val missingFile = File(tempDir, "missing.apk")
+
+      assertTrue(com.example.update.AppUpdateManager.hasZipMagicHeader(validZipFile))
+      assertFalse(com.example.update.AppUpdateManager.hasZipMagicHeader(corruptFile))
+      assertFalse(com.example.update.AppUpdateManager.hasZipMagicHeader(missingFile))
+
+      val reused = com.example.update.AppUpdateManager.findCachedValidApk(
+        targetFile = validZipFile,
+        apkValidator = { f -> com.example.update.AppUpdateManager.hasZipMagicHeader(f) },
+      )
+      assertEquals(validZipFile, reused)
+
+      val rejected = com.example.update.AppUpdateManager.findCachedValidApk(
+        targetFile = corruptFile,
+        apkValidator = { f -> com.example.update.AppUpdateManager.hasZipMagicHeader(f) },
+      )
+      assertEquals(null, rejected)
+    } finally {
+      tempDir.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `shouldResumePendingInstall resumes only when awaiting permission on newer existing build`() {
+    assertTrue(
+      com.example.update.AppUpdateManager.shouldResumePendingInstall(
+        awaitingPermission = true,
+        pendingBuild = 25,
+        currentBuild = 24,
+        fileExists = true,
+      ),
+    )
+    assertFalse(
+      com.example.update.AppUpdateManager.shouldResumePendingInstall(
+        awaitingPermission = false,
+        pendingBuild = 25,
+        currentBuild = 24,
+        fileExists = true,
+      ),
+    )
+    assertFalse(
+      com.example.update.AppUpdateManager.shouldResumePendingInstall(
+        awaitingPermission = true,
+        pendingBuild = 24,
+        currentBuild = 24,
+        fileExists = true,
+      ),
+    )
+    assertFalse(
+      com.example.update.AppUpdateManager.shouldResumePendingInstall(
+        awaitingPermission = true,
+        pendingBuild = 25,
+        currentBuild = 24,
+        fileExists = false,
+      ),
+    )
+  }
 }
