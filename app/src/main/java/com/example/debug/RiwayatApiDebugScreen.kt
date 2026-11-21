@@ -92,6 +92,12 @@ private data class MoshafAudioTestState(
   val statusText: String = "",
 )
 
+private data class MoshafTimingTestUiState(
+  val isTesting: Boolean = false,
+  val result: DebugMoshafTimingProbeResult? = null,
+  val validationError: String? = null,
+)
+
 private class ActiveAudioProbeTracker {
   var activeKey: String? = null
   var activeHttpProbe: AudioHttpProbeResult? = null
@@ -115,11 +121,13 @@ fun RiwayatApiDebugScreen(
 
   var selectedRiwayaId by remember { mutableStateOf<String?>(null) }
   var dropdownExpanded by remember { mutableStateOf(false) }
-  var riwayatSectionExpanded by remember { mutableStateOf(true) }
+  var riwayatSectionExpanded by remember { mutableStateOf(false) }
+  var timingReadsSectionExpanded by remember { mutableStateOf(true) }
   var searchQuery by remember { mutableStateOf("") }
   var expandedReciterKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
 
   var audioTests by remember { mutableStateOf<Map<String, MoshafAudioTestState>>(emptyMap()) }
+  var timingTests by remember { mutableStateOf<Map<String, MoshafTimingTestUiState>>(emptyMap()) }
   val probeTracker = remember { ActiveAudioProbeTracker() }
 
   val exoPlayer = remember(context) {
@@ -212,11 +220,24 @@ fun RiwayatApiDebugScreen(
 
   val allRiwayat = snapshot?.riwayat.orEmpty()
   val allReciters = snapshot?.reciters.orEmpty()
+  val timingReads = snapshot?.timingReads.orEmpty()
+  val timingReadIds = snapshot?.timingReadIds.orEmpty()
+  val timingReadsLoaded = snapshot?.timingReadsLoaded ?: false
+  val timingReadsError = snapshot?.timingReadsError
+
   val filteredReciters = remember(allReciters, selectedRiwayaId, searchQuery) {
     RiwayatApiDebugRepository.filterReciters(
       all = allReciters,
       selectedRiwayaId = selectedRiwayaId,
       searchQuery = searchQuery,
+    )
+  }
+
+  val (timingRecitersCount, totalRiwayaRecitersCount) = remember(allReciters, selectedRiwayaId, timingReadIds) {
+    RiwayatApiDebugRepository.countRecitersWithTimingForRiwaya(
+      all = allReciters,
+      selectedRiwayaId = selectedRiwayaId,
+      timingReadIds = timingReadIds,
     )
   }
 
@@ -283,6 +304,35 @@ fun RiwayatApiDebugScreen(
     }
     val cur = audioTests[moshafKey] ?: return
     audioTests = audioTests + (moshafKey to cur.copy(isPlaying = false, isTesting = false))
+  }
+
+  fun startTimingTest(moshafKey: String, moshaf: DebugMoshaf) {
+    if (moshaf.id == RIWAYAT_MISSING_VALUE || moshaf.id.isBlank()) {
+      timingTests = timingTests + (
+        moshafKey to MoshafTimingTestUiState(
+          isTesting = false,
+          validationError = "خطأ: حقل id غير موجود في بيانات المصحف (الحقول الفعلية: ${moshaf.rawFieldNames.joinToString(", ")})",
+        )
+      )
+      return
+    }
+    timingTests = timingTests + (
+      moshafKey to MoshafTimingTestUiState(
+        isTesting = true,
+        result = null,
+        validationError = null,
+      )
+    )
+    scope.launch {
+      val probeResult = RiwayatApiDebugRepository.testMoshafTimingEndpoints(moshaf.id)
+      timingTests = timingTests + (
+        moshafKey to MoshafTimingTestUiState(
+          isTesting = false,
+          result = probeResult,
+          validationError = null,
+        )
+      )
+    }
   }
 
   Surface(
@@ -363,6 +413,8 @@ fun RiwayatApiDebugScreen(
                 val text = RiwayatApiDebugRepository.formatFilteredResultsForClipboard(
                   filtered = filteredReciters,
                   selectedRiwayaLabel = selectedRiwayaLabel,
+                  timingReadIds = timingReadIds,
+                  timingReadsLoaded = timingReadsLoaded,
                 )
                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                 cm?.setPrimaryClip(ClipData.newPlainText("mp3quran_riwayat_debug", text))
@@ -508,6 +560,87 @@ fun RiwayatApiDebugScreen(
             }
           }
 
+          // 1b) ayat_timing/reads summary (total count + first 10 raw entries)
+          Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = if (timingReadsError != null) {
+              MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+            } else {
+              MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            },
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("riwayat_timing_reads_card"),
+          ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clickable { timingReadsSectionExpanded = !timingReadsSectionExpanded }
+                  .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Text(
+                  text = if (timingReadsError != null) {
+                    "ayat_timing/reads: خطأ في الجلب"
+                  } else {
+                    "ayat_timing/reads (${timingReads.size} عنصر) — أول ١٠ عناصر"
+                  },
+                  style = MaterialTheme.typography.labelLarge,
+                  color = if (timingReadsError != null) {
+                    MaterialTheme.colorScheme.error
+                  } else {
+                    MaterialTheme.colorScheme.primary
+                  },
+                  modifier = Modifier.weight(1f),
+                )
+                Icon(
+                  imageVector = if (timingReadsSectionExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.primary,
+                )
+              }
+              AnimatedVisibility(visible = timingReadsSectionExpanded) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 150.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 10.dp, end = 10.dp, bottom = 8.dp),
+                  verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                  if (timingReadsError != null) {
+                    Text(
+                      text = timingReadsError,
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                  } else if (timingReads.isEmpty()) {
+                    Text(
+                      text = "لم يُرجع الخادم أي عناصر في ayat_timing/reads",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                  } else {
+                    SelectionContainer {
+                      Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        timingReads.take(10).forEachIndexed { idx, entry ->
+                          Text(
+                            text = "${idx + 1}) ${entry.formatRawLine()}",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurface,
+                          )
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
           if (!snapshot?.partialErrors.isNullOrEmpty()) {
             Surface(
               shape = RoundedCornerShape(10.dp),
@@ -523,7 +656,7 @@ fun RiwayatApiDebugScreen(
             }
           }
 
-          // 3) Filter Bar: Dropdown + Search + Live Counter
+          // 3) Filter Bar: Dropdown + Counters
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -598,6 +731,22 @@ fun RiwayatApiDebugScreen(
             }
           }
 
+          Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("riwayat_timing_reciters_count"),
+          ) {
+            Text(
+              text = "قرّاء لهم توقيت: $timingRecitersCount من $totalRiwayaRecitersCount",
+              style = MaterialTheme.typography.labelLarge,
+              fontWeight = FontWeight.SemiBold,
+              color = MaterialTheme.colorScheme.onSecondaryContainer,
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+          }
+
           OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
@@ -652,7 +801,10 @@ fun RiwayatApiDebugScreen(
               DebugReciterCard(
                 entry = entry,
                 isExpanded = isExpanded,
+                timingReadIds = timingReadIds,
+                timingReadsLoaded = timingReadsLoaded,
                 audioTests = audioTests,
+                timingTests = timingTests,
                 onToggleExpand = {
                   expandedReciterKeys = if (isExpanded) {
                     expandedReciterKeys - entry.uniqueKey
@@ -662,6 +814,7 @@ fun RiwayatApiDebugScreen(
                 },
                 onTestAudio = ::startAudioTest,
                 onStopAudio = ::stopAudioTest,
+                onTestTiming = ::startTimingTest,
               )
             }
             item {
@@ -674,14 +827,19 @@ fun RiwayatApiDebugScreen(
   }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DebugReciterCard(
   entry: DebugReciterEntry,
   isExpanded: Boolean,
+  timingReadIds: Set<String>,
+  timingReadsLoaded: Boolean,
   audioTests: Map<String, MoshafAudioTestState>,
+  timingTests: Map<String, MoshafTimingTestUiState>,
   onToggleExpand: () -> Unit,
   onTestAudio: (String, DebugMoshaf) -> Unit,
   onStopAudio: (String) -> Unit,
+  onTestTiming: (String, DebugMoshaf) -> Unit,
 ) {
   Surface(
     shape = RoundedCornerShape(12.dp),
@@ -756,6 +914,13 @@ private fun DebugReciterCard(
             entry.moshafList.forEachIndexed { idx, moshaf ->
               val moshafKey = "${entry.uniqueKey}_m_$idx"
               val testState = audioTests[moshafKey]
+              val timingTestState = timingTests[moshafKey]
+              val hasTiming = RiwayatApiDebugRepository.hasTimingForMoshaf(moshaf, timingReadIds)
+              val timingLabel = RiwayatApiDebugRepository.timingLabelForMoshaf(
+                moshaf = moshaf,
+                timingReadIds = timingReadIds,
+                timingReadsLoaded = timingReadsLoaded,
+              )
               val surahStartText = if (moshaf.first10Surahs.isEmpty()) {
                 RIWAYAT_MISSING_VALUE
               } else {
@@ -773,11 +938,51 @@ private fun DebugReciterCard(
                     .padding(10.dp),
                   verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Text(
+                      text = "المصحف: ${moshaf.name}",
+                      style = MaterialTheme.typography.labelLarge,
+                      color = MaterialTheme.colorScheme.onSurface,
+                      modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Surface(
+                      shape = RoundedCornerShape(8.dp),
+                      color = when {
+                        !timingReadsLoaded -> MaterialTheme.colorScheme.surfaceVariant
+                        hasTiming -> MaterialTheme.colorScheme.primaryContainer
+                        else -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                      },
+                    ) {
+                      Text(
+                        text = timingLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = when {
+                          !timingReadsLoaded -> MaterialTheme.colorScheme.onSurfaceVariant
+                          hasTiming -> MaterialTheme.colorScheme.onPrimaryContainer
+                          else -> MaterialTheme.colorScheme.onErrorContainer
+                        },
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                      )
+                    }
+                  }
+
                   Text(
-                    text = "المصحف: ${moshaf.name}",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    text = "id (read): ${moshaf.id}",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.primary,
                   )
+                  Text(
+                    text = "الحقول الفعلية: ${if (moshaf.rawFieldNames.isEmpty()) RIWAYAT_MISSING_VALUE else moshaf.rawFieldNames.joinToString(", ")}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+
                   SelectionContainer {
                     Text(
                       text = "server: ${moshaf.server}",
@@ -796,9 +1001,9 @@ private fun DebugReciterCard(
 
                   Spacer(Modifier.height(4.dp))
 
-                  Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                  FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                   ) {
                     OutlinedButton(
                       onClick = { onTestAudio(moshafKey, moshaf) },
@@ -826,6 +1031,20 @@ private fun DebugReciterCard(
                         Text("إيقاف")
                       }
                     }
+
+                    OutlinedButton(
+                      onClick = { onTestTiming(moshafKey, moshaf) },
+                      enabled = timingTestState?.isTesting != true,
+                      modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("debug_test_timing_${entry.uniqueKey}_$idx"),
+                    ) {
+                      if (timingTestState?.isTesting == true) {
+                        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                      }
+                      Text("اختبار التوقيت")
+                    }
                   }
 
                   if (testState != null) {
@@ -852,6 +1071,131 @@ private fun DebugReciterCard(
                           else -> MaterialTheme.colorScheme.error
                         },
                       )
+                    }
+                  }
+
+                  if (timingTestState != null) {
+                    Surface(
+                      shape = RoundedCornerShape(8.dp),
+                      color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    ) {
+                      Column(
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                      ) {
+                        when {
+                          timingTestState.isTesting -> {
+                            Text(
+                              text = "جارٍ فحص ayat_timing/soar و ayat_timing?surah=1...",
+                              style = MaterialTheme.typography.labelSmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                          }
+                          timingTestState.validationError != null -> {
+                            Text(
+                              text = timingTestState.validationError,
+                              style = MaterialTheme.typography.labelSmall,
+                              color = MaterialTheme.colorScheme.error,
+                            )
+                          }
+                          timingTestState.result != null -> {
+                            val soar = timingTestState.result.soarResult
+                            val s1 = timingTestState.result.surah1Result
+
+                            Text(
+                              text = "1) السور المتاحة (soar):",
+                              style = MaterialTheme.typography.labelSmall,
+                              fontWeight = FontWeight.Bold,
+                              color = MaterialTheme.colorScheme.primary,
+                            )
+                            SelectionContainer {
+                              Text(
+                                text = soar.url,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                  fontFamily = FontFamily.Monospace,
+                                  textDirection = TextDirection.Ltr,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                            }
+                            Text(
+                              text = buildString {
+                                append("HTTP: ${soar.httpCode?.toString() ?: RIWAYAT_MISSING_VALUE}")
+                                if (soar.surahCount != null) {
+                                  append(" | عدد السور: ${soar.surahCount}")
+                                }
+                                if (!soar.errorMessage.isNullOrBlank()) {
+                                  append(" | الخطأ: ${soar.errorMessage}")
+                                }
+                              },
+                              style = MaterialTheme.typography.labelSmall,
+                              color = if (soar.errorMessage == null) {
+                                MaterialTheme.colorScheme.primary
+                              } else {
+                                MaterialTheme.colorScheme.error
+                              },
+                            )
+
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                            Text(
+                              text = "2) توقيت الفاتحة (surah=1):",
+                              style = MaterialTheme.typography.labelSmall,
+                              fontWeight = FontWeight.Bold,
+                              color = MaterialTheme.colorScheme.primary,
+                            )
+                            SelectionContainer {
+                              Text(
+                                text = s1.url,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                  fontFamily = FontFamily.Monospace,
+                                  textDirection = TextDirection.Ltr,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                            }
+                            Text(
+                              text = buildString {
+                                append("HTTP: ${s1.httpCode?.toString() ?: RIWAYAT_MISSING_VALUE}")
+                                if (s1.objectCount != null) {
+                                  append(" | عدد كائنات الآيات: ${s1.objectCount}")
+                                }
+                                if (!s1.errorMessage.isNullOrBlank()) {
+                                  append(" | الخطأ: ${s1.errorMessage}")
+                                }
+                              },
+                              style = MaterialTheme.typography.labelSmall,
+                              color = if (s1.errorMessage == null) {
+                                MaterialTheme.colorScheme.primary
+                              } else {
+                                MaterialTheme.colorScheme.error
+                              },
+                            )
+                            if (s1.first3Objects.isNotEmpty()) {
+                              SelectionContainer {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                  s1.first3Objects.forEachIndexed { objIdx, sample ->
+                                    Text(
+                                      text = "[${objIdx + 1}] ${sample.formatLine()}",
+                                      style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                        textDirection = TextDirection.Ltr,
+                                      ),
+                                      color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }

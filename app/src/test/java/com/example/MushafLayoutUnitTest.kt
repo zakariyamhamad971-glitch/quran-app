@@ -932,4 +932,100 @@ class MushafLayoutUnitTest {
     assertTrue(clipboard.contains("https://server8.mp3quran.net/afs/"))
     assertTrue(clipboard.contains("1,2,3,4,5,6,7,8,9,10"))
   }
+
+  @Test
+  fun `riwayat debug repository parses timing reads soar surah1 counts reciters and formats clipboard timing labels`() {
+    val readsJson = """
+      [
+        {"id": 101, "name": "مشاري العفاسي"},
+        {"id": 999, "name": "قارئ آخر", "rewaya": "ورش"}
+      ]
+    """.trimIndent()
+    val reads = com.example.debug.RiwayatApiDebugRepository.parseTimingReadsJson(readsJson)
+    assertEquals(2, reads.size)
+    assertEquals("101", reads[0].id)
+    assertTrue(reads[0].formatRawLine().contains("name: مشاري العفاسي"))
+
+    val soarJson = """[{"id": 1, "name": "الفاتحة"}, {"id": 2, "name": "البقرة"}]"""
+    assertEquals(2, com.example.debug.RiwayatApiDebugRepository.parseTimingSoarCount(soarJson))
+
+    val surah1Json = """
+      [
+        {"ayah": 1, "start_time": 0, "end_time": 4200},
+        {"ayah": 2, "start_time": 4200, "end_time": 9100},
+        {"ayah": 3, "start_time": 9100},
+        {"ayah": 4, "start_time": 12000, "end_time": 16000}
+      ]
+    """.trimIndent()
+    val (totalAyahs, first3) = com.example.debug.RiwayatApiDebugRepository.parseAyahTimingsJson(surah1Json)
+    assertEquals(4, totalAyahs)
+    assertEquals(3, first3.size)
+    assertEquals("ayah=1, start_time=0, end_time=4200", first3[0].formatLine())
+    assertEquals("غير موجود", first3[2].endTime)
+
+    val reciters = listOf(
+      com.example.debug.DebugReciterEntry(
+        uniqueKey = "1_10_0",
+        reciterId = "10",
+        reciterName = "قارئ بتوقيت",
+        riwayaId = "1",
+        riwayaName = "حفص",
+        moshafList = listOf(
+          com.example.debug.DebugMoshaf(
+            id = "101",
+            name = "المرتل",
+            server = "https://s/",
+            rawSurahList = "1,2",
+            first10Surahs = listOf("1", "2"),
+            firstSurahNumber = 1,
+            rawFieldNames = listOf("id", "name", "server", "surah_list"),
+          ),
+        ),
+      ),
+      com.example.debug.DebugReciterEntry(
+        uniqueKey = "1_11_1",
+        reciterId = "11",
+        reciterName = "قارئ بلا توقيت",
+        riwayaId = "1",
+        riwayaName = "حفص",
+        moshafList = listOf(
+          com.example.debug.DebugMoshaf(
+            id = "202",
+            name = "المرتل",
+            server = "https://s2/",
+            rawSurahList = "1",
+            first10Surahs = listOf("1"),
+            firstSurahNumber = 1,
+            rawFieldNames = listOf("id", "name", "server", "surah_list"),
+          ),
+        ),
+      ),
+    )
+    val timingIds = setOf("101")
+    val (withTiming, totalInRiwaya) = com.example.debug.RiwayatApiDebugRepository.countRecitersWithTimingForRiwaya(
+      all = reciters,
+      selectedRiwayaId = "1",
+      timingReadIds = timingIds,
+    )
+    assertEquals(1, withTiming)
+    assertEquals(2, totalInRiwaya)
+    assertEquals(
+      "له توقيت",
+      com.example.debug.RiwayatApiDebugRepository.timingLabelForMoshaf(reciters[0].moshafList[0], timingIds, true),
+    )
+    assertEquals(
+      "ليس له توقيت",
+      com.example.debug.RiwayatApiDebugRepository.timingLabelForMoshaf(reciters[1].moshafList[0], timingIds, true),
+    )
+
+    val clipboardWithTiming = com.example.debug.RiwayatApiDebugRepository.formatFilteredResultsForClipboard(
+      filtered = reciters,
+      selectedRiwayaLabel = "1 - حفص",
+      timingReadIds = timingIds,
+      timingReadsLoaded = true,
+    )
+    assertTrue(clipboardWithTiming.contains("قرّاء لهم توقيت: 1 من 2"))
+    assertTrue(clipboardWithTiming.contains("id: 101 | له توقيت"))
+    assertTrue(clipboardWithTiming.contains("id: 202 | ليس له توقيت"))
+  }
 }
