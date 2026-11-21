@@ -1,5 +1,6 @@
 package com.example.data.audio
 
+import android.content.Context
 import com.example.data.integrity.VerifiedDiskCache
 import com.example.data.quran.QuranApiClient
 import com.squareup.moshi.Types
@@ -37,8 +38,10 @@ interface Mp3QuranApi {
 }
 
 class AudioRepository(
+  context: Context,
   private val diskCache: VerifiedDiskCache,
 ) {
+  private val riwayatClient = Mp3QuranRiwayatClient(context)
   private val api: Mp3QuranApi = Retrofit.Builder()
     .baseUrl("https://www.mp3quran.net/api/v3/")
     .client(QuranApiClient.okHttpClient)
@@ -375,7 +378,7 @@ class AudioRepository(
         if (resp.isSuccessful && isAudio && (contentLen == 0L || contentLen > 1024L)) {
           return@runCatching SurahUrlAudit(surahId, url, true, contentType, contentLen)
         }
-        if (code == 405 || code == 403) {
+        if (code == 400 || code == 403 || code == 405 || code == 501) {
           val rangeReq = Request.Builder().url(url).addHeader("Range", "bytes=0-1").get().build()
           QuranApiClient.okHttpClient.newCall(rangeReq).execute().use { r2 ->
             val ct = r2.header("Content-Type")
@@ -392,6 +395,47 @@ class AudioRepository(
 
     urlAuditCache[url] = audit
     audit
+  }
+
+  suspend fun getPdfModeRecitersCatalog(
+    apiRiwayaIds: List<Int>,
+    forceRefresh: Boolean = false,
+  ): Result<List<VerifiedReciter>> =
+    riwayatClient.fetchRecitersForRiwayas(apiRiwayaIds, forceRefresh)
+
+  suspend fun resolvePdfLocalTimings(
+    reciter: VerifiedReciter,
+    surahId: Int,
+  ): List<AyahTimingDto> {
+    val moshafId = reciter.moshafId ?: return emptyList()
+    if (!reciter.hasAyahTiming || moshafId <= 0 || surahId !in 1..114) return emptyList()
+    return riwayatClient.fetchAyahTimings(moshafId, surahId)
+  }
+
+  suspend fun resolvePdfRecitationAudio(
+    reciter: VerifiedReciter,
+    surahId: Int,
+  ): ResolvedRecitationAudio? = withContext(Dispatchers.IO) {
+    if (surahId !in 1..114 || !reciter.isPlayable || !reciter.availableSurahs.contains(surahId)) {
+      return@withContext null
+    }
+    val streamUrl = buildSurahMp3Url(reciter, surahId) ?: return@withContext null
+    if (!verifySurahMp3Url(streamUrl, surahId).isReachable) {
+      return@withContext null
+    }
+    if (reciter.hasAyahTiming) {
+      val readId = reciter.moshafId ?: 0
+      val timings = if (readId > 0) riwayatClient.fetchAyahTimings(readId, surahId) else emptyList()
+      if (timings.isNotEmpty()) {
+        return@withContext ResolvedRecitationAudio.SingleTimedTrack(
+          streamUrl = streamUrl,
+          ayahTimings = timings,
+          timingSourceLabel = "متزامن مع الآيات (${reciter.riwayaName.ifBlank { "mp3quran" }})",
+          matchesSelectedMoshafUrl = true,
+        )
+      }
+    }
+    ResolvedRecitationAudio.UntimedSingleTrack(streamUrl)
   }
 
   suspend fun resolveLocalTimingsOnlyIfMatched(

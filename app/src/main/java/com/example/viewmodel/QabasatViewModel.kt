@@ -1,6 +1,7 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.graphics.Bitmap
 import android.graphics.Typeface
 import android.os.Build
 import androidx.compose.runtime.Immutable
@@ -12,6 +13,10 @@ import com.example.data.audio.RecitationRange
 import com.example.data.audio.VerifiedReciter
 import com.example.data.integrity.AssetHashStatus
 import com.example.data.integrity.VerifiedDiskCache
+import com.example.data.pdf.PdfMushafEntry
+import com.example.data.pdf.PdfMushafRepository
+import com.example.data.pdf.PdfMushafTransferState
+import com.example.data.pdf.PdfRendererBridge
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.PageViewMode
 import com.example.data.prefs.PersistedReaderState
@@ -39,6 +44,7 @@ import com.example.ui.components.PageRenderSpec
 import com.example.ui.components.RenderedMushafPage
 import com.example.update.AppUpdateManager
 import com.example.update.AppUpdateState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -111,6 +117,11 @@ data class ReaderUiState(
   val verseSearchLoading: Boolean = false,
   val verseSearchError: String? = null,
   val metadataError: String? = null,
+  val activeMushafIsPdf: Boolean = false,
+  val activePdfMushafId: String? = null,
+  val pdfMushafs: List<PdfMushafEntry> = emptyList(),
+  val pdfManifestLoading: Boolean = false,
+  val pdfManifestError: String? = null,
 )
 
 class QabasatViewModel(application: Application) : AndroidViewModel(application) {
@@ -122,10 +133,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private val fontManager = PageFontManager(diskCache)
   private val quranRepository = QuranRepository(application, diskCache, fontManager)
   private val verseInsightsRepository = VerseInsightsRepository(diskCache)
-  private val audioRepository = AudioRepository(diskCache)
+  private val audioRepository = AudioRepository(application, diskCache)
   private val audioCacheManager = AudioCacheManager(application)
   private val preferences = ReaderPreferences(application)
   private val pageBitmapRenderer = MushafPageBitmapRenderer(application)
+  private val pdfMushafRepository = PdfMushafRepository(application, viewModelScope)
+  private val pdfRendererBridge = PdfRendererBridge()
 
   val playbackController = PlaybackController(
     context = application,
@@ -172,6 +185,14 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     .map { it.betaChannelUnlocked || it.betaChannelEnabled }
     .distinctUntilChanged()
     .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+  val activeMushafIsPdfState: StateFlow<Boolean> = preferences.stateFlow
+    .map { it.activeMushafIsPdf }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+  val pdfTransferStates: StateFlow<Map<String, PdfMushafTransferState>> = pdfMushafRepository.transferStates
+  val offlinePdfIds: StateFlow<Set<String>> = pdfMushafRepository.offlineDownloadedIds
 
   val setupState: StateFlow<MushafSetupState> = setupManager.state
 
@@ -255,6 +276,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private var tajweedLegendJob: Job? = null
   private var creditsLoaded: Boolean = false
   private var creditsJob: Job? = null
+  private var recitersJob: Job? = null
+  private var pdfManifestJob: Job? = null
 
   init {
     bootstrap()
@@ -305,6 +328,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       edition = st.mushafEdition,
       isDarkTheme = st.isDarkMode,
       backgroundTheme = st.backgroundTheme,
+      pdfMushafId = if (st.activeMushafIsPdf) st.activePdfMushafId else null,
     )
   }
 
@@ -343,6 +367,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private fun bootstrap() {
     viewModelScope.launch {
       val saved: PersistedReaderState = preferences.stateFlow.first()
+      val cachedManifest = pdfMushafRepository.readCachedManifestOrEmpty()
       _uiState.update {
         it.copy(
           currentPage = saved.lastPage,
@@ -351,6 +376,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           backgroundTheme = saved.backgroundTheme,
           pageViewMode = saved.pageViewMode,
           bookmarks = saved.bookmarks,
+          activeMushafIsPdf = saved.activeMushafIsPdf,
+          activePdfMushafId = saved.activePdfMushafId,
+          pdfMushafs = cachedManifest,
         )
       }
       activeRenderSpec = rebuildRenderSpec()
@@ -410,6 +438,14 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     }
     ensurePlaybackConnected()
     viewModelScope.launch { audioCacheManager.refreshDownloadedKeys() }
+
+    if (saved.activeMushafIsPdf && _uiState.value.pdfMushafs.none { it.id == saved.activePdfMushafId }) {
+      val fetchedManifest = pdfMushafRepository.fetchManifest(forceRefresh = false)
+      fetchedManifest.onSuccess { list ->
+        _uiState.update { it.copy(pdfMushafs = list, pdfManifestError = null) }
+      }
+    }
+
     loadReciters(saved)
     appUpdateManager.checkForUpdatesInBackground(saved.betaChannelEnabled)
   }
@@ -417,11 +453,22 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   fun startMushafDownload(item: MushafItem) {
     mushafDownloadManager.startDownload(item) {
       preferences.addDownloadedMushaf(item.id)
-      preferences.setActiveMushaf(item.id)
-      preferences.setMushafEdition(item.edition)
-      _uiState.update { it.copy(mushafEdition = item.edition) }
+      preferences.setActiveTextMushaf(item.id, item.edition)
+      val wasPdf = _uiState.value.activeMushafIsPdf
+      _uiState.update {
+        it.copy(
+          mushafEdition = item.edition,
+          activeMushafIsPdf = false,
+        )
+      }
       val nextSpec = rebuildRenderSpec()
       onRenderSpecUpdated(nextSpec)
+      if (wasPdf) {
+        if (audioState.value.currentReciter?.isPdfModeReciter == true) {
+          playbackController.clearReciterSelection()
+        }
+        reloadRecitersForCurrentState(forceRefresh = false)
+      }
     }
   }
 
@@ -432,11 +479,22 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   fun selectActiveMushaf(id: String) {
     val item = MushafRegistry.getById(id)
     viewModelScope.launch {
-      preferences.setActiveMushaf(id)
-      preferences.setMushafEdition(item.edition)
-      _uiState.update { it.copy(mushafEdition = item.edition) }
+      val wasPdf = _uiState.value.activeMushafIsPdf
+      preferences.setActiveTextMushaf(item.id, item.edition)
+      _uiState.update {
+        it.copy(
+          mushafEdition = item.edition,
+          activeMushafIsPdf = false,
+        )
+      }
       val nextSpec = rebuildRenderSpec()
       onRenderSpecUpdated(nextSpec)
+      if (wasPdf) {
+        if (audioState.value.currentReciter?.isPdfModeReciter == true) {
+          playbackController.clearReciterSelection()
+        }
+        reloadRecitersForCurrentState(forceRefresh = false)
+      }
     }
   }
 
@@ -448,6 +506,81 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       _uiState.update { it.copy(mushafEdition = item.edition) }
       val nextSpec = rebuildRenderSpec()
       onRenderSpecUpdated(nextSpec)
+    }
+  }
+
+  fun loadPdfManifest(forceRefresh: Boolean = false) {
+    if (pdfManifestJob?.isActive == true && !forceRefresh) return
+    pdfManifestJob?.cancel()
+    pdfManifestJob = viewModelScope.launch {
+      val cached = pdfMushafRepository.readCachedManifestOrEmpty()
+      if (cached.isNotEmpty() && _uiState.value.pdfMushafs.isEmpty()) {
+        _uiState.update { it.copy(pdfMushafs = cached) }
+      }
+      if (!forceRefresh && _uiState.value.pdfMushafs.isNotEmpty()) {
+        _uiState.update { it.copy(pdfManifestLoading = false, pdfManifestError = null) }
+        return@launch
+      }
+      _uiState.update { it.copy(pdfManifestLoading = true, pdfManifestError = null) }
+      val res = pdfMushafRepository.fetchManifest(forceRefresh = forceRefresh)
+      res.onSuccess { list ->
+        _uiState.update {
+          it.copy(
+            pdfMushafs = list,
+            pdfManifestLoading = false,
+            pdfManifestError = null,
+          )
+        }
+      }.onFailure { err ->
+        _uiState.update {
+          it.copy(
+            pdfManifestLoading = false,
+            pdfManifestError = err.localizedMessage ?: "تعذر تحميل قائمة المصاحف",
+          )
+        }
+      }
+    }
+  }
+
+  suspend fun loadPdfThumbnail(entry: PdfMushafEntry): Bitmap? =
+    pdfMushafRepository.loadThumbnail(entry)
+
+  fun downloadPdfMushafOffline(entry: PdfMushafEntry) {
+    pdfMushafRepository.startOfflineDownload(entry)
+  }
+
+  fun cancelPdfTransfer(mushafId: String) {
+    pdfMushafRepository.cancelTransfer(mushafId)
+  }
+
+  fun deletePdfMushafOffline(entry: PdfMushafEntry) {
+    viewModelScope.launch {
+      pdfRendererBridge.closeIfMatches(entry.id)
+      pdfMushafRepository.deleteOfflinePdf(entry.id)
+    }
+  }
+
+  fun selectPdfMushaf(entry: PdfMushafEntry) {
+    dismissVerseInsights()
+    val currentReciter = audioState.value.currentReciter
+    val compatible = currentReciter != null &&
+      currentReciter.isPdfModeReciter &&
+      currentReciter.riwayaId in entry.apiRiwayaIds
+    if (!compatible) {
+      playbackController.clearReciterSelection()
+    }
+    viewModelScope.launch {
+      preferences.setActivePdfMushaf(entry.id)
+      _uiState.update { st ->
+        val updatedManifest = if (st.pdfMushafs.any { it.id == entry.id }) st.pdfMushafs else (st.pdfMushafs + entry).sortedBy { it.order }
+        st.copy(
+          activeMushafIsPdf = true,
+          activePdfMushafId = entry.id,
+          pdfMushafs = updatedManifest,
+        )
+      }
+      onRenderSpecUpdated(rebuildRenderSpec())
+      reloadRecitersForCurrentState(forceRefresh = false)
     }
   }
 
@@ -507,35 +640,144 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   private fun loadReciters(saved: PersistedReaderState) {
+    loadRecitersForCurrentMode(
+      selectedReciterKey = saved.selectedReciterKey,
+      lastSurahId = saved.lastSurahId,
+      lastPositionMs = saved.lastPositionMs,
+      playbackSpeed = saved.playbackSpeed,
+      forceRefresh = false,
+    )
+  }
+
+  private fun reloadRecitersForCurrentState(forceRefresh: Boolean) {
     viewModelScope.launch {
-      _uiState.update { it.copy(recitersLoading = true, recitersError = null) }
-      val res = audioRepository.getVerifiedRecitersCatalog()
-      res.onSuccess { (primary, additional) ->
-        _uiState.update {
-          it.copy(
-            primaryReciters = primary,
-            additionalReciters = additional,
-            recitersLoading = false,
-          )
+      val saved = preferences.stateFlow.first()
+      loadRecitersForCurrentMode(
+        selectedReciterKey = saved.selectedReciterKey,
+        lastSurahId = saved.lastSurahId,
+        lastPositionMs = saved.lastPositionMs,
+        playbackSpeed = saved.playbackSpeed,
+        forceRefresh = forceRefresh,
+      )
+    }
+  }
+
+  fun retryLoadReciters() {
+    reloadRecitersForCurrentState(forceRefresh = true)
+  }
+
+  private fun loadRecitersForCurrentMode(
+    selectedReciterKey: String?,
+    lastSurahId: Int,
+    lastPositionMs: Long,
+    playbackSpeed: Float,
+    forceRefresh: Boolean,
+  ) {
+    recitersJob?.cancel()
+    recitersJob = viewModelScope.launch {
+      val snapshot = _uiState.value
+      if (snapshot.activeMushafIsPdf) {
+        val targetPdfId = snapshot.activePdfMushafId
+        var pdfEntry = snapshot.pdfMushafs.firstOrNull { it.id == targetPdfId }
+        if (pdfEntry == null && targetPdfId != null) {
+          val fetched = pdfMushafRepository.fetchManifest(forceRefresh = false).getOrNull().orEmpty()
+          if (fetched.isNotEmpty()) {
+            _uiState.update { it.copy(pdfMushafs = fetched) }
+            pdfEntry = fetched.firstOrNull { it.id == targetPdfId }
+          }
         }
-        val allPlayable = (primary + additional).filter { it.isPlayable }
-        val restored = saved.selectedReciterKey?.let { key ->
-          allPlayable.firstOrNull { it.key == key }
-        } ?: allPlayable.firstOrNull()
-        if (restored != null) {
-          playbackController.restoreSelectionWithoutPlaying(
-            reciter = restored,
-            surahId = saved.lastSurahId,
-            positionMs = saved.lastPositionMs,
-            speed = saved.playbackSpeed,
-          )
+        val riwayaIds = pdfEntry?.apiRiwayaIds.orEmpty()
+        if (riwayaIds.isEmpty()) {
+          _uiState.update {
+            it.copy(
+              primaryReciters = emptyList(),
+              additionalReciters = emptyList(),
+              recitersLoading = false,
+              recitersError = null,
+            )
+          }
+          if (audioState.value.currentReciter != null) {
+            playbackController.clearReciterSelection()
+          }
+          return@launch
         }
-      }.onFailure { err ->
-        _uiState.update {
-          it.copy(
-            recitersLoading = false,
-            recitersError = err.localizedMessage ?: "تعذر تحميل قائمة القراء",
-          )
+
+        _uiState.update { it.copy(recitersLoading = true, recitersError = null) }
+        val res = audioRepository.getPdfModeRecitersCatalog(riwayaIds, forceRefresh = forceRefresh)
+        if (_uiState.value.activeMushafIsPdf != true || _uiState.value.activePdfMushafId != targetPdfId) {
+          return@launch
+        }
+        res.onSuccess { list ->
+          _uiState.update {
+            it.copy(
+              primaryReciters = list,
+              additionalReciters = emptyList(),
+              recitersLoading = false,
+              recitersError = null,
+            )
+          }
+          val allPlayable = list.filter { it.isPlayable }
+          val restored = selectedReciterKey?.let { key ->
+            allPlayable.firstOrNull { it.key == key }
+          } ?: allPlayable.firstOrNull()
+          val current = audioState.value.currentReciter
+          if (restored != null) {
+            if (current?.key != restored.key || current.riwayaId != restored.riwayaId || current.hasAyahTiming != restored.hasAyahTiming) {
+              playbackController.restoreSelectionWithoutPlaying(
+                reciter = restored,
+                surahId = lastSurahId,
+                positionMs = lastPositionMs,
+                speed = playbackSpeed,
+              )
+            }
+          } else if (current != null) {
+            playbackController.clearReciterSelection()
+          }
+        }.onFailure { err ->
+          _uiState.update {
+            it.copy(
+              primaryReciters = emptyList(),
+              additionalReciters = emptyList(),
+              recitersLoading = false,
+              recitersError = err.localizedMessage ?: "تعذر تحميل قائمة القراء",
+            )
+          }
+        }
+      } else {
+        _uiState.update { it.copy(recitersLoading = true, recitersError = null) }
+        val res = audioRepository.getVerifiedRecitersCatalog()
+        if (_uiState.value.activeMushafIsPdf) return@launch
+        res.onSuccess { (primary, additional) ->
+          _uiState.update {
+            it.copy(
+              primaryReciters = primary,
+              additionalReciters = additional,
+              recitersLoading = false,
+              recitersError = null,
+            )
+          }
+          val allPlayable = (primary + additional).filter { it.isPlayable }
+          val restored = selectedReciterKey?.let { key ->
+            allPlayable.firstOrNull { it.key == key }
+          } ?: allPlayable.firstOrNull()
+          if (restored != null) {
+            val current = audioState.value.currentReciter
+            if (current == null || current.isPdfModeReciter || current.key != restored.key) {
+              playbackController.restoreSelectionWithoutPlaying(
+                reciter = restored,
+                surahId = lastSurahId,
+                positionMs = lastPositionMs,
+                speed = playbackSpeed,
+              )
+            }
+          }
+        }.onFailure { err ->
+          _uiState.update {
+            it.copy(
+              recitersLoading = false,
+              recitersError = err.localizedMessage ?: "تعذر تحميل قائمة القراء",
+            )
+          }
         }
       }
     }
@@ -583,12 +825,25 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun setMushafEdition(edition: MushafEdition) {
-    if (edition == _uiState.value.mushafEdition) return
-    _uiState.update { it.copy(mushafEdition = edition) }
-    viewModelScope.launch { preferences.setMushafEdition(edition) }
+    val wasPdf = _uiState.value.activeMushafIsPdf
+    if (!wasPdf && edition == _uiState.value.mushafEdition) return
+    val item = MushafRegistry.getByEdition(edition)
+    _uiState.update { it.copy(mushafEdition = edition, activeMushafIsPdf = false) }
+    viewModelScope.launch {
+      preferences.setMushafEdition(edition)
+      if (preferences.stateFlow.first().downloadedMushafIds.contains(item.id)) {
+        preferences.setActiveTextMushaf(item.id, edition)
+      }
+    }
     val nextSpec = rebuildRenderSpec()
     if (nextSpec != activeRenderSpec) {
       onRenderSpecUpdated(nextSpec)
+    }
+    if (wasPdf) {
+      if (audioState.value.currentReciter?.isPdfModeReciter == true) {
+        playbackController.clearReciterSelection()
+      }
+      reloadRecitersForCurrentState(forceRefresh = false)
     }
   }
 
@@ -743,6 +998,87 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         else current + (page to PageLoadState.Loading)
       }
 
+      if (spec.isPdfMode) {
+        try {
+          val pdfId = spec.pdfMushafId
+          var entry = _uiState.value.pdfMushafs.firstOrNull { it.id == pdfId }
+            ?: pdfMushafRepository.readCachedManifestOrEmpty().firstOrNull { it.id == pdfId }
+          if (entry == null) {
+            val fetched = pdfMushafRepository.fetchManifest(forceRefresh = false).getOrNull().orEmpty()
+            if (fetched.isNotEmpty()) {
+              _uiState.update { it.copy(pdfMushafs = fetched) }
+              entry = fetched.firstOrNull { it.id == pdfId }
+            }
+          }
+          if (entry == null) {
+            _pagesState.update {
+              it + (page to PageLoadState.Error("تعذر العثور على بيانات المصحف المختار"))
+            }
+            return@launch
+          }
+
+          val fileRes = pdfMushafRepository.ensurePdfReadyForReader(entry)
+          val pdfFile = fileRes.getOrElse { err ->
+            _pagesState.update {
+              it + (page to PageLoadState.Error(err.localizedMessage ?: "تعذر تحميل صفحة المصحف PDF"))
+            }
+            return@launch
+          }
+
+          if (activeRenderSpec != spec || !pageLruOrder.contains(page)) return@launch
+
+          val headerMeta = quranRepository.getExistingPageHeaderMeta(page)
+          val (bodyW, bodyH) = pageBitmapRenderer.computePdfBodySizePx(spec, page)
+          val pdfBitmap = pdfRendererBridge.renderPage(
+            mushafId = entry.id,
+            pdfFile = pdfFile,
+            pageNumber = page,
+            targetWidthPx = bodyW,
+            targetHeightPx = bodyH,
+          )
+
+          if (activeRenderSpec != spec || !pageLruOrder.contains(page)) {
+            pdfBitmap.recycle()
+            return@launch
+          }
+
+          val surahsMap = cachedSurahsById.ifEmpty {
+            quranRepository.getSurahs().getOrDefault(emptyList()).associateBy { it.id }.also {
+              if (it.isNotEmpty()) cachedSurahsById = it
+            }
+          }
+
+          val rendered = try {
+            pageBitmapRenderer.renderPdfPageOrGet(
+              pageNumber = page,
+              headerMeta = headerMeta,
+              pdfBitmap = pdfBitmap,
+              spec = spec,
+              surahsById = surahsMap,
+            )
+          } finally {
+            pdfBitmap.recycle()
+          }
+
+          if (activeRenderSpec != spec || !pageLruOrder.contains(page)) return@launch
+
+          _pagesState.update {
+            it + (page to PageLoadState.Ready(
+              renderedPage = rendered,
+              effectiveDark = false,
+              edition = spec.edition,
+            ))
+          }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          _pagesState.update {
+            it + (page to PageLoadState.Error(e.localizedMessage ?: "تعذر عرض الصفحة $page"))
+          }
+        }
+        return@launch
+      }
+
       val edition = spec.edition
       val useWhiteInk = spec.effectiveDark
       val needsTagFallbackTajweed =
@@ -809,6 +1145,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun onVerseTapped(verseKey: String, pageNumber: Int, verseCodeV2Line: String) {
+    if (_uiState.value.activeMushafIsPdf) return
     val parts = verseKey.split(":")
     val surahId = parts.getOrNull(0)?.toIntOrNull() ?: 1
     val ayahNumber = parts.getOrNull(1)?.toIntOrNull() ?: 1
@@ -951,6 +1288,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   override fun onCleared() {
+    pdfRendererBridge.closeBlocking()
     appUpdateManager.release()
     playbackController.release()
     super.onCleared()

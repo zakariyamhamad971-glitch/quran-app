@@ -44,6 +44,8 @@ data class PersistedReaderState(
   val layoutCacheVersion: Int = 1,
   val betaChannelEnabled: Boolean = false,
   val betaChannelUnlocked: Boolean = false,
+  val activePdfMushafId: String? = null,
+  val activeMushafIsPdf: Boolean = false,
 )
 
 class ReaderPreferences(private val context: Context) {
@@ -63,6 +65,8 @@ class ReaderPreferences(private val context: Context) {
     val LAYOUT_CACHE_VERSION = intPreferencesKey("layout_cache_version")
     val BETA_CHANNEL_ENABLED = booleanPreferencesKey("beta_channel_enabled")
     val BETA_CHANNEL_UNLOCKED = booleanPreferencesKey("beta_channel_unlocked")
+    val ACTIVE_PDF_MUSHAF_ID = stringPreferencesKey("active_pdf_mushaf_id")
+    val ACTIVE_MUSHAF_IS_PDF = booleanPreferencesKey("active_mushaf_is_pdf")
   }
 
   val stateFlow: Flow<PersistedReaderState> = context.dataStore.data.map { prefs ->
@@ -87,6 +91,8 @@ class ReaderPreferences(private val context: Context) {
 
     val downloadedIds = prefs[Keys.DOWNLOADED_MUSHAF_IDS] ?: emptySet()
     val activeId = prefs[Keys.ACTIVE_MUSHAF_ID] ?: (downloadedIds.firstOrNull() ?: "madinah_1421")
+    val pdfId = prefs[Keys.ACTIVE_PDF_MUSHAF_ID]?.takeIf { it.isNotBlank() }
+    val isPdf = (prefs[Keys.ACTIVE_MUSHAF_IS_PDF] ?: false) && pdfId != null
 
     PersistedReaderState(
       lastPage = (prefs[Keys.LAST_PAGE] ?: 1).coerceIn(1, 604),
@@ -104,6 +110,8 @@ class ReaderPreferences(private val context: Context) {
       layoutCacheVersion = prefs[Keys.LAYOUT_CACHE_VERSION] ?: 1,
       betaChannelEnabled = prefs[Keys.BETA_CHANNEL_ENABLED] ?: false,
       betaChannelUnlocked = (prefs[Keys.BETA_CHANNEL_UNLOCKED] ?: false) || (prefs[Keys.BETA_CHANNEL_ENABLED] ?: false),
+      activePdfMushafId = pdfId,
+      activeMushafIsPdf = isPdf,
     )
   }
 
@@ -129,7 +137,10 @@ class ReaderPreferences(private val context: Context) {
   }
 
   suspend fun setMushafEdition(edition: MushafEdition) {
-    context.dataStore.edit { it[Keys.MUSHAF_EDITION] = edition.name }
+    context.dataStore.edit {
+      it[Keys.MUSHAF_EDITION] = edition.name
+      it[Keys.ACTIVE_MUSHAF_IS_PDF] = false
+    }
   }
 
   suspend fun addDownloadedMushaf(id: String) {
@@ -161,7 +172,23 @@ class ReaderPreferences(private val context: Context) {
       val current = prefs[Keys.DOWNLOADED_MUSHAF_IDS].orEmpty()
       if (current.contains(id)) {
         prefs[Keys.ACTIVE_MUSHAF_ID] = id
+        prefs[Keys.ACTIVE_MUSHAF_IS_PDF] = false
       }
+    }
+  }
+
+  suspend fun setActiveTextMushaf(id: String, edition: MushafEdition) {
+    context.dataStore.edit { prefs ->
+      prefs[Keys.ACTIVE_MUSHAF_ID] = id
+      prefs[Keys.MUSHAF_EDITION] = edition.name
+      prefs[Keys.ACTIVE_MUSHAF_IS_PDF] = false
+    }
+  }
+
+  suspend fun setActivePdfMushaf(pdfMushafId: String) {
+    context.dataStore.edit { prefs ->
+      prefs[Keys.ACTIVE_PDF_MUSHAF_ID] = pdfMushafId
+      prefs[Keys.ACTIVE_MUSHAF_IS_PDF] = true
     }
   }
 
@@ -196,6 +223,13 @@ class ReaderPreferences(private val context: Context) {
       surahId?.let { prefs[Keys.LAST_SURAH_ID] = it.coerceIn(1, 114) }
       positionMs?.let { prefs[Keys.LAST_POSITION_MS] = it.coerceAtLeast(0L) }
       speed?.let { prefs[Keys.PLAYBACK_SPEED] = it.coerceIn(0.75f, 1.25f) }
+    }
+  }
+
+  suspend fun clearSelectedReciterKey() {
+    context.dataStore.edit { prefs ->
+      prefs.remove(Keys.SELECTED_RECITER_KEY)
+      prefs.remove(Keys.LAST_POSITION_MS)
     }
   }
 

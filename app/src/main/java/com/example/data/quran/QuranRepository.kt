@@ -180,6 +180,46 @@ class QuranRepository(
       ?: error("تعذر قراءة الصفحة $pageNumber")
   }
 
+  suspend fun getExistingPageHeaderMeta(pageNumber: Int): PdfPageHeaderMeta? = withContext(Dispatchers.IO) {
+    if (pageNumber !in 1..604) return@withContext null
+
+    val versesResp = runCatching {
+      val cachedBytes = diskCache.readVerifiedBytes("api/page_$pageNumber.json")
+      if (cachedBytes != null) {
+        pageAdapter.fromJson(cachedBytes.decodeToString())
+      } else {
+        loadRawPageVerses(pageNumber)
+      }
+    }.getOrNull()
+
+    if (versesResp != null && versesResp.verses.isNotEmpty()) {
+      val surahIds = versesResp.verses
+        .mapNotNull { it.verse_key.substringBefore(":").toIntOrNull() }
+        .distinct()
+      val firstVerse = versesResp.verses.firstOrNull()
+      return@withContext PdfPageHeaderMeta(
+        pageNumber = pageNumber,
+        surahIds = surahIds,
+        juzNumber = firstVerse?.juz_number?.takeIf { it in 1..30 },
+        hizbNumber = firstVerse?.hizb_number?.takeIf { it in 1..60 },
+      )
+    }
+
+    val cachedSurahIds = cachedSurahs
+      ?.filter { pageNumber in it.startPage..it.endPage }
+      ?.map { it.id }
+      .orEmpty()
+    if (cachedSurahIds.isNotEmpty()) {
+      return@withContext PdfPageHeaderMeta(
+        pageNumber = pageNumber,
+        surahIds = cachedSurahIds,
+        juzNumber = null,
+        hizbNumber = null,
+      )
+    }
+    null
+  }
+
   suspend fun getPage(
     pageNumber: Int,
     edition: MushafEdition = MushafEdition.MADINAH_1421,

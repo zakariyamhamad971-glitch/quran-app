@@ -151,11 +151,12 @@ fun MushafPageFrame(
   onPageTapped: () -> Unit,
   onVerseLongPressed: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
   modifier: Modifier = Modifier,
+  isPdfMode: Boolean = false,
 ) {
-  val effectiveDark = isDarkTheme || backgroundTheme == BackgroundTheme.BLACK
+  val effectiveDark = !isPdfMode && (isDarkTheme || backgroundTheme == BackgroundTheme.BLACK)
   val goldColor = if (effectiveDark) QabasatNightGold else QabasatGold
   val paperColor = if (effectiveDark) Color.Black else Color.White
-  val headerTint = if (effectiveDark) QabasatNightGold else MaterialTheme.colorScheme.primary
+  val headerTint = if (effectiveDark) QabasatNightGold else Color(0xFF12403C)
   val mutedInk = if (effectiveDark) Color.White.copy(alpha = 0.78f) else Color(0xFF424A47)
   val haptic = LocalHapticFeedback.current
 
@@ -246,48 +247,52 @@ fun MushafPageFrame(
             Canvas(
               modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(rendered, onPageTapped, onVerseLongPressed) {
-                  detectTapGestures(
-                    onTap = { onPageTapped() },
-                    onLongPress = { tapOffset ->
-                      val viewW = size.width.toFloat().coerceAtLeast(1f)
-                      val viewH = size.height.toFloat().coerceAtLeast(1f)
-                      val sx = rendered.widthPx.toFloat() / viewW
-                      val sy = rendered.heightPx.toFloat() / viewH
-                      val tx = tapOffset.x * sx
-                      val ty = tapOffset.y * sy
-                      val boxes = rendered.wordHitBoxes
-                      var hitIdx = -1
-                      var bestDistSq = Float.POSITIVE_INFINITY
-                      for (i in 0 until boxes.count) {
-                        val l = boxes.lefts[i]
-                        val t = boxes.tops[i]
-                        val r = boxes.rights[i]
-                        val b = boxes.bottoms[i]
-                        if (tx in (l - 10f)..(r + 10f) && ty in (t - 12f)..(b + 12f)) {
-                          hitIdx = i
-                          break
+                .pointerInput(rendered, isPdfMode, onPageTapped, onVerseLongPressed) {
+                  if (isPdfMode) {
+                    detectTapGestures(onTap = { onPageTapped() })
+                  } else {
+                    detectTapGestures(
+                      onTap = { onPageTapped() },
+                      onLongPress = { tapOffset ->
+                        val viewW = size.width.toFloat().coerceAtLeast(1f)
+                        val viewH = size.height.toFloat().coerceAtLeast(1f)
+                        val sx = rendered.widthPx.toFloat() / viewW
+                        val sy = rendered.heightPx.toFloat() / viewH
+                        val tx = tapOffset.x * sx
+                        val ty = tapOffset.y * sy
+                        val boxes = rendered.wordHitBoxes
+                        var hitIdx = -1
+                        var bestDistSq = Float.POSITIVE_INFINITY
+                        for (i in 0 until boxes.count) {
+                          val l = boxes.lefts[i]
+                          val t = boxes.tops[i]
+                          val r = boxes.rights[i]
+                          val b = boxes.bottoms[i]
+                          if (tx in (l - 10f)..(r + 10f) && ty in (t - 12f)..(b + 12f)) {
+                            hitIdx = i
+                            break
+                          }
+                          val cx = (l + r) * 0.5f
+                          val cy = (t + b) * 0.5f
+                          val dx = tx - cx
+                          val dy = ty - cy
+                          val dSq = dx * dx + dy * dy * 4f
+                          if (dSq < bestDistSq) {
+                            bestDistSq = dSq
+                            hitIdx = i
+                          }
                         }
-                        val cx = (l + r) * 0.5f
-                        val cy = (t + b) * 0.5f
-                        val dx = tx - cx
-                        val dy = ty - cy
-                        val dSq = dx * dx + dy * dy * 4f
-                        if (dSq < bestDistSq) {
-                          bestDistSq = dSq
-                          hitIdx = i
+                        if (hitIdx >= 0) {
+                          haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                          onVerseLongPressed(
+                            boxes.verseKeys[hitIdx],
+                            rendered.pageNumber,
+                            boxes.codeV2Lines[hitIdx],
+                          )
                         }
-                      }
-                      if (hitIdx >= 0) {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onVerseLongPressed(
-                          boxes.verseKeys[hitIdx],
-                          rendered.pageNumber,
-                          boxes.codeV2Lines[hitIdx],
-                        )
-                      }
-                    },
-                  )
+                      },
+                    )
+                  }
                 }
                 .testTag("mushaf_page_canvas_$pageNumber"),
             ) {
@@ -298,6 +303,7 @@ fun MushafPageFrame(
                 dstSize = IntSize(dstW, dstH),
               )
 
+              if (isPdfMode) return@Canvas
               val activeKey = activePlayingVerseKeyProvider()
               val selectedKey = selectedVerseKeyProvider()
               if (activeKey == null && selectedKey == null) return@Canvas

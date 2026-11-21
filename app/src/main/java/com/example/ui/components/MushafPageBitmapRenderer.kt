@@ -25,6 +25,7 @@ import com.example.data.prefs.BackgroundTheme
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafLine
 import com.example.data.quran.MushafPageData
+import com.example.data.quran.PdfPageHeaderMeta
 import com.example.data.quran.SurahMeta
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -44,12 +45,16 @@ data class PageRenderSpec(
   val isDarkTheme: Boolean = false,
   val backgroundTheme: BackgroundTheme = BackgroundTheme.WHITE,
   val isTwoPageMode: Boolean = false,
+  val pdfMushafId: String? = null,
 ) {
   val isValid: Boolean
     get() = widthPx > 32 && heightPx > 32 && density > 0f
 
   val effectiveDark: Boolean
     get() = isDarkTheme || backgroundTheme == BackgroundTheme.BLACK
+
+  val isPdfMode: Boolean
+    get() = !pdfMushafId.isNullOrBlank()
 }
 
 data class PageBitmapKey(
@@ -61,6 +66,7 @@ data class PageBitmapKey(
   val edition: MushafEdition,
   val effectiveDark: Boolean,
   val isTwoPageMode: Boolean,
+  val pdfMushafId: String? = null,
   val layoutVersion: Int = com.example.data.quran.QuranRepository.LAYOUT_CACHE_VERSION,
 )
 
@@ -172,8 +178,9 @@ class MushafPageBitmapRenderer(
       densityBits = spec.density.toRawBits(),
       fontScaleBits = spec.fontScale.toRawBits(),
       edition = spec.edition,
-      effectiveDark = spec.effectiveDark,
+      effectiveDark = if (spec.isPdfMode) false else spec.effectiveDark,
       isTwoPageMode = spec.isTwoPageMode,
+      pdfMushafId = spec.pdfMushafId,
     )
 
   private fun ensureCacheCapacityFor(spec: PageRenderSpec) {
@@ -197,6 +204,86 @@ class MushafPageBitmapRenderer(
 
   fun clearAll() {
     bitmapCache.evictAll()
+  }
+
+  fun computePdfBodySizePx(spec: PageRenderSpec, pageNumber: Int = 1): Pair<Int, Int> {
+    ensureUiFontsLoaded()
+    val w = spec.widthPx.coerceAtLeast(1)
+    val h = spec.heightPx.coerceAtLeast(1)
+    val d = spec.density
+    val fs = spec.fontScale
+    fun dp(v: Float): Float = v * d
+    fun sp(v: Float): Float = v * d * fs
+
+    val padH = dp(9f)
+    val padV = dp(7f)
+    val contentTop = padV
+    val contentBottom = h - padV
+    val contentWidth = (w - padH * 2f).coerceAtLeast(1f)
+
+    val amiriNormal = cachedAmiriNormal ?: Typeface.SERIF
+    val amiriBold = cachedAmiriBold ?: amiriNormal
+    val titleFm = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+      typeface = amiriNormal
+      textSize = sp(13f * 0.60f)
+    }.fontMetrics
+    val pillFm = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+      typeface = amiriNormal
+      textSize = sp(11f * 0.60f)
+    }.fontMetrics
+    val topHeaderHeight = maxOf(
+      (titleFm.descent - titleFm.ascent) + dp(2f),
+      (pillFm.descent - pillFm.ascent) + dp(4f),
+    )
+
+    val footerBadgePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+      typeface = amiriBold
+      textSize = minOf(sp(8.2f), dp(10.5f))
+    }
+    val pageNumText = toArabicIndicDigits(pageNumber)
+    val pageNumBounds = Rect()
+    footerBadgePaint.getTextBounds(pageNumText, 0, pageNumText.length, pageNumBounds)
+    val footerBadgeFm = footerBadgePaint.fontMetrics
+    val pageNumInkH = if (pageNumBounds.height() > 0) {
+      pageNumBounds.height().toFloat()
+    } else {
+      (footerBadgeFm.descent - footerBadgeFm.ascent) * 0.65f
+    }
+    val badgeH = maxOf(dp(13f), pageNumInkH + dp(3.5f) * 2f)
+    val footerHeight = maxOf(dp(18f), badgeH + dp(2f))
+    val footerTop = contentBottom - footerHeight
+
+    val bodyTop = contentTop + topHeaderHeight + dp(1f)
+    val bodyBottom = footerTop - dp(2f)
+    val bodyHeight = (bodyBottom - bodyTop).coerceAtLeast(1f)
+    return contentWidth.roundToInt().coerceAtLeast(1) to bodyHeight.roundToInt().coerceAtLeast(1)
+  }
+
+  suspend fun renderPdfPageOrGet(
+    pageNumber: Int,
+    headerMeta: PdfPageHeaderMeta?,
+    pdfBitmap: Bitmap,
+    spec: PageRenderSpec,
+    surahsById: Map<Int, SurahMeta>,
+  ): RenderedMushafPage {
+    val key = makeKey(pageNumber, spec)
+    bitmapCache.get(key)?.let { return it }
+
+    return withContext(Dispatchers.Default) {
+      bitmapCache.get(key)?.let { return@withContext it }
+      ensureCacheCapacityFor(spec)
+      ensureUiFontsLoaded()
+
+      val rendered = renderPdfPageToBitmap(
+        pageNumber = pageNumber,
+        headerMeta = headerMeta,
+        pdfBitmap = pdfBitmap,
+        spec = spec,
+        surahsById = surahsById,
+      )
+      bitmapCache.put(key, rendered)
+      rendered
+    }
   }
 
   suspend fun renderOrGet(
@@ -228,14 +315,37 @@ class MushafPageBitmapRenderer(
     }
   }
 
-  private fun renderPageToBitmap(
-    pageData: MushafPageData,
+  private data class CardChromeMetrics(
+    val w: Int,
+    val h: Int,
+    val density: Float,
+    val fontScale: Float,
+    val effectiveDark: Boolean,
+    val goldInt: Int,
+    val inkInt: Int,
+    val bodyLeft: Float,
+    val bodyTop: Float,
+    val bodyRight: Float,
+    val bodyBottom: Float,
+    val contentWidth: Float,
+    val amiriNormal: Typeface,
+    val amiriBold: Typeface,
+    val ibmNormal: Typeface,
+    val ibmMedium: Typeface,
+    val surahNameV4: Typeface?,
+    val quranCommon: Typeface?,
+  )
+
+  private fun drawCardChromeAndComputeBody(
+    canvas: Canvas,
+    pageNumber: Int,
+    surahIds: List<Int>,
+    juzNumber: Int?,
+    hizbNumber: Int?,
     spec: PageRenderSpec,
-    pageTypeface: Typeface?,
-    basmalahTypeface: Typeface?,
-    usesTagFallbackTajweed: Boolean,
     surahsById: Map<Int, SurahMeta>,
-  ): RenderedMushafPage {
+    isPdfMode: Boolean,
+  ): CardChromeMetrics {
     val w = spec.widthPx.coerceAtLeast(1)
     val h = spec.heightPx.coerceAtLeast(1)
     val d = spec.density
@@ -244,7 +354,8 @@ class MushafPageBitmapRenderer(
     fun dp(v: Float): Float = v * d
     fun sp(v: Float): Float = v * d * fs
 
-    val effectiveDark = spec.effectiveDark
+    // In PDF mode: pure white paper with readable dark/gold header & footer ink regardless of dark theme
+    val effectiveDark = if (isPdfMode) false else spec.effectiveDark
     val goldInt = if (effectiveDark) 0xFFE0B45C.toInt() else 0xFFC29038.toInt()
     val paperInt = if (effectiveDark) android.graphics.Color.BLACK else android.graphics.Color.WHITE
     val inkInt = if (effectiveDark) android.graphics.Color.WHITE else android.graphics.Color.BLACK
@@ -257,11 +368,6 @@ class MushafPageBitmapRenderer(
     val amiriBold = cachedAmiriBold ?: amiriNormal
     val ibmNormal = cachedIbmNormal ?: Typeface.SANS_SERIF
     val ibmMedium = cachedIbmMedium ?: ibmNormal
-    val surahNameV4 = cachedSurahNameV4
-    val quranCommon = cachedQuranCommon
-
-    val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
 
     // 1. Paper surface (rounded card corners) + crisp double Mushaf frame
     val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
@@ -316,9 +422,13 @@ class MushafPageBitmapRenderer(
     val contentWidth = (contentRight - contentLeft).coerceAtLeast(1f)
 
     // 3. Top Header Row (Surah Name on RTL-right, Juz/Hizb Pill on RTL-left)
-    val surahHeaderNames = pageData.surahIds.mapNotNull { surahsById[it]?.nameArabic }.joinToString(" • ")
+    val surahHeaderNames = surahIds.mapNotNull { surahsById[it]?.nameArabic }.joinToString(" • ")
     val headerTitle = if (surahHeaderNames.isNotBlank()) "سورة $surahHeaderNames" else ""
-    val juzHizbText = "الجزء ${toArabicIndicDigits(pageData.juzNumber)} • الحزب ${toArabicIndicDigits(pageData.hizbNumber)}"
+    val juzHizbText = if (juzNumber != null && hizbNumber != null && juzNumber > 0 && hizbNumber > 0) {
+      "الجزء ${toArabicIndicDigits(juzNumber)} • الحزب ${toArabicIndicDigits(hizbNumber)}"
+    } else {
+      ""
+    }
 
     val baseTitleSp = 13f * 0.60f // 40% smaller: 7.8sp
     val basePillSp = 11f * 0.60f  // 40% smaller: 6.6sp
@@ -340,12 +450,11 @@ class MushafPageBitmapRenderer(
     var pillPadH = dp(6f)
     val pillPadV = dp(1f)
 
-    var pillTextW = pillPaint.measureText(juzHizbText)
+    var pillTextW = if (juzHizbText.isNotEmpty()) pillPaint.measureText(juzHizbText) else 0f
     var headerTitleW = if (headerTitle.isNotEmpty()) titlePaint.measureText(headerTitle) else 0f
-    var pillW = pillTextW + pillPadH * 2f
+    var pillW = if (juzHizbText.isNotEmpty()) pillTextW + pillPadH * 2f else 0f
 
-    // Prevent any overlap between Juz/Hizb pill and multi-surah title (e.g. 3 surahs on page 604 or two-page mode)
-    if (headerTitle.isNotEmpty() && (pillW + minSafeGap + headerTitleW) > availableHeaderW) {
+    if (headerTitle.isNotEmpty() && juzHizbText.isNotEmpty() && (pillW + minSafeGap + headerTitleW) > availableHeaderW) {
       val minReadablePx = dp(4.5f)
       val scale = ((availableHeaderW - minSafeGap - pillPadH * 2f) / (pillTextW + headerTitleW))
         .coerceIn(0.45f, 0.96f)
@@ -372,25 +481,28 @@ class MushafPageBitmapRenderer(
       (pillFm.descent - pillFm.ascent) + dp(4f),
     )
 
-    val pillTextH = pillFm.descent - pillFm.ascent
-    val pillH = pillTextH + pillPadV * 2f
-    val pillTop = contentTop + (topHeaderHeight - pillH) * 0.5f
-    fillPaint.color = withAlpha(goldInt, if (effectiveDark) 0.14f else 0.11f)
-    canvas.drawRoundRect(
-      RectF(pillLeft, pillTop, pillLeft + pillW, pillTop + pillH),
-      dp(10f),
-      dp(10f),
-      fillPaint,
-    )
-    canvas.drawText(
-      juzHizbText,
-      pillLeft + pillPadH,
-      pillTop + pillPadV - pillFm.ascent,
-      pillPaint,
-    )
+    if (juzHizbText.isNotEmpty()) {
+      val pillTextH = pillFm.descent - pillFm.ascent
+      val pillH = pillTextH + pillPadV * 2f
+      val pillTop = contentTop + (topHeaderHeight - pillH) * 0.5f
+      fillPaint.color = withAlpha(goldInt, if (effectiveDark) 0.14f else 0.11f)
+      canvas.drawRoundRect(
+        RectF(pillLeft, pillTop, pillLeft + pillW, pillTop + pillH),
+        dp(10f),
+        dp(10f),
+        fillPaint,
+      )
+      canvas.drawText(
+        juzHizbText,
+        pillLeft + pillPadH,
+        pillTop + pillPadV - pillFm.ascent,
+        pillPaint,
+      )
+    }
 
     if (headerTitle.isNotEmpty()) {
-      val maxAllowedTitleW = (availableHeaderW - pillW - minSafeGap).coerceAtLeast(0f)
+      val reservedPill = if (juzHizbText.isNotEmpty()) pillW + minSafeGap else 0f
+      val maxAllowedTitleW = (availableHeaderW - reservedPill).coerceAtLeast(0f)
       val drawTitle = if (headerTitleW <= maxAllowedTitleW) {
         headerTitle
       } else {
@@ -406,18 +518,13 @@ class MushafPageBitmapRenderer(
       canvas.drawText(drawTitle, titleRight - drawTitleW, titleBaseline, titlePaint)
     }
 
-    // 4. Compact Bottom Footer Row (~0.5 cm total bottom band: scaled Page Number Pill + RTL-left hint + clear RTL-right Bookmark corner)
+    // 4. Compact Bottom Footer Row (~0.5 cm total bottom band: scaled Page Number Pill + RTL-left hint (text mode only) + clear RTL-right Bookmark corner)
     val footerBadgePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
       typeface = amiriBold
       textSize = minOf(sp(8.2f), dp(10.5f))
       color = headerTintInt
     }
-    val hintPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-      typeface = ibmMedium
-      textSize = minOf(sp(6.8f), dp(8.5f))
-      color = withAlpha(mutedInkInt, 0.85f)
-    }
-    val pageNumText = toArabicIndicDigits(pageData.pageNumber)
+    val pageNumText = toArabicIndicDigits(pageNumber)
     val pageNumBounds = Rect()
     footerBadgePaint.getTextBounds(pageNumText, 0, pageNumText.length, pageNumBounds)
     val footerBadgeFm = footerBadgePaint.fontMetrics
@@ -465,40 +572,158 @@ class MushafPageBitmapRenderer(
     }
     canvas.drawText(pageNumText, badgeTextX, badgeTextY, footerBadgePaint)
 
-    // Footer hint on the left side: compact and strictly guarded with safe gap from the centered badge
-    val safeGapFromBadge = dp(12f)
-    val maxHintW = (badgeLeft - contentLeft - safeGapFromBadge).coerceAtLeast(0f)
-    if (maxHintW > dp(34f)) {
-      var hintText = "اضغط مطولاً على الآية للتفسير"
-      hintPaint.textSize = minOf(sp(6.8f), dp(8.5f))
-      if (hintPaint.measureText(hintText) > maxHintW) {
-        hintPaint.textSize = minOf(sp(6.2f), dp(7.6f))
+    if (!isPdfMode) {
+      val hintPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = ibmMedium
+        textSize = minOf(sp(6.8f), dp(8.5f))
+        color = withAlpha(mutedInkInt, 0.85f)
       }
-      if (hintPaint.measureText(hintText) > maxHintW) {
-        hintText = "اضغط مطولاً للتفسير"
-        hintPaint.textSize = minOf(sp(6.2f), dp(7.6f))
-      }
-      if (hintPaint.measureText(hintText) > maxHintW) {
-        hintPaint.textSize = minOf(sp(5.6f), dp(6.8f))
-      }
-      if (hintPaint.measureText(hintText) <= maxHintW) {
-        val hintBounds = Rect()
-        hintPaint.getTextBounds(hintText, 0, hintText.length, hintBounds)
-        val hintBaseline = if (hintBounds.height() > 0) {
-          footerTop + footerHeight * 0.5f - (hintBounds.top + hintBounds.bottom) * 0.5f
-        } else {
-          val hintFm = hintPaint.fontMetrics
-          footerTop + footerHeight * 0.5f - (hintFm.ascent + hintFm.descent) * 0.5f
+      val safeGapFromBadge = dp(12f)
+      val maxHintW = (badgeLeft - contentLeft - safeGapFromBadge).coerceAtLeast(0f)
+      if (maxHintW > dp(34f)) {
+        var hintText = "اضغط مطولاً على الآية للتفسير"
+        hintPaint.textSize = minOf(sp(6.8f), dp(8.5f))
+        if (hintPaint.measureText(hintText) > maxHintW) {
+          hintPaint.textSize = minOf(sp(6.2f), dp(7.6f))
         }
-        canvas.drawText(hintText, contentLeft, hintBaseline, hintPaint)
+        if (hintPaint.measureText(hintText) > maxHintW) {
+          hintText = "اضغط مطولاً للتفسير"
+          hintPaint.textSize = minOf(sp(6.2f), dp(7.6f))
+        }
+        if (hintPaint.measureText(hintText) > maxHintW) {
+          hintPaint.textSize = minOf(sp(5.6f), dp(6.8f))
+        }
+        if (hintPaint.measureText(hintText) <= maxHintW) {
+          val hintBounds = Rect()
+          hintPaint.getTextBounds(hintText, 0, hintText.length, hintBounds)
+          val hintBaseline = if (hintBounds.height() > 0) {
+            footerTop + footerHeight * 0.5f - (hintBounds.top + hintBounds.bottom) * 0.5f
+          } else {
+            val hintFm = hintPaint.fontMetrics
+            footerTop + footerHeight * 0.5f - (hintFm.ascent + hintFm.descent) * 0.5f
+          }
+          canvas.drawText(hintText, contentLeft, hintBaseline, hintPaint)
+        }
       }
     }
 
-    // 5. Mushaf 15-Line (or 8-line for p1..p2) Body Area — extends down cleanly to the slim footer bar
     val bodyTop = contentTop + topHeaderHeight + dp(1f)
     val bodyBottom = footerTop - dp(2f)
+    return CardChromeMetrics(
+      w = w,
+      h = h,
+      density = d,
+      fontScale = fs,
+      effectiveDark = effectiveDark,
+      goldInt = goldInt,
+      inkInt = inkInt,
+      bodyLeft = contentLeft,
+      bodyTop = bodyTop,
+      bodyRight = contentRight,
+      bodyBottom = bodyBottom,
+      contentWidth = contentWidth,
+      amiriNormal = amiriNormal,
+      amiriBold = amiriBold,
+      ibmNormal = ibmNormal,
+      ibmMedium = ibmMedium,
+      surahNameV4 = cachedSurahNameV4,
+      quranCommon = cachedQuranCommon,
+    )
+  }
+
+  private fun renderPdfPageToBitmap(
+    pageNumber: Int,
+    headerMeta: PdfPageHeaderMeta?,
+    pdfBitmap: Bitmap,
+    spec: PageRenderSpec,
+    surahsById: Map<Int, SurahMeta>,
+  ): RenderedMushafPage {
+    val w = spec.widthPx.coerceAtLeast(1)
+    val h = spec.heightPx.coerceAtLeast(1)
+    val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+
+    val chrome = drawCardChromeAndComputeBody(
+      canvas = canvas,
+      pageNumber = pageNumber,
+      surahIds = headerMeta?.surahIds.orEmpty(),
+      juzNumber = headerMeta?.juzNumber,
+      hizbNumber = headerMeta?.hizbNumber,
+      spec = spec,
+      surahsById = surahsById,
+      isPdfMode = true,
+    )
+
+    val dstRect = RectF(
+      chrome.bodyLeft,
+      chrome.bodyTop,
+      chrome.bodyRight,
+      chrome.bodyBottom,
+    )
+    canvas.drawBitmap(pdfBitmap, null, dstRect, Paint(Paint.FILTER_BITMAP_FLAG))
+
+    return RenderedMushafPage(
+      pageNumber = pageNumber,
+      widthPx = w,
+      heightPx = h,
+      byteCount = bitmap.allocationByteCount,
+      imageBitmap = bitmap.asImageBitmap(),
+      verseHighlightRects = emptyMap(),
+      rosetteSlotsByVerse = emptyMap(),
+      wordHitBoxes = WordHitBoxes(
+        count = 0,
+        lefts = FloatArray(0),
+        tops = FloatArray(0),
+        rights = FloatArray(0),
+        bottoms = FloatArray(0),
+        verseKeys = emptyArray(),
+        codeV2Lines = emptyArray(),
+      ),
+    )
+  }
+
+  private fun renderPageToBitmap(
+    pageData: MushafPageData,
+    spec: PageRenderSpec,
+    pageTypeface: Typeface?,
+    basmalahTypeface: Typeface?,
+    usesTagFallbackTajweed: Boolean,
+    surahsById: Map<Int, SurahMeta>,
+  ): RenderedMushafPage {
+    val w = spec.widthPx.coerceAtLeast(1)
+    val h = spec.heightPx.coerceAtLeast(1)
+    val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+
+    val chrome = drawCardChromeAndComputeBody(
+      canvas = canvas,
+      pageNumber = pageData.pageNumber,
+      surahIds = pageData.surahIds,
+      juzNumber = pageData.juzNumber,
+      hizbNumber = pageData.hizbNumber,
+      spec = spec,
+      surahsById = surahsById,
+      isPdfMode = false,
+    )
+
+    val d = chrome.density
+    val fs = chrome.fontScale
+    fun dp(v: Float): Float = v * d
+
+    val effectiveDark = chrome.effectiveDark
+    val goldInt = chrome.goldInt
+    val inkInt = chrome.inkInt
+    val amiriNormal = chrome.amiriNormal
+    val amiriBold = chrome.amiriBold
+    val ibmMedium = chrome.ibmMedium
+    val surahNameV4 = chrome.surahNameV4
+    val quranCommon = chrome.quranCommon
+
+    val bodyTop = chrome.bodyTop
+    val bodyBottom = chrome.bodyBottom
     val bodyHeight = (bodyBottom - bodyTop).coerceAtLeast(1f)
-    val bodyLeft = contentLeft
+    val bodyLeft = chrome.bodyLeft
+    val contentWidth = chrome.contentWidth
     val bodyWidthInt = contentWidth.roundToInt().coerceAtLeast(1)
 
     val displayedLines = if (pageData.pageNumber in 1..2) {

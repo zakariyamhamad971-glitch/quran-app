@@ -851,181 +851,166 @@ class MushafLayoutUnitTest {
   }
 
   @Test
-  fun `riwayat debug repository parses real api json handles missing fields filters ignoring diacritics and formats url`() {
+  fun `pdf manifest parser reads all fields and sorts strictly by order ascending`() {
+    val manifestJson = """
+      [
+        {
+          "id": "warsh_azraq",
+          "order": 3,
+          "file": "pdfs/warsh.pdf",
+          "thumb": "thumbs/warsh.jpg",
+          "titleAr": "مصحف ورش عن نافع",
+          "riwayaAr": "ورش عن نافع",
+          "pages": 604,
+          "sizeMB": 94.5,
+          "apiRiwayaIds": [2, 10]
+        },
+        {
+          "id": "hafs_madinah",
+          "order": 1,
+          "file": "/pdfs/hafs.pdf",
+          "thumb": "/thumbs/hafs.jpg",
+          "titleAr": "مصحف المدينة",
+          "riwayaAr": "حفص عن عاصم",
+          "pages": 604,
+          "sizeMB": 80.2,
+          "apiRiwayaIds": [1]
+        },
+        {
+          "id": "khalaf_hamza",
+          "order": 2,
+          "file": "pdfs/khalaf.pdf",
+          "thumb": "thumbs/khalaf.jpg",
+          "titleAr": "خلف عن حمزة",
+          "riwayaAr": "خلف عن حمزة",
+          "pages": 604,
+          "sizeMB": 88.0,
+          "apiRiwayaIds": []
+        }
+      ]
+    """.trimIndent()
+
+    val entries = com.example.data.pdf.PdfManifestParser.parseManifestJson(manifestJson)
+    assertEquals(3, entries.size)
+    assertEquals(listOf("hafs_madinah", "khalaf_hamza", "warsh_azraq"), entries.map { it.id })
+    assertEquals(listOf(1, 2, 3), entries.map { it.order })
+    assertEquals("pdfs/hafs.pdf", entries[0].file)
+    assertEquals("thumbs/hafs.jpg", entries[0].thumb)
+    assertEquals(emptyList<Int>(), entries[1].apiRiwayaIds)
+    assertEquals(listOf(2, 10), entries[2].apiRiwayaIds)
+    assertEquals(94.5, entries[2].sizeMB, 0.001)
+  }
+
+  @Test
+  fun `mp3quran riwayat client parser groups reciters by riwaya order filters ayah timing and builds urls`() {
     val riwayatJson = """
       {
         "riwayat": [
           {"id": 1, "name": "حفص عن عاصم"},
-          {"id": 2}
+          {"id": 2, "name": "ورش عن نافع"}
         ]
       }
     """.trimIndent()
-    val riwayat = com.example.debug.RiwayatApiDebugRepository.parseRiwayatJson(riwayatJson)
+    val riwayat = com.example.data.audio.Mp3QuranRiwayatParser.parseRiwayatJson(riwayatJson)
     assertEquals(2, riwayat.size)
-    assertEquals("1 - حفص عن عاصم", riwayat[0].displayLabel)
-    assertEquals("غير موجود", riwayat[1].name)
+    assertEquals(1, riwayat[0].id)
+    assertEquals("ورش عن نافع", riwayat[1].name)
 
-    val recitersJson = """
+    val readsJson = """
+      [
+        {"id": 101, "name": "قارئ بتوقيت", "rewaya": "ورش"},
+        {"id": 0, "name": "غير صالح"}
+      ]
+    """.trimIndent()
+    val timingReads = com.example.data.audio.Mp3QuranRiwayatParser.parseTimingReadsJson(readsJson)
+    assertEquals(1, timingReads.size)
+    assertEquals(101, timingReads[0].id)
+
+    val rawRecitersR2 = """
       {
         "reciters": [
           {
-            "id": 10,
-            "name": "مِشَارِي رَاشِد العَفَاسِي",
+            "id": 20,
+            "name": "قارئ ورش الأول",
             "moshaf": [
               {
                 "id": 101,
-                "name": "المصحف المرتل",
-                "server": "https://server8.mp3quran.net/afs/",
-                "surah_list": "1,2,3,4,5,6,7,8,9,10,11,12"
+                "name": "ورش - المرتل",
+                "server": "http://server6.mp3quran.net/warsh/",
+                "surah_list": "1,2,114"
               }
             ]
           },
           {
-            "id": 11,
-            "name": "قارئ ناقص الحقول",
+            "id": 21,
+            "name": "قارئ ورش الثاني",
             "moshaf": [
               {
-                "id": 102
+                "id": 202,
+                "name": "ورش - بدون توقيت",
+                "server": "https://server7.mp3quran.net/w2",
+                "surah_list": "1,18"
               }
             ]
           }
         ]
       }
     """.trimIndent()
-    val parsedReciters = com.example.debug.RiwayatApiDebugRepository.parseRecitersJson(
-      rawJson = recitersJson,
-      riwayaId = "1",
-      riwayaName = "حفص عن عاصم",
+    val rawRecitersR10 = """
+      {
+        "reciters": [
+          {
+            "id": 30,
+            "name": "قارئ الأزرق",
+            "moshaf": [
+              {
+                "id": 303,
+                "name": "طريق الأزرق",
+                "server": "https://server9.mp3quran.net/azr/",
+                "surah_list": "1,2"
+              }
+            ]
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val parsed2 = com.example.data.audio.Mp3QuranRiwayatParser.parseRecitersForRiwayaJson(rawRecitersR2, 2, "ورش عن نافع")
+    val parsed10 = com.example.data.audio.Mp3QuranRiwayatParser.parseRecitersForRiwayaJson(rawRecitersR10, 10, "ورش من طريق الأزرق")
+    val grouped = com.example.data.audio.Mp3QuranRiwayatParser.buildGroupedVerifiedReciters(
+      orderedRiwayaIds = listOf(10, 2),
+      entriesByRiwayaId = mapOf(2 to parsed2, 10 to parsed10),
+      timingReadIds = timingReads.map { it.id }.toSet(),
     )
-    assertEquals(2, parsedReciters.size)
+
+    assertEquals(3, grouped.size)
+    // Group order respects apiRiwayaIds = [10, 2] and preserves API order inside group
+    assertEquals(listOf(303, 101, 202), grouped.map { it.moshafId })
+    assertFalse(grouped[0].hasAyahTiming)
+    assertTrue(grouped[1].hasAyahTiming)
+    assertFalse(grouped[2].hasAyahTiming)
+    assertTrue(grouped[0].isPdfModeReciter)
     assertEquals(
-      listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"),
-      parsedReciters[0].moshafList[0].first10Surahs,
+      "https://server6.mp3quran.net/warsh/001.mp3",
+      com.example.data.audio.Mp3QuranRiwayatParser.buildSurahAudioUrl(grouped[1].serverUrl.orEmpty(), 1),
     )
-    assertEquals("غير موجود", parsedReciters[1].moshafList[0].name)
-    assertEquals("غير موجود", parsedReciters[1].moshafList[0].server)
-    assertEquals(emptyList<String>(), parsedReciters[1].moshafList[0].first10Surahs)
-
-    // Filter ignores Arabic diacritics
-    val filtered = com.example.debug.RiwayatApiDebugRepository.filterReciters(
-      all = parsedReciters,
-      selectedRiwayaId = "1",
-      searchQuery = "مشاري راشد",
-    )
-    assertEquals(1, filtered.size)
-    assertEquals("10", filtered[0].reciterId)
-
-    // Exact URL construction: server + padded 3-digit surah + .mp3
     assertEquals(
-      "https://server8.mp3quran.net/afs/001.mp3",
-      com.example.debug.RiwayatApiDebugRepository.buildMoshafAudioUrl(
-        server = parsedReciters[0].moshafList[0].server,
-        surahNumber = 1,
-      ),
+      "https://server7.mp3quran.net/w2/018.mp3",
+      com.example.data.audio.Mp3QuranRiwayatParser.buildSurahAudioUrl(grouped[2].serverUrl.orEmpty(), 18),
     )
 
-    val clipboard = com.example.debug.RiwayatApiDebugRepository.formatFilteredResultsForClipboard(
-      filtered = filtered,
-      selectedRiwayaLabel = "1 - حفص عن عاصم",
-    )
-    assertTrue(clipboard.contains("مِشَارِي رَاشِد العَفَاسِي"))
-    assertTrue(clipboard.contains("https://server8.mp3quran.net/afs/"))
-    assertTrue(clipboard.contains("1,2,3,4,5,6,7,8,9,10"))
-  }
-
-  @Test
-  fun `riwayat debug repository parses timing reads soar surah1 counts reciters and formats clipboard timing labels`() {
-    val readsJson = """
+    // Ayah timing ignores ayah <= 0 (basmalah/0 markers) and null times
+    val timingJson = """
       [
-        {"id": 101, "name": "مشاري العفاسي"},
-        {"id": 999, "name": "قارئ آخر", "rewaya": "ورش"}
+        {"ayah": 0, "start_time": 0, "end_time": 2100},
+        {"ayah": 1, "start_time": 2100, "end_time": 6300},
+        {"ayah": 2, "start_time": null, "end_time": 9000},
+        {"ayah": 3, "start_time": 9000, "end_time": 13500}
       ]
     """.trimIndent()
-    val reads = com.example.debug.RiwayatApiDebugRepository.parseTimingReadsJson(readsJson)
-    assertEquals(2, reads.size)
-    assertEquals("101", reads[0].id)
-    assertTrue(reads[0].formatRawLine().contains("name: مشاري العفاسي"))
-
-    val soarJson = """[{"id": 1, "name": "الفاتحة"}, {"id": 2, "name": "البقرة"}]"""
-    assertEquals(2, com.example.debug.RiwayatApiDebugRepository.parseTimingSoarCount(soarJson))
-
-    val surah1Json = """
-      [
-        {"ayah": 1, "start_time": 0, "end_time": 4200},
-        {"ayah": 2, "start_time": 4200, "end_time": 9100},
-        {"ayah": 3, "start_time": 9100},
-        {"ayah": 4, "start_time": 12000, "end_time": 16000}
-      ]
-    """.trimIndent()
-    val (totalAyahs, first3) = com.example.debug.RiwayatApiDebugRepository.parseAyahTimingsJson(surah1Json)
-    assertEquals(4, totalAyahs)
-    assertEquals(3, first3.size)
-    assertEquals("ayah=1, start_time=0, end_time=4200", first3[0].formatLine())
-    assertEquals("غير موجود", first3[2].endTime)
-
-    val reciters = listOf(
-      com.example.debug.DebugReciterEntry(
-        uniqueKey = "1_10_0",
-        reciterId = "10",
-        reciterName = "قارئ بتوقيت",
-        riwayaId = "1",
-        riwayaName = "حفص",
-        moshafList = listOf(
-          com.example.debug.DebugMoshaf(
-            id = "101",
-            name = "المرتل",
-            server = "https://s/",
-            rawSurahList = "1,2",
-            first10Surahs = listOf("1", "2"),
-            firstSurahNumber = 1,
-            rawFieldNames = listOf("id", "name", "server", "surah_list"),
-          ),
-        ),
-      ),
-      com.example.debug.DebugReciterEntry(
-        uniqueKey = "1_11_1",
-        reciterId = "11",
-        reciterName = "قارئ بلا توقيت",
-        riwayaId = "1",
-        riwayaName = "حفص",
-        moshafList = listOf(
-          com.example.debug.DebugMoshaf(
-            id = "202",
-            name = "المرتل",
-            server = "https://s2/",
-            rawSurahList = "1",
-            first10Surahs = listOf("1"),
-            firstSurahNumber = 1,
-            rawFieldNames = listOf("id", "name", "server", "surah_list"),
-          ),
-        ),
-      ),
-    )
-    val timingIds = setOf("101")
-    val (withTiming, totalInRiwaya) = com.example.debug.RiwayatApiDebugRepository.countRecitersWithTimingForRiwaya(
-      all = reciters,
-      selectedRiwayaId = "1",
-      timingReadIds = timingIds,
-    )
-    assertEquals(1, withTiming)
-    assertEquals(2, totalInRiwaya)
-    assertEquals(
-      "له توقيت",
-      com.example.debug.RiwayatApiDebugRepository.timingLabelForMoshaf(reciters[0].moshafList[0], timingIds, true),
-    )
-    assertEquals(
-      "ليس له توقيت",
-      com.example.debug.RiwayatApiDebugRepository.timingLabelForMoshaf(reciters[1].moshafList[0], timingIds, true),
-    )
-
-    val clipboardWithTiming = com.example.debug.RiwayatApiDebugRepository.formatFilteredResultsForClipboard(
-      filtered = reciters,
-      selectedRiwayaLabel = "1 - حفص",
-      timingReadIds = timingIds,
-      timingReadsLoaded = true,
-    )
-    assertTrue(clipboardWithTiming.contains("قرّاء لهم توقيت: 1 من 2"))
-    assertTrue(clipboardWithTiming.contains("id: 101 | له توقيت"))
-    assertTrue(clipboardWithTiming.contains("id: 202 | ليس له توقيت"))
+    val timings = com.example.data.audio.Mp3QuranRiwayatParser.parseAyahTimingsJson(timingJson)
+    assertEquals(2, timings.size)
+    assertEquals(1, timings[0].ayah)
+    assertEquals(3, timings[1].ayah)
   }
 }

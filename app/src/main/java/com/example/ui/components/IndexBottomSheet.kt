@@ -185,6 +185,7 @@ fun FullScreenQuranIndex(
   onCycleSpeed: (Float) -> Unit,
   onOpenReciterPicker: () -> Unit,
   modifier: Modifier = Modifier,
+  activeMushafIsPdf: Boolean = false,
 ) {
   var isSearchOpen by rememberSaveable { mutableStateOf(false) }
   var searchQuery by rememberSaveable { mutableStateOf("") }
@@ -307,6 +308,7 @@ fun FullScreenQuranIndex(
 
           CompactEditionSegment(
             mushafEdition = mushafEdition,
+            activeMushafIsPdf = activeMushafIsPdf,
             onSelectEdition = onToggleEdition,
           )
 
@@ -693,6 +695,7 @@ private fun InlineIndexSearchField(
 @Composable
 private fun CompactEditionSegment(
   mushafEdition: MushafEdition,
+  activeMushafIsPdf: Boolean,
   onSelectEdition: (MushafEdition) -> Unit,
 ) {
   Surface(
@@ -706,13 +709,13 @@ private fun CompactEditionSegment(
     ) {
       CompactSegmentPill(
         label = "المدينة",
-        selected = mushafEdition == MushafEdition.MADINAH_1421,
+        selected = !activeMushafIsPdf && mushafEdition == MushafEdition.MADINAH_1421,
         onClick = { onSelectEdition(MushafEdition.MADINAH_1421) },
         testTag = "index_edition_madinah",
       )
       CompactSegmentPill(
         label = "التجويد",
-        selected = mushafEdition == MushafEdition.TAJWEED_V4,
+        selected = !activeMushafIsPdf && mushafEdition == MushafEdition.TAJWEED_V4,
         onClick = { onSelectEdition(MushafEdition.TAJWEED_V4) },
         testTag = "index_edition_tajweed",
       )

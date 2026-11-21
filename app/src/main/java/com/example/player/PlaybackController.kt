@@ -249,9 +249,38 @@ class PlaybackController(
         currentSurahName = surahNamesMap[surahId].orEmpty(),
         positionMs = positionMs,
         playbackSpeed = speed.coerceIn(0.75f, 1.25f),
+        hasAyahTiming = if (reciter.isPdfModeReciter) reciter.hasAyahTiming else it.hasAyahTiming,
       )
     }
     player?.playbackParameters = PlaybackParameters(speed.coerceIn(0.75f, 1.25f))
+  }
+
+  fun clearReciterSelection() {
+    stopPositionTicker()
+    pendingMediaQueue = null
+    currentAyahTimings = emptyList()
+    currentVersePlaylist = emptyList()
+    isVerseByVerseMode = false
+    runCatching {
+      player?.stop()
+      player?.clearMediaItems()
+    }
+    _uiState.update {
+      it.copy(
+        isPlaying = false,
+        isBuffering = false,
+        currentReciter = null,
+        positionMs = 0L,
+        durationMs = 0L,
+        isOfflineSource = false,
+        activePlayingVerseKey = null,
+        hasAyahTiming = false,
+        activeRange = null,
+        errorMessage = null,
+      )
+    }
+    onActiveVerseChangedCallback?.invoke(null)
+    scope.launch { preferences.clearSelectedReciterKey() }
   }
 
   fun setAyahRange(range: RecitationRange?) {
@@ -259,6 +288,16 @@ class PlaybackController(
   }
 
   fun playRange(range: RecitationRange) {
+    val reciter = _uiState.value.currentReciter ?: return
+    if (reciter.isPdfModeReciter && !reciter.hasAyahTiming) {
+      _uiState.update {
+        it.copy(
+          activeRange = null,
+          errorMessage = "تلاوة سورة كاملة (بدون تحديد آيات)",
+        )
+      }
+      return
+    }
     val normalized = if (range.startSurah > range.endSurah ||
       (range.startSurah == range.endSurah && range.startAyah > range.endAyah)
     ) {
@@ -274,7 +313,6 @@ class PlaybackController(
     }
 
     _uiState.update { it.copy(activeRange = normalized) }
-    val reciter = _uiState.value.currentReciter ?: return
     playSurahInternal(
       reciter = reciter,
       surahId = normalized.startSurah,
@@ -309,6 +347,15 @@ class PlaybackController(
 
   fun playFromAyah(surahId: Int, ayahNumber: Int, endAyahNumber: Int? = null) {
     val reciter = _uiState.value.currentReciter ?: return
+    if (reciter.isPdfModeReciter && !reciter.hasAyahTiming) {
+      _uiState.update {
+        it.copy(
+          activeRange = null,
+          errorMessage = "تلاوة سورة كاملة (بدون تحديد آيات)",
+        )
+      }
+      return
+    }
     if (endAyahNumber != null) {
       playRange(
         RecitationRange(
@@ -364,7 +411,11 @@ class PlaybackController(
 
       if (localFile != null) {
         isOffline = true
-        val localTimings = audioRepository.resolveLocalTimingsOnlyIfMatched(reciter, surahId)
+        val localTimings = if (reciter.isPdfModeReciter) {
+          audioRepository.resolvePdfLocalTimings(reciter, surahId)
+        } else {
+          audioRepository.resolveLocalTimingsOnlyIfMatched(reciter, surahId)
+        }
         resolved = if (localTimings.isNotEmpty()) {
           com.example.data.audio.ResolvedRecitationAudio.SingleTimedTrack(
             streamUrl = Uri.fromFile(localFile).toString(),
@@ -378,7 +429,11 @@ class PlaybackController(
           )
         }
       } else {
-        resolved = audioRepository.resolveRecitationAudio(reciter, surahId)
+        resolved = if (reciter.isPdfModeReciter) {
+          audioRepository.resolvePdfRecitationAudio(reciter, surahId)
+        } else {
+          audioRepository.resolveRecitationAudio(reciter, surahId)
+        }
       }
 
       if (resolved == null) {
@@ -393,10 +448,11 @@ class PlaybackController(
       }
 
       val resolvedTitle = surahName.ifBlank { "سورة $surahId" }
+      val riwayaLabel = reciter.riwayaName.ifBlank { "حفص عن عاصم" }
       val metadata = MediaMetadata.Builder()
         .setTitle(resolvedTitle)
         .setArtist(reciter.displayName)
-        .setAlbumTitle("قبسات — حفص عن عاصم")
+        .setAlbumTitle("قبسات — $riwayaLabel")
         .build()
 
       val itemsToPlay: List<MediaItem>

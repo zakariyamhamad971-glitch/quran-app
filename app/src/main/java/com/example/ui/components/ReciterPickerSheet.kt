@@ -96,6 +96,8 @@ fun ReciterPickerSheet(
   onClearRange: () -> Unit,
   onDismiss: () -> Unit,
   mode: AudioPickerSheetMode = AudioPickerSheetMode.COMBINED,
+  isPdfMode: Boolean = false,
+  onRetryLoad: (() -> Unit)? = null,
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -181,7 +183,7 @@ fun ReciterPickerSheet(
       }
       Spacer(Modifier.height(8.dp))
 
-      if (mode == AudioPickerSheetMode.RECITERS_ONLY) {
+      if (mode == AudioPickerSheetMode.RECITERS_ONLY && !isPdfMode) {
         // Reserved bar at top for Qira'at color legend
         Surface(
           shape = RoundedCornerShape(12.dp),
@@ -372,122 +374,172 @@ fun ReciterPickerSheet(
           Spacer(Modifier.height(10.dp))
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FilterChip(
-          selected = !showAllCatalog,
-          onClick = { showAllCatalog = false },
-          label = { Text("القائمة المعتمدة (${primaryReciters.size})") },
-        )
-        if (additionalReciters.isNotEmpty()) {
-          FilterChip(
-            selected = showAllCatalog,
-            onClick = { showAllCatalog = true },
-            label = { Text("جميع القراء (${primaryReciters.size + additionalReciters.size})") },
-          )
-        }
-      }
-
-      Spacer(Modifier.height(6.dp))
-
-      when {
-        isLoading -> {
-          Box(
-            modifier = Modifier
-              .fillMaxWidth()
-              .weight(1f),
-            contentAlignment = Alignment.Center,
-          ) {
-            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-          }
-        }
-
-        errorMessage != null -> {
-          Box(
-            modifier = Modifier
-              .fillMaxWidth()
-              .weight(1f),
-            contentAlignment = Alignment.Center,
-          ) {
-            Text(
-              text = errorMessage,
-              style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.error,
+        if (!isPdfMode) {
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+              selected = !showAllCatalog,
+              onClick = { showAllCatalog = false },
+              label = { Text("القائمة المعتمدة (${primaryReciters.size})") },
             )
+            if (additionalReciters.isNotEmpty()) {
+              FilterChip(
+                selected = showAllCatalog,
+                onClick = { showAllCatalog = true },
+                label = { Text("جميع القراء (${primaryReciters.size + additionalReciters.size})") },
+              )
+            }
           }
+          Spacer(Modifier.height(6.dp))
         }
 
-        else -> {
-          LazyColumn(
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = 24.dp),
-          ) {
-            items(displayed, key = { "${it.orderIndex}_${it.key}" }, contentType = { "reciter_row" }) { reciter ->
-              val isSelected = activeReciter?.key == reciter.key && reciter.isPlayable
-              val enabled = reciter.isPlayable
-              Row(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .heightIn(min = 50.dp)
-                  .alpha(if (enabled) 1f else 0.52f)
-                  .clickable(enabled = enabled) {
-                    onSelectReciter(reciter)
-                  }
-                  .padding(horizontal = 8.dp, vertical = 6.dp)
-                  .testTag("reciter_row_${reciter.orderIndex}"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+        when {
+          isLoading -> {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+              contentAlignment = Alignment.Center,
+            ) {
+              CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            }
+          }
+
+          errorMessage != null -> {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+              contentAlignment = Alignment.Center,
+            ) {
+              Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
               ) {
-                Column(modifier = Modifier.weight(1f)) {
-                  Text(
-                    text = reciter.displayName,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                  )
-                  Text(
-                    text = reciter.statusNote,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (reciter.status == ReciterMatchStatus.VERIFIED) {
-                      MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                      MaterialTheme.colorScheme.error
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                  )
-                }
-
-                Spacer(Modifier.width(8.dp))
-
-                if (isSelected) {
-                  Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                  ) {
-                    Icon(
-                      imageVector = Icons.Filled.Check,
-                      contentDescription = "القارئ المختار",
-                      tint = MaterialTheme.colorScheme.primary,
-                      modifier = Modifier
-                        .padding(5.dp)
-                        .size(16.dp),
-                    )
+                Text(
+                  text = errorMessage,
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.error,
+                  textAlign = TextAlign.Center,
+                )
+                if (onRetryLoad != null) {
+                  OutlinedButton(onClick = onRetryLoad) {
+                    Text("إعادة المحاولة")
                   }
-                } else if (!enabled) {
-                  Icon(
-                    imageVector = Icons.Filled.ErrorOutline,
-                    contentDescription = "غير متاح",
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(18.dp),
-                  )
                 }
               }
-              HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            }
+          }
+
+          displayed.isEmpty() -> {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+              contentAlignment = Alignment.Center,
+            ) {
+              Text(
+                text = "لا يوجد قارئ متاح لهذه الرواية حاليًا",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+              )
+            }
+          }
+
+          else -> {
+            LazyColumn(
+              modifier = Modifier.weight(1f),
+              contentPadding = PaddingValues(bottom = 24.dp),
+            ) {
+              items(displayed, key = { "${it.orderIndex}_${it.key}" }, contentType = { "reciter_row" }) { reciter ->
+                val isSelected = activeReciter?.key == reciter.key && reciter.isPlayable
+                val enabled = reciter.isPlayable
+                val isUntimedPdf = reciter.isPdfModeReciter && !reciter.hasAyahTiming
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 50.dp)
+                    .alpha(if (enabled) 1f else 0.52f)
+                    .clickable(enabled = enabled) {
+                      onSelectReciter(reciter)
+                    }
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .testTag("reciter_row_${reciter.orderIndex}"),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = reciter.displayName,
+                      style = MaterialTheme.typography.titleSmall,
+                      color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                    )
+                    if (isUntimedPdf) {
+                      val subMeta = buildString {
+                        if (reciter.riwayaName.isNotBlank()) append("${reciter.riwayaName} • ")
+                        append("${reciter.availableSurahs.size} سورة")
+                      }
+                      Text(
+                        text = subMeta,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                      Text(
+                        text = "تلاوة سورة كاملة (بدون تحديد آيات)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                    } else {
+                      Text(
+                        text = reciter.statusNote,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (reciter.status == ReciterMatchStatus.VERIFIED) {
+                          MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                          MaterialTheme.colorScheme.error
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                    }
+                  }
+
+                  Spacer(Modifier.width(8.dp))
+
+                  if (isSelected) {
+                    Surface(
+                      shape = RoundedCornerShape(10.dp),
+                      color = MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = "القارئ المختار",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                          .padding(5.dp)
+                          .size(16.dp),
+                      )
+                    }
+                  } else if (!enabled) {
+                    Icon(
+                      imageVector = Icons.Filled.ErrorOutline,
+                      contentDescription = "غير متاح",
+                      tint = MaterialTheme.colorScheme.error,
+                      modifier = Modifier.size(18.dp),
+                    )
+                  }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+              }
             }
           }
         }
-      }
       }
     }
   }

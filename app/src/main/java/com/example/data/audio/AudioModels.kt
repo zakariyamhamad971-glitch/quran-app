@@ -77,6 +77,10 @@ data class VerifiedReciter(
   val status: ReciterMatchStatus,
   val statusNote: String,
   val isPrimaryOrdered: Boolean = true,
+  val riwayaId: Int? = null,
+  val riwayaName: String = "",
+  val hasAyahTiming: Boolean = false,
+  val isPdfModeReciter: Boolean = false,
 ) {
   val key: String get() = "${reciterId ?: -orderIndex}_${moshafId ?: 0}"
   val isPlayable: Boolean get() = status == ReciterMatchStatus.VERIFIED && !serverUrl.isNullOrBlank()

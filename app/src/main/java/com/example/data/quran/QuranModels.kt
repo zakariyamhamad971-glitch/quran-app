@@ -171,6 +171,14 @@ data class MushafPageData(
 )
 
 @Immutable
+data class PdfPageHeaderMeta(
+  val pageNumber: Int,
+  val surahIds: List<Int>,
+  val juzNumber: Int?,
+  val hizbNumber: Int?,
+)
+
+@Immutable
 data class TajweedRuleInfo(
   val id: String,
   val nameAr: String,

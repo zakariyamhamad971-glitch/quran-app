@@ -65,6 +65,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -180,6 +181,8 @@ fun PlaybackControlSheet(
   onPlayRange: (RecitationRange) -> Unit,
   onClearRange: () -> Unit,
   onDismiss: () -> Unit,
+  isPdfMode: Boolean = false,
+  recitersEmptyForRiwaya: Boolean = false,
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -217,16 +220,25 @@ fun PlaybackControlSheet(
   } else {
     "سورة ${audioState.currentSurahId}"
   }
+  val hasReciter = audioState.currentReciter != null
+  val timingSupported = hasReciter && (!audioState.currentReciter!!.isPdfModeReciter || audioState.currentReciter!!.hasAyahTiming)
+  val reciterUntimedPdf = hasReciter && audioState.currentReciter!!.isPdfModeReciter && !audioState.currentReciter!!.hasAyahTiming
+  val transportEnabled = !(isPdfMode && recitersEmptyForRiwaya) && hasReciter
+
   val playbackStatusText = remember(
     audioState.activeRange,
     audioState.activePlayingVerseKey,
     audioState.isPlaying,
     audioState.hasAyahTiming,
+    recitersEmptyForRiwaya,
+    isPdfMode,
   ) {
     buildString {
       val activeKey = audioState.activePlayingVerseKey
-      if (activeKey != null) {
-        append("الآية ${activeKey.substringAfter(":")}")
+      if (isPdfMode && recitersEmptyForRiwaya) {
+        append("لا يوجد قارئ متاح لهذه الرواية حاليًا")
+      } else if (activeKey != null) {
+        append("تُقرأ الآن: آية ${activeKey.substringAfter(":")}")
       } else if (audioState.isPlaying && !audioState.hasAyahTiming) {
         append("تشغيل متصل")
       } else {
@@ -346,6 +358,36 @@ fun PlaybackControlSheet(
             }
           }
 
+          if (isPdfMode && recitersEmptyForRiwaya) {
+            Spacer(Modifier.height(6.dp))
+            Surface(
+              shape = RoundedCornerShape(10.dp),
+              color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Text(
+                text = "لا يوجد قارئ متاح لهذه الرواية حاليًا",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+              )
+            }
+          } else if (reciterUntimedPdf) {
+            Spacer(Modifier.height(6.dp))
+            Surface(
+              shape = RoundedCornerShape(10.dp),
+              color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Text(
+                text = "تلاوة سورة كاملة (بدون تحديد آيات)",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              )
+            }
+          }
+
           if (audioState.errorMessage != null) {
             Spacer(Modifier.height(4.dp))
             Text(
@@ -370,6 +412,7 @@ fun PlaybackControlSheet(
           ) {
             IconButton(
               onClick = onPrevSurah,
+              enabled = transportEnabled,
               modifier = Modifier
                 .minimumInteractiveComponentSize()
                 .testTag("audio_prev_surah"),
@@ -383,6 +426,7 @@ fun PlaybackControlSheet(
 
             IconButton(
               onClick = { onSeekDelta(-10_000L) },
+              enabled = transportEnabled,
               modifier = Modifier
                 .minimumInteractiveComponentSize()
                 .testTag("audio_back_10s"),
@@ -396,6 +440,7 @@ fun PlaybackControlSheet(
 
             FilledIconButton(
               onClick = onTogglePlayPause,
+              enabled = transportEnabled,
               colors = IconButtonDefaults.filledIconButtonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -421,6 +466,7 @@ fun PlaybackControlSheet(
 
             IconButton(
               onClick = { onSeekDelta(10_000L) },
+              enabled = transportEnabled,
               modifier = Modifier
                 .minimumInteractiveComponentSize()
                 .testTag("audio_forward_10s"),
@@ -434,6 +480,7 @@ fun PlaybackControlSheet(
 
             IconButton(
               onClick = onNextSurah,
+              enabled = transportEnabled,
               modifier = Modifier
                 .minimumInteractiveComponentSize()
                 .testTag("audio_next_surah"),
@@ -454,7 +501,9 @@ fun PlaybackControlSheet(
       Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+          .fillMaxWidth()
+          .alpha(if (timingSupported) 1f else 0.5f),
       ) {
         Column(modifier = Modifier.padding(12.dp)) {
           Row(
@@ -540,7 +589,8 @@ fun PlaybackControlSheet(
             }
             Switch(
               checked = loopRange,
-              onCheckedChange = { loopRange = it },
+              onCheckedChange = { if (timingSupported) loopRange = it },
+              enabled = timingSupported,
               modifier = Modifier.testTag("range_loop_switch"),
             )
           }
@@ -556,6 +606,7 @@ fun PlaybackControlSheet(
                 val sAyah = (startAyahText.toIntOrNull() ?: 1).coerceIn(1, startMaxAyah)
                 onPlayFromAyah(startSurahId, sAyah)
               },
+              enabled = timingSupported,
               modifier = Modifier
                 .weight(1f)
                 .testTag("play_from_start_ayah_button"),
@@ -576,6 +627,7 @@ fun PlaybackControlSheet(
                   ),
                 )
               },
+              enabled = timingSupported,
               modifier = Modifier
                 .weight(1.1f)
                 .testTag("play_selected_range_button"),
@@ -676,7 +728,7 @@ fun PersistentAudioBar(
     buildString {
       val activeKey = audioState.activePlayingVerseKey
       if (activeKey != null) {
-        append("الآية ${activeKey.substringAfter(":")}")
+        append("تُقرأ الآن: آية ${activeKey.substringAfter(":")}")
       } else if (audioState.isPlaying && !audioState.hasAyahTiming) {
         append("تشغيل متصل")
       } else {

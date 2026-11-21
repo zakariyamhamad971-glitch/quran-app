@@ -84,16 +84,15 @@ import com.example.data.audio.VerifiedReciter
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.PageViewMode
 import com.example.data.quran.MushafEdition
-import com.example.data.quran.MushafSetupState
+import com.example.data.quran.MushafRegistry
 import com.example.data.quran.SurahMeta
-import com.example.debug.RiwayatApiDebugScreen
 import com.example.player.AudioPlaybackUiState
 import com.example.ui.components.AudioPickerSheetMode
 import com.example.ui.components.CreditsAndIntegrityDialog
 import com.example.ui.components.FullScreenQuranIndex
 import com.example.ui.components.MushafPageFrame
 import com.example.ui.components.MushafSelectorScreen
-import com.example.ui.components.MushafSetupScreen
+import com.example.ui.components.MushafsManagerScreen
 import com.example.ui.components.PlaybackControlSheet
 import com.example.ui.components.ReaderBottomAudioButtons
 import com.example.ui.components.ReciterPickerSheet
@@ -127,9 +126,10 @@ fun ReaderScreen(
   viewModel: QabasatViewModel,
 ) {
   val downloadedMushafIds by viewModel.downloadedMushafIdsState.collectAsStateWithLifecycle()
+  val activeMushafIsPdf by viewModel.activeMushafIsPdfState.collectAsStateWithLifecycle()
   val downloadStates by viewModel.mushafDownloadManager.states.collectAsStateWithLifecycle()
 
-  if (downloadedMushafIds.isEmpty()) {
+  if (downloadedMushafIds.isEmpty() && !activeMushafIsPdf) {
     MushafSelectorScreen(
       downloadStates = downloadStates,
       onStartDownload = remember(viewModel) { { item -> viewModel.startMushafDownload(item) } },
@@ -161,7 +161,7 @@ private fun ReaderScreenContent(
   var isChromeVisible by rememberSaveable { mutableStateOf(true) }
   var activeAudioSheet by remember { mutableStateOf<ReaderAudioSheet?>(null) }
   var showSettingsSheet by remember { mutableStateOf(false) }
-  var showRiwayatDebugScreen by rememberSaveable { mutableStateOf(false) }
+  var showMushafsManager by rememberSaveable { mutableStateOf(false) }
   var showTajweedLegend by remember { mutableStateOf(false) }
   var showCreditsDialog by remember { mutableStateOf(false) }
 
@@ -226,6 +226,7 @@ private fun ReaderScreenContent(
         backgroundTheme = uiState.backgroundTheme,
         bookmarkSet = bookmarkSet,
         isDarkTheme = isDarkTheme,
+        isPdfMode = uiState.activeMushafIsPdf,
         settledAvailWidthDp = maxWidth,
         settledAvailHeightDp = (maxHeight - 8.dp).coerceAtLeast(1.dp),
         pagesStateFlow = viewModel.pagesState,
@@ -353,6 +354,7 @@ private fun ReaderScreenContent(
         onPrevSurah = { viewModel.playbackController.prevSurah() },
         onCycleSpeed = onCycleSpeed,
         onOpenReciterPicker = { activeAudioSheet = ReaderAudioSheet.RECITERS },
+        activeMushafIsPdf = uiState.activeMushafIsPdf,
       )
     }
 
@@ -366,6 +368,8 @@ private fun ReaderScreenContent(
           isLoading = uiState.recitersLoading,
           errorMessage = uiState.recitersError,
           mode = AudioPickerSheetMode.RECITERS_ONLY,
+          isPdfMode = uiState.activeMushafIsPdf,
+          onRetryLoad = { viewModel.retryLoadReciters() },
           onSelectReciter = { reciter -> viewModel.selectReciter(reciter) },
           onPlayFromAyah = { surahId, ayahNum ->
             hasSelectedSurah = true
@@ -383,9 +387,15 @@ private fun ReaderScreenContent(
       }
 
       ReaderAudioSheet.PLAYBACK -> {
+        val recitersEmptyForRiwaya = uiState.activeMushafIsPdf &&
+          !uiState.recitersLoading &&
+          uiState.recitersError == null &&
+          uiState.primaryReciters.isEmpty()
         ReaderPlaybackSheetHost(
           audioStateFlow = viewModel.audioState,
           surahs = uiState.surahs,
+          isPdfMode = uiState.activeMushafIsPdf,
+          recitersEmptyForRiwaya = recitersEmptyForRiwaya,
           onTogglePlayPause = remember(viewModel) { { viewModel.playbackController.togglePlayPause() } },
           onSeekTo = remember(viewModel) { { pos -> viewModel.playbackController.seekTo(pos) } },
           onSeekDelta = remember(viewModel) { { delta -> viewModel.playbackController.seekByDelta(delta) } },
@@ -416,6 +426,12 @@ private fun ReaderScreenContent(
         isDarkMode = isDarkTheme,
         backgroundTheme = uiState.backgroundTheme,
         effectiveTwoPageMode = effectiveTwoPageMode,
+        activeMushafIsPdf = uiState.activeMushafIsPdf,
+        activePdfMushafLabel = uiState.pdfMushafs.firstOrNull { it.id == uiState.activePdfMushafId }?.riwayaAr,
+        onOpenMushafsManager = {
+          viewModel.loadPdfManifest()
+          showMushafsManager = true
+        },
         onOpenTajweedLegend = {
           viewModel.ensureTajweedLegendLoaded()
           showTajweedLegend = true
@@ -424,14 +440,24 @@ private fun ReaderScreenContent(
           viewModel.ensureCreditsLoaded()
           showCreditsDialog = true
         },
-        onOpenRiwayatApiDebug = { showRiwayatDebugScreen = true },
         onDismiss = { showSettingsSheet = false },
       )
     }
 
-    if (showRiwayatDebugScreen) {
-      RiwayatApiDebugScreen(
-        onClose = { showRiwayatDebugScreen = false },
+    if (showMushafsManager) {
+      ReaderMushafsManagerHost(
+        viewModel = viewModel,
+        activeMushafIsPdf = uiState.activeMushafIsPdf,
+        activePdfMushafId = uiState.activePdfMushafId,
+        pdfMushafs = uiState.pdfMushafs,
+        pdfManifestLoading = uiState.pdfManifestLoading,
+        pdfManifestError = uiState.pdfManifestError,
+        onClose = { showMushafsManager = false },
+        onMushafActivated = {
+          showMushafsManager = false
+          hasSelectedSurah = true
+          isIndexOpen = false
+        },
       )
     }
 
@@ -471,6 +497,7 @@ private fun ReaderPagerHost(
   backgroundTheme: BackgroundTheme,
   bookmarkSet: Set<Int>,
   isDarkTheme: Boolean,
+  isPdfMode: Boolean,
   settledAvailWidthDp: Dp,
   settledAvailHeightDp: Dp,
   pagesStateFlow: StateFlow<Map<Int, PageLoadState>>,
@@ -574,6 +601,7 @@ private fun ReaderPagerHost(
               onRetry = remember(onRetry, rightPage) { { onRetry(rightPage) } },
               onPageTapped = toggleChromeIfNotSwiping,
               onVerseLongPressed = onVerseLongPressed,
+              isPdfMode = isPdfMode,
               modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight(),
@@ -591,6 +619,7 @@ private fun ReaderPagerHost(
                 onRetry = remember(onRetry, leftPage) { { onRetry(leftPage) } },
                 onPageTapped = toggleChromeIfNotSwiping,
                 onVerseLongPressed = onVerseLongPressed,
+                isPdfMode = isPdfMode,
                 modifier = Modifier
                   .weight(1f)
                   .fillMaxHeight(),
@@ -667,6 +696,7 @@ private fun ReaderPagerHost(
               onRetry = remember(onRetry, pageNum) { { onRetry(pageNum) } },
               onPageTapped = toggleChromeIfNotSwiping,
               onVerseLongPressed = onVerseLongPressed,
+              isPdfMode = isPdfMode,
               modifier = Modifier.size(width = pageWidth, height = pageHeight),
             )
           }
@@ -704,29 +734,30 @@ private fun ReaderSettingsHost(
   isDarkMode: Boolean,
   backgroundTheme: com.example.data.prefs.BackgroundTheme,
   effectiveTwoPageMode: Boolean,
+  activeMushafIsPdf: Boolean,
+  activePdfMushafLabel: String?,
+  onOpenMushafsManager: () -> Unit,
   onOpenTajweedLegend: () -> Unit,
   onOpenCredits: () -> Unit,
-  onOpenRiwayatApiDebug: () -> Unit,
   onDismiss: () -> Unit,
 ) {
   val updateState by viewModel.updateState.collectAsStateWithLifecycle()
-  val downloadedIds by viewModel.downloadedMushafIdsState.collectAsStateWithLifecycle()
   val activeId by viewModel.activeMushafIdState.collectAsStateWithLifecycle()
-  val downloadStates by viewModel.mushafDownloadManager.states.collectAsStateWithLifecycle()
   val isBetaChannelUnlocked by viewModel.betaChannelUnlockedState.collectAsStateWithLifecycle()
   val isBetaChannelEnabled by viewModel.betaChannelEnabledState.collectAsStateWithLifecycle()
+
+  val activeLabel = if (activeMushafIsPdf) {
+    activePdfMushafLabel?.takeIf { it.isNotBlank() } ?: "مصحف PDF"
+  } else {
+    MushafRegistry.getById(activeId).title
+  }
 
   SettingsSheet(
     isDarkMode = isDarkMode,
     backgroundTheme = backgroundTheme,
     effectiveTwoPageMode = effectiveTwoPageMode,
-    downloadedMushafIds = downloadedIds,
-    activeMushafId = activeId,
-    downloadStates = downloadStates,
-    onStartDownload = { item -> viewModel.startMushafDownload(item) },
-    onCancelDownload = { id -> viewModel.cancelMushafDownload(id) },
-    onSelectActiveMushaf = { id -> viewModel.selectActiveMushaf(id) },
-    onRemoveMushaf = { id -> viewModel.removeMushaf(id) },
+    activeMushafLabel = activeLabel,
+    onOpenMushafsManager = onOpenMushafsManager,
     onToggleDarkMode = { viewModel.toggleDarkMode() },
     onSelectBackgroundTheme = { theme -> viewModel.setBackgroundTheme(theme) },
     onSelectPageViewMode = { mode -> viewModel.setPageViewMode(mode) },
@@ -739,7 +770,54 @@ private fun ReaderSettingsHost(
     isBetaChannelEnabled = isBetaChannelEnabled,
     onUnlockBetaChannel = { viewModel.unlockBetaChannel() },
     onToggleBetaChannel = { enabled -> viewModel.setBetaChannelEnabled(enabled) },
-    onOpenRiwayatApiDebug = onOpenRiwayatApiDebug,
+  )
+}
+
+@Composable
+private fun ReaderMushafsManagerHost(
+  viewModel: QabasatViewModel,
+  activeMushafIsPdf: Boolean,
+  activePdfMushafId: String?,
+  pdfMushafs: List<com.example.data.pdf.PdfMushafEntry>,
+  pdfManifestLoading: Boolean,
+  pdfManifestError: String?,
+  onClose: () -> Unit,
+  onMushafActivated: () -> Unit,
+) {
+  val downloadedTextIds by viewModel.downloadedMushafIdsState.collectAsStateWithLifecycle()
+  val activeTextId by viewModel.activeMushafIdState.collectAsStateWithLifecycle()
+  val textDownloadStates by viewModel.mushafDownloadManager.states.collectAsStateWithLifecycle()
+  val pdfTransferStates by viewModel.pdfTransferStates.collectAsStateWithLifecycle()
+  val offlinePdfIds by viewModel.offlinePdfIds.collectAsStateWithLifecycle()
+
+  MushafsManagerScreen(
+    downloadedTextMushafIds = downloadedTextIds,
+    activeTextMushafId = activeTextId,
+    activeMushafIsPdf = activeMushafIsPdf,
+    activePdfMushafId = activePdfMushafId,
+    textDownloadStates = textDownloadStates,
+    pdfMushafs = pdfMushafs,
+    pdfManifestLoading = pdfManifestLoading,
+    pdfManifestError = pdfManifestError,
+    pdfTransferStates = pdfTransferStates,
+    offlinePdfIds = offlinePdfIds,
+    onLoadThumbnail = { entry -> viewModel.loadPdfThumbnail(entry) },
+    onRefreshManifest = { viewModel.loadPdfManifest(forceRefresh = true) },
+    onSelectTextMushaf = { id ->
+      viewModel.selectActiveMushaf(id)
+      onMushafActivated()
+    },
+    onStartTextDownload = { item -> viewModel.startMushafDownload(item) },
+    onCancelTextDownload = { id -> viewModel.cancelMushafDownload(id) },
+    onRemoveTextMushaf = { id -> viewModel.removeMushaf(id) },
+    onSelectPdfMushaf = { entry ->
+      viewModel.selectPdfMushaf(entry)
+      onMushafActivated()
+    },
+    onDownloadPdfMushaf = { entry -> viewModel.downloadPdfMushafOffline(entry) },
+    onCancelPdfTransfer = { id -> viewModel.cancelPdfTransfer(id) },
+    onDeletePdfMushaf = { entry -> viewModel.deletePdfMushafOffline(entry) },
+    onClose = onClose,
   )
 }
 
@@ -955,6 +1033,8 @@ private fun ReaderBottomAudioButtonsHost(
 private fun ReaderPlaybackSheetHost(
   audioStateFlow: StateFlow<AudioPlaybackUiState>,
   surahs: List<SurahMeta>,
+  isPdfMode: Boolean,
+  recitersEmptyForRiwaya: Boolean,
   onTogglePlayPause: () -> Unit,
   onSeekTo: (Long) -> Unit,
   onSeekDelta: (Long) -> Unit,
@@ -980,6 +1060,8 @@ private fun ReaderPlaybackSheetHost(
     onPlayRange = onPlayRange,
     onClearRange = onClearRange,
     onDismiss = onDismiss,
+    isPdfMode = isPdfMode,
+    recitersEmptyForRiwaya = recitersEmptyForRiwaya,
   )
 }
 
@@ -992,6 +1074,8 @@ private fun ReaderReciterPickerHost(
   isLoading: Boolean,
   errorMessage: String?,
   mode: AudioPickerSheetMode,
+  isPdfMode: Boolean,
+  onRetryLoad: () -> Unit,
   onSelectReciter: (VerifiedReciter) -> Unit,
   onPlayFromAyah: (Int, Int) -> Unit,
   onPlayRange: (RecitationRange) -> Unit,
@@ -1014,6 +1098,8 @@ private fun ReaderReciterPickerHost(
     onClearRange = onClearRange,
     onDismiss = onDismiss,
     mode = mode,
+    isPdfMode = isPdfMode,
+    onRetryLoad = onRetryLoad,
   )
 }
 

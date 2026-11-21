@@ -12,44 +12,32 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Brightness7
-import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ColorLens
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SystemUpdate
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -67,9 +55,6 @@ import androidx.compose.ui.text.style.TextAlign
 import com.example.BuildConfig
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.PageViewMode
-import com.example.data.quran.MushafDownloadState
-import com.example.data.quran.MushafItem
-import com.example.data.quran.MushafRegistry
 
 internal object BetaUnlockTapTracker {
   const val REQUIRED_TAPS = 10
@@ -99,13 +84,8 @@ fun SettingsSheet(
   isDarkMode: Boolean,
   backgroundTheme: BackgroundTheme,
   effectiveTwoPageMode: Boolean,
-  downloadedMushafIds: Set<String>,
-  activeMushafId: String,
-  downloadStates: Map<String, MushafDownloadState>,
-  onStartDownload: (MushafItem) -> Unit,
-  onCancelDownload: (String) -> Unit,
-  onSelectActiveMushaf: (String) -> Unit,
-  onRemoveMushaf: (String) -> Unit,
+  activeMushafLabel: String,
+  onOpenMushafsManager: () -> Unit,
   onToggleDarkMode: () -> Unit,
   onSelectBackgroundTheme: (BackgroundTheme) -> Unit,
   onSelectPageViewMode: (PageViewMode) -> Unit,
@@ -118,30 +98,14 @@ fun SettingsSheet(
   isBetaChannelEnabled: Boolean = false,
   onUnlockBetaChannel: () -> Unit = {},
   onToggleBetaChannel: (Boolean) -> Unit = {},
-  onOpenRiwayatApiDebug: () -> Unit = {},
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-  var searchQuery by remember { mutableStateOf("") }
-  var deleteWarningMessage by remember { mutableStateOf<String?>(null) }
   var tapState by remember(isBetaChannelUnlocked, isBetaChannelEnabled) {
     mutableStateOf(
       BetaUnlockTapTracker.TapState(
         unlocked = isBetaChannelUnlocked || isBetaChannelEnabled,
       ),
-    )
-  }
-
-  if (deleteWarningMessage != null) {
-    AlertDialog(
-      onDismissRequest = { deleteWarningMessage = null },
-      title = { Text("تنبيه") },
-      text = { Text(deleteWarningMessage.orEmpty()) },
-      confirmButton = {
-        TextButton(onClick = { deleteWarningMessage = null }) {
-          Text("حسناً")
-        }
-      },
     )
   }
 
@@ -239,68 +203,42 @@ fun SettingsSheet(
       HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
       Spacer(Modifier.height(14.dp))
 
-      // Mushaf Management Section (Registry-based with search & scaling)
-      Text(
-        text = "إدارة المصاحف",
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.primary,
-      )
-      Spacer(Modifier.height(8.dp))
-
-      OutlinedTextField(
-        value = searchQuery,
-        onValueChange = { searchQuery = it },
-        placeholder = { Text("بحث عن مصحف...") },
-        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-        singleLine = true,
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth(),
-      )
-      Spacer(Modifier.height(8.dp))
-
-      val filteredMushafs = remember(searchQuery) {
-        if (searchQuery.isBlank()) MushafRegistry.allMushafs
-        else MushafRegistry.allMushafs.filter {
-          it.title.contains(searchQuery, ignoreCase = true) ||
-            it.subtitle.contains(searchQuery, ignoreCase = true)
-        }
-      }
-
-      // LazyColumn constrained in height inside scrollable sheet
+      // Mushaf Management Button -> opens dedicated full-screen in-app "المصاحف" page
       Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        modifier = Modifier
-          .fillMaxWidth()
-          .heightIn(max = 320.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        modifier = Modifier.fillMaxWidth(),
       ) {
-        LazyColumn(
+        Column(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(8.dp),
+            .padding(12.dp),
           verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-          items(filteredMushafs, key = { it.id }) { item ->
-            val isDownloaded = downloadedMushafIds.contains(item.id)
-            val isActive = activeMushafId == item.id
-            val state = downloadStates[item.id] ?: MushafDownloadState(mushafId = item.id)
-
-            SettingsMushafRow(
-              item = item,
-              isDownloaded = isDownloaded,
-              isActive = isActive,
-              state = state,
-              onDownload = { onStartDownload(item) },
-              onCancel = { onCancelDownload(item.id) },
-              onSelect = { onSelectActiveMushaf(item.id) },
-              onRemove = {
-                if (downloadedMushafIds.size <= 1) {
-                  deleteWarningMessage = "يجب الاحتفاظ بمصحف واحد على الأقل داخل التطبيق."
-                } else {
-                  onRemoveMushaf(item.id)
-                }
-              },
+          Text(
+            text = "المصحف الحالي: $activeMushafLabel",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
+          )
+          Button(
+            onClick = {
+              onDismiss()
+              onOpenMushafsManager()
+            },
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .minimumInteractiveComponentSize()
+              .testTag("settings_open_mushafs_button"),
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.MenuBook,
+              contentDescription = null,
+              modifier = Modifier.size(18.dp),
             )
+            Spacer(Modifier.width(8.dp))
+            Text("المصاحف")
           }
         }
       }
@@ -427,21 +365,6 @@ fun SettingsSheet(
         }
       }
 
-      Spacer(Modifier.height(10.dp))
-      OutlinedButton(
-        onClick = {
-          onDismiss()
-          onOpenRiwayatApiDebug()
-        },
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("settings_riwayat_api_debug_button"),
-      ) {
-        Icon(Icons.Filled.BugReport, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("تجربة API الروايات")
-      }
-
       Spacer(Modifier.height(14.dp))
       HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
       Spacer(Modifier.height(8.dp))
@@ -486,154 +409,6 @@ fun SettingsSheet(
       }
 
       Spacer(Modifier.height(22.dp))
-    }
-  }
-}
-
-@Composable
-private fun SettingsMushafRow(
-  item: MushafItem,
-  isDownloaded: Boolean,
-  isActive: Boolean,
-  state: MushafDownloadState,
-  onDownload: () -> Unit,
-  onCancel: () -> Unit,
-  onSelect: () -> Unit,
-  onRemove: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  val isDownloading = state.isDownloading
-  val progress = state.progress
-
-  Surface(
-    shape = RoundedCornerShape(12.dp),
-    color = MaterialTheme.colorScheme.surface,
-    tonalElevation = 1.dp,
-    border = BorderStroke(
-      width = if (isActive) 1.5.dp else 1.dp,
-      color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-    ),
-    modifier = modifier
-      .fillMaxWidth()
-      .then(if (isDownloaded) Modifier.clickable(onClick = onSelect) else Modifier),
-  ) {
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(12.dp),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-          modifier = Modifier.weight(1f),
-        ) {
-          if (isActive) {
-            Surface(
-              shape = CircleShape,
-              color = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.size(20.dp),
-            ) {
-              Box(contentAlignment = Alignment.Center) {
-                Icon(
-                  imageVector = Icons.Filled.Check,
-                  contentDescription = "المصحف المستخدم",
-                  tint = MaterialTheme.colorScheme.onPrimary,
-                  modifier = Modifier.size(12.dp),
-                )
-              }
-            }
-          }
-          Column {
-            Text(
-              text = item.title,
-              style = MaterialTheme.typography.titleSmall,
-              fontWeight = FontWeight.Bold,
-              color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-              text = if (isDownloaded) item.subtitle else "${item.subtitle} • ${item.sizeMb} ميجابايت",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-        }
-
-        if (isDownloaded) {
-          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (!isActive) {
-              Button(
-                onClick = onSelect,
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
-                modifier = Modifier.minimumInteractiveComponentSize(),
-              ) {
-                Text("استخدام", style = MaterialTheme.typography.labelMedium)
-              }
-            }
-            IconButton(
-              onClick = onRemove,
-              modifier = Modifier.size(32.dp),
-            ) {
-              Icon(
-                imageVector = Icons.Filled.Delete,
-                contentDescription = "حذف المصحف",
-                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
-                modifier = Modifier.size(18.dp),
-              )
-            }
-          }
-        }
-      }
-
-      if (isDownloading) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-          ) {
-            Text(
-              text = "جاري التنزيل (${progress.percent}%)",
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.primary,
-            )
-            OutlinedButton(
-              onClick = onCancel,
-              shape = RoundedCornerShape(6.dp),
-              modifier = Modifier.height(28.dp),
-            ) {
-              Text("إلغاء", style = MaterialTheme.typography.labelSmall)
-            }
-          }
-          LinearProgressIndicator(
-            progress = { (progress.percent / 100f).coerceIn(0f, 1f) },
-            color = MaterialTheme.colorScheme.primary,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier
-              .fillMaxWidth()
-              .height(6.dp)
-              .clip(RoundedCornerShape(999.dp)),
-          )
-        }
-      } else if (!isDownloaded) {
-        Button(
-          onClick = onDownload,
-          colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-          shape = RoundedCornerShape(8.dp),
-          modifier = Modifier
-            .fillMaxWidth()
-            .minimumInteractiveComponentSize(),
-        ) {
-          Icon(imageVector = Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
-          Spacer(Modifier.width(6.dp))
-          Text("تنزيل المصحف", style = MaterialTheme.typography.labelMedium)
-        }
-      }
     }
   }
 }
