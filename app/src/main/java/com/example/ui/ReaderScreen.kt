@@ -86,6 +86,7 @@ import com.example.data.prefs.PageViewMode
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafSetupState
 import com.example.data.quran.SurahMeta
+import com.example.debug.RiwayatApiDebugScreen
 import com.example.player.AudioPlaybackUiState
 import com.example.ui.components.AudioPickerSheetMode
 import com.example.ui.components.CreditsAndIntegrityDialog
@@ -160,6 +161,7 @@ private fun ReaderScreenContent(
   var isChromeVisible by rememberSaveable { mutableStateOf(true) }
   var activeAudioSheet by remember { mutableStateOf<ReaderAudioSheet?>(null) }
   var showSettingsSheet by remember { mutableStateOf(false) }
+  var showRiwayatDebugScreen by rememberSaveable { mutableStateOf(false) }
   var showTajweedLegend by remember { mutableStateOf(false) }
   var showCreditsDialog by remember { mutableStateOf(false) }
 
@@ -422,7 +424,14 @@ private fun ReaderScreenContent(
           viewModel.ensureCreditsLoaded()
           showCreditsDialog = true
         },
+        onOpenRiwayatApiDebug = { showRiwayatDebugScreen = true },
         onDismiss = { showSettingsSheet = false },
+      )
+    }
+
+    if (showRiwayatDebugScreen) {
+      RiwayatApiDebugScreen(
+        onClose = { showRiwayatDebugScreen = false },
       )
     }
 
@@ -697,6 +706,7 @@ private fun ReaderSettingsHost(
   effectiveTwoPageMode: Boolean,
   onOpenTajweedLegend: () -> Unit,
   onOpenCredits: () -> Unit,
+  onOpenRiwayatApiDebug: () -> Unit,
   onDismiss: () -> Unit,
 ) {
   val updateState by viewModel.updateState.collectAsStateWithLifecycle()
@@ -729,6 +739,7 @@ private fun ReaderSettingsHost(
     isBetaChannelEnabled = isBetaChannelEnabled,
     onUnlockBetaChannel = { viewModel.unlockBetaChannel() },
     onToggleBetaChannel = { enabled -> viewModel.setBetaChannelEnabled(enabled) },
+    onOpenRiwayatApiDebug = onOpenRiwayatApiDebug,
   )
 }
 

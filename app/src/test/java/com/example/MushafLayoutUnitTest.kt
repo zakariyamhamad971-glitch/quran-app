@@ -849,4 +849,87 @@ class MushafLayoutUnitTest {
       ),
     )
   }
+
+  @Test
+  fun `riwayat debug repository parses real api json handles missing fields filters ignoring diacritics and formats url`() {
+    val riwayatJson = """
+      {
+        "riwayat": [
+          {"id": 1, "name": "حفص عن عاصم"},
+          {"id": 2}
+        ]
+      }
+    """.trimIndent()
+    val riwayat = com.example.debug.RiwayatApiDebugRepository.parseRiwayatJson(riwayatJson)
+    assertEquals(2, riwayat.size)
+    assertEquals("1 - حفص عن عاصم", riwayat[0].displayLabel)
+    assertEquals("غير موجود", riwayat[1].name)
+
+    val recitersJson = """
+      {
+        "reciters": [
+          {
+            "id": 10,
+            "name": "مِشَارِي رَاشِد العَفَاسِي",
+            "moshaf": [
+              {
+                "id": 101,
+                "name": "المصحف المرتل",
+                "server": "https://server8.mp3quran.net/afs/",
+                "surah_list": "1,2,3,4,5,6,7,8,9,10,11,12"
+              }
+            ]
+          },
+          {
+            "id": 11,
+            "name": "قارئ ناقص الحقول",
+            "moshaf": [
+              {
+                "id": 102
+              }
+            ]
+          }
+        ]
+      }
+    """.trimIndent()
+    val parsedReciters = com.example.debug.RiwayatApiDebugRepository.parseRecitersJson(
+      rawJson = recitersJson,
+      riwayaId = "1",
+      riwayaName = "حفص عن عاصم",
+    )
+    assertEquals(2, parsedReciters.size)
+    assertEquals(
+      listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"),
+      parsedReciters[0].moshafList[0].first10Surahs,
+    )
+    assertEquals("غير موجود", parsedReciters[1].moshafList[0].name)
+    assertEquals("غير موجود", parsedReciters[1].moshafList[0].server)
+    assertEquals(emptyList<String>(), parsedReciters[1].moshafList[0].first10Surahs)
+
+    // Filter ignores Arabic diacritics
+    val filtered = com.example.debug.RiwayatApiDebugRepository.filterReciters(
+      all = parsedReciters,
+      selectedRiwayaId = "1",
+      searchQuery = "مشاري راشد",
+    )
+    assertEquals(1, filtered.size)
+    assertEquals("10", filtered[0].reciterId)
+
+    // Exact URL construction: server + padded 3-digit surah + .mp3
+    assertEquals(
+      "https://server8.mp3quran.net/afs/001.mp3",
+      com.example.debug.RiwayatApiDebugRepository.buildMoshafAudioUrl(
+        server = parsedReciters[0].moshafList[0].server,
+        surahNumber = 1,
+      ),
+    )
+
+    val clipboard = com.example.debug.RiwayatApiDebugRepository.formatFilteredResultsForClipboard(
+      filtered = filtered,
+      selectedRiwayaLabel = "1 - حفص عن عاصم",
+    )
+    assertTrue(clipboard.contains("مِشَارِي رَاشِد العَفَاسِي"))
+    assertTrue(clipboard.contains("https://server8.mp3quran.net/afs/"))
+    assertTrue(clipboard.contains("1,2,3,4,5,6,7,8,9,10"))
+  }
 }

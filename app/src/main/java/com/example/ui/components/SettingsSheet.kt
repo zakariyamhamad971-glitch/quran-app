@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Brightness7
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ColorLens
@@ -117,6 +118,7 @@ fun SettingsSheet(
   isBetaChannelEnabled: Boolean = false,
   onUnlockBetaChannel: () -> Unit = {},
   onToggleBetaChannel: (Boolean) -> Unit = {},
+  onOpenRiwayatApiDebug: () -> Unit = {},
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -423,6 +425,21 @@ fun SettingsSheet(
             )
           }
         }
+      }
+
+      Spacer(Modifier.height(10.dp))
+      OutlinedButton(
+        onClick = {
+          onDismiss()
+          onOpenRiwayatApiDebug()
+        },
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("settings_riwayat_api_debug_button"),
+      ) {
+        Icon(Icons.Filled.BugReport, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("تجربة API الروايات")
       }
 
       Spacer(Modifier.height(14.dp))
