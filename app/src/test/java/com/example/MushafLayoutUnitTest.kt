@@ -1159,97 +1159,73 @@ class MushafLayoutUnitTest {
   }
 
   @Test
-  fun `pdf pixel scanner finds non-white middle text bounds with 2 percent padding ignoring top and bottom bands`() {
+  fun `pdf segmentation finds bands and avoids cutting ink`() {
     val bmpW = 200
     val bmpH = 688
-    val (topEndY, botStartY) = com.example.data.pdf.PdfRendererBridge.computeBandBoundariesPx(bmpH)
-    assertEquals(30, topEndY)
-    assertEquals(640, botStartY)
-
-    val whiteRow = IntArray(bmpW) { 0xFFFFFFFF.toInt() }
     val darkPx = 0xFF202020.toInt()
-    val nearWhitePx = 0xFFF2F2F2.toInt() // gray = 242 >= 235 -> ignored
 
-    val (_, _, bounds) = com.example.data.pdf.PdfRendererBridge.scanTextBoundsInMiddleBand(
-      bmpWidthPx = bmpW,
-      bmpHeightPx = bmpH,
+    val segmentation = com.example.data.pdf.PdfRendererBridge.computePageSegmentation(
+      width = bmpW,
+      height = bmpH,
     ) { y, buf ->
       java.util.Arrays.fill(buf, 0xFFFFFFFF.toInt())
-      // Put dark pixels inside top band (y=10) & bottom band (y=660) -> must be ignored
-      if (y == 10 || y == 660) {
-        buf[5] = darkPx
-        buf[195] = darkPx
+      // Top label band ink at y=10..18
+      if (y in 10..18) {
+        for (x in 20..180) buf[x] = darkPx
       }
-      // Put near-white noise at x=10,y=100 -> must be ignored
-      if (y == 100) {
-        buf[10] = nearWhitePx
+      // Bottom legend band ink at y=650..675
+      if (y in 650..675) {
+        for (x in 20..180) buf[x] = darkPx
       }
-      // Actual text block: x in 50..149 (w=100), y in 150..349 (h=200)
-      if (y in 150..349) {
-        for (x in 50..149) buf[x] = darkPx
+      // Middle text ink at y=100..500
+      if (y in 100..500) {
+        for (x in 30..170) buf[x] = darkPx
       }
     }
 
-    // 2% of 100 = 2px horizontal pad -> 48..152; 2% of 200 = 4px vertical pad -> 146..354
-    assertEquals(48, bounds.left)
-    assertEquals(152, bounds.right)
-    assertEquals(146, bounds.top)
-    assertEquals(354, bounds.bottom)
+    assertTrue(segmentation.hasLabelBand)
+    assertTrue(segmentation.hasLegendBand)
+    assertTrue(segmentation.labelCutFraction > 0f)
+    assertTrue(segmentation.legendCutFraction < 1f)
   }
 
   @Test
-  fun `computePdfPageLayout pins bands zooms text up to 2_2x fits height in landscape and reserves surah banner`() {
+  fun `computePdfPageLayout pins bands and reserves surah banner with segmentation`() {
     val bmpW = 2000
     val bmpH = 2915
-    val (topEndY, botStartY) = com.example.data.pdf.PdfRendererBridge.computeBandBoundariesPx(bmpH)
 
-    // 1) Portrait sparse narrow text (500px out of 2000px -> would want 4x width, must cap at 2.2x)
-    val sparsePortrait = com.example.ui.components.computePdfPageLayout(
+    val segmentation = com.example.data.pdf.PdfPageSegmentation(
+      hasLabelBand = true,
+      labelCutFraction = 0.05f,
+      hasLegendBand = true,
+      legendCutFraction = 0.92f,
+      textMinXFraction = 0.1f,
+      textMaxXFraction = 0.9f,
+      textMinYFraction = 0.08f,
+      textMaxYFraction = 0.90f,
+      widestLineWidthFraction = 0.8f,
+      isFewLines = false,
+      lines = emptyList(),
+    )
+
+    val layout = com.example.ui.components.computePdfPageLayout(
       frameLeft = 20f,
       frameTop = 40f,
       frameRight = 1020f,
       frameBottom = 1840f,
       bmpWidthPx = bmpW,
       bmpHeightPx = bmpH,
-      topBandEndY = topEndY,
-      bottomBandStartY = botStartY,
-      textSrcLeft = 750,
-      textSrcTop = 500,
-      textSrcRight = 1250,
-      textSrcBottom = 1000,
+      segmentation = segmentation,
       hasTopSurahBanner = true,
       densityPxPerDp = 3f,
     )
-    assertEquals(20, sparsePortrait.topBandDstLeft)
-    assertEquals(40, sparsePortrait.topBandDstTop)
-    assertEquals(1000, sparsePortrait.topBandDstWidth)
-    assertEquals(1840, sparsePortrait.bottomBandDstTop + sparsePortrait.bottomBandDstHeight)
-    assertEquals(2.2f, sparsePortrait.appliedZoomRelativeToNatural, 0.02f)
-    assertTrue(sparsePortrait.bannerHeight > 0f)
-    assertTrue(sparsePortrait.bannerTop >= sparsePortrait.topBandDstTop + sparsePortrait.topBandDstHeight)
-    assertTrue(sparsePortrait.bannerTop + sparsePortrait.bannerHeight <= sparsePortrait.textDstTop + 1f)
 
-    // 2) Short landscape height -> fits height cleanly between top band and bottom band
-    val landscapeLayout = com.example.ui.components.computePdfPageLayout(
-      frameLeft = 0f,
-      frameTop = 0f,
-      frameRight = 1200f,
-      frameBottom = 700f,
-      bmpWidthPx = bmpW,
-      bmpHeightPx = bmpH,
-      topBandEndY = topEndY,
-      bottomBandStartY = botStartY,
-      textSrcLeft = 100,
-      textSrcTop = topEndY + 20,
-      textSrcRight = 1900,
-      textSrcBottom = botStartY - 20,
-      hasTopSurahBanner = false,
-      densityPxPerDp = 3f,
-    )
-    assertEquals(0f, landscapeLayout.bannerWidth, 0.01f)
-    assertTrue(landscapeLayout.textDstTop >= landscapeLayout.topBandDstTop + landscapeLayout.topBandDstHeight)
-    assertTrue(landscapeLayout.textDstTop + landscapeLayout.textDstHeight <= landscapeLayout.bottomBandDstTop)
-    assertTrue(landscapeLayout.appliedZoomRelativeToNatural >= 1.0f)
+    assertEquals(20, layout.topBandDstLeft)
+    assertEquals(40, layout.topBandDstTop)
+    assertEquals(1000, layout.topBandDstWidth)
+    assertEquals(1840, layout.bottomBandDstTop + layout.bottomBandDstHeight)
+    assertTrue(layout.bannerHeight > 0f)
+    assertTrue(layout.bannerTop >= layout.topBandDstTop + layout.topBandDstHeight)
   }
 
   @Test
