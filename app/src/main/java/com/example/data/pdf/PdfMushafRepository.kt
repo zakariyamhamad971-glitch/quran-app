@@ -142,19 +142,186 @@ object PdfManifestParser {
   }
 
   fun hasPdfMagicHeader(file: File): Boolean {
-    if (!file.exists() || file.length() < 5L) return false
-    return runCatching {
-      FileInputStream(file).use { input ->
-        val buf = ByteArray(5)
-        val read = input.read(buf)
-        read == 5 &&
-          buf[0] == '%'.code.toByte() &&
-          buf[1] == 'P'.code.toByte() &&
-          buf[2] == 'D'.code.toByte() &&
-          buf[3] == 'F'.code.toByte() &&
-          buf[4] == '-'.code.toByte()
+      if (!file.exists() || file.length() < 5L) return false
+      return runCatching {
+        FileInputStream(file).use { input ->
+          val buf = ByteArray(5)
+          val read = input.read(buf)
+          read == 5 &&
+            buf[0] == '%'.code.toByte() &&
+            buf[1] == 'P'.code.toByte() &&
+            buf[2] == 'D'.code.toByte() &&
+            buf[3] == 'F'.code.toByte() &&
+            buf[4] == '-'.code.toByte()
+        }
+      }.getOrDefault(false)
+    }
+}
+
+object ColorsGuideParser {
+  private fun JsonReader.nextRawScalarString(): String? {
+    return when (peek()) {
+      JsonReader.Token.NULL -> {
+        nextNull<Unit>()
+        null
       }
-    }.getOrDefault(false)
+      JsonReader.Token.STRING -> nextString().trim()
+      JsonReader.Token.NUMBER -> normalizeNumericId(nextString().trim())
+      JsonReader.Token.BOOLEAN -> nextBoolean().toString()
+      else -> {
+        skipValue()
+        null
+      }
+    }
+  }
+
+  private fun normalizeNumericId(raw: String): String {
+    val asDouble = raw.toDoubleOrNull()
+    if (asDouble != null && asDouble == asDouble.toLong().toDouble()) {
+      return asDouble.toLong().toString()
+    }
+    return raw
+  }
+
+  fun normalizeId(raw: String?): String {
+    val trimmed = raw?.trim().orEmpty()
+    if (trimmed.isEmpty()) return ""
+    return normalizeNumericId(trimmed)
+  }
+
+  fun parseColorsGuideJson(rawJson: String): ColorsGuideData {
+    var version = 1
+    val sections = ArrayList<RiwayaColorGuideSection>()
+    JsonReader.of(Buffer().writeUtf8(rawJson)).use { reader ->
+      reader.isLenient = true
+      if (reader.peek() != JsonReader.Token.BEGIN_OBJECT) {
+        throw IllegalStateException("تنسيق دليل الألوان غير صالح")
+      }
+      reader.beginObject()
+      while (reader.hasNext()) {
+        when (reader.nextName()) {
+          "version" -> {
+            version = reader.nextRawScalarString()?.toIntOrNull() ?: 1
+          }
+          "riwayat" -> {
+            if (reader.peek() == JsonReader.Token.BEGIN_ARRAY) {
+              readRiwayatArray(reader, sections)
+            } else {
+              reader.skipValue()
+            }
+          }
+          else -> reader.skipValue()
+        }
+      }
+      reader.endObject()
+    }
+    return ColorsGuideData(version = version, riwayat = sections)
+  }
+
+  private fun readRiwayatArray(
+    reader: JsonReader,
+    out: MutableList<RiwayaColorGuideSection>,
+  ) {
+    reader.beginArray()
+    while (reader.hasNext()) {
+      if (reader.peek() != JsonReader.Token.BEGIN_OBJECT) {
+        reader.skipValue()
+        continue
+      }
+      var id = ""
+      var riwayaAr = ""
+      val items = ArrayList<RiwayaColorGuideItem>()
+
+      reader.beginObject()
+      while (reader.hasNext()) {
+        when (reader.nextName()) {
+          "id" -> id = reader.nextRawScalarString().orEmpty()
+          "riwayaAr" -> riwayaAr = reader.nextRawScalarString().orEmpty()
+          "items" -> {
+            if (reader.peek() == JsonReader.Token.BEGIN_ARRAY) {
+              readItemsArray(reader, items)
+            } else {
+              reader.skipValue()
+            }
+          }
+          else -> reader.skipValue()
+        }
+      }
+      reader.endObject()
+
+      if (riwayaAr.isNotEmpty() || items.isNotEmpty()) {
+        out += RiwayaColorGuideSection(
+          id = id,
+          riwayaAr = riwayaAr,
+          items = items,
+        )
+      }
+    }
+    reader.endArray()
+  }
+
+  private fun readItemsArray(
+    reader: JsonReader,
+    out: MutableList<RiwayaColorGuideItem>,
+  ) {
+    reader.beginArray()
+    while (reader.hasNext()) {
+      if (reader.peek() != JsonReader.Token.BEGIN_OBJECT) {
+        reader.skipValue()
+        continue
+      }
+      var label = ""
+      var color = ""
+      var styleRaw = ""
+
+      reader.beginObject()
+      while (reader.hasNext()) {
+        when (reader.nextName()) {
+          "label" -> label = reader.nextRawScalarString().orEmpty()
+          "color" -> color = reader.nextRawScalarString().orEmpty()
+          "style" -> styleRaw = reader.nextRawScalarString().orEmpty()
+          else -> reader.skipValue()
+        }
+      }
+      reader.endObject()
+
+      val style = when (styleRaw.trim().lowercase()) {
+        "ring" -> ColorSwatchStyle.RING
+        else -> ColorSwatchStyle.FILLED
+      }
+      if (label.isNotEmpty() || color.isNotEmpty()) {
+        out += RiwayaColorGuideItem(
+          label = label,
+          colorHex = color,
+          style = style,
+        )
+      }
+    }
+    reader.endArray()
+  }
+
+  fun orderSectionsByManifest(
+    sections: List<RiwayaColorGuideSection>,
+    manifest: List<PdfMushafEntry>,
+  ): List<RiwayaColorGuideSection> {
+    if (sections.isEmpty() || manifest.isEmpty()) return sections
+    val orderedManifest = manifest.sortedBy { it.order }
+    val manifestOrderById = HashMap<String, Int>(orderedManifest.size)
+    orderedManifest.forEachIndexed { index, entry ->
+      val normId = normalizeId(entry.id)
+      if (normId.isNotEmpty() && !manifestOrderById.containsKey(normId)) {
+        manifestOrderById[normId] = index
+      }
+    }
+    return sections
+      .withIndex()
+      .sortedWith(
+        compareBy<IndexedValue<RiwayaColorGuideSection>>(
+          { manifestOrderById[normalizeId(it.value.id)] ?: Int.MAX_VALUE },
+          { it.index },
+        ),
+      )
+      .map { it.value }
   }
 }
 
@@ -167,6 +334,7 @@ class PdfMushafRepository(
   private val cachePdfDir = File(context.cacheDir, "pdf_mushafs").apply { mkdirs() }
   private val thumbCacheDir = File(context.cacheDir, "pdf_thumbs").apply { mkdirs() }
   private val manifestCacheFile = File(persistentDir, "manifest.json")
+  private val colorsGuideCacheFile = File(persistentDir, "colors_guide.json")
 
   private val transferJobs = ConcurrentHashMap<String, Job>()
   private val thumbMemoryCache = ConcurrentHashMap<String, Bitmap>()
@@ -270,6 +438,52 @@ class PdfMushafRepository(
     return runCatching {
       PdfManifestParser.parseManifestJson(manifestCacheFile.readText())
     }.getOrDefault(emptyList())
+  }
+
+  fun readCachedColorsGuideOrNull(): ColorsGuideData? {
+    if (!colorsGuideCacheFile.exists() || colorsGuideCacheFile.length() == 0L) return null
+    return runCatching {
+      ColorsGuideParser.parseColorsGuideJson(colorsGuideCacheFile.readText())
+    }.getOrNull()
+  }
+
+  suspend fun fetchColorsGuide(): Result<ColorsGuideData> = withContext(Dispatchers.IO) {
+    runCatching {
+      val cachedData = readCachedColorsGuideOrNull()
+      val url = "${MUSHAF_BASE_URL}colors_guide.json"
+      val req = Request.Builder().url(url).header("Accept", "application/json").build()
+      val fetchedRaw = try {
+        httpClient.newCall(req).execute().use { resp ->
+          if (!resp.isSuccessful) {
+            throw IllegalStateException("HTTP ${resp.code}")
+          }
+          resp.body?.string()?.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("Empty colors_guide.json")
+        }
+      } catch (e: Exception) {
+        if (cachedData != null) {
+          return@runCatching cachedData
+        }
+        throw IllegalStateException("تعذر تحميل دليل الألوان، تحقق من الاتصال", e)
+      }
+
+      val parsed = try {
+        ColorsGuideParser.parseColorsGuideJson(fetchedRaw)
+      } catch (e: Exception) {
+        if (cachedData != null) {
+          return@runCatching cachedData
+        }
+        throw IllegalStateException("تعذر تحميل دليل الألوان، تحقق من الاتصال", e)
+      }
+
+      val tmp = File(persistentDir, "colors_guide.json.tmp")
+      tmp.writeText(fetchedRaw)
+      if (!tmp.renameTo(colorsGuideCacheFile)) {
+        colorsGuideCacheFile.writeText(fetchedRaw)
+        tmp.delete()
+      }
+      parsed
+    }
   }
 
   suspend fun loadThumbnail(entry: PdfMushafEntry): Bitmap? = withContext(Dispatchers.IO) {

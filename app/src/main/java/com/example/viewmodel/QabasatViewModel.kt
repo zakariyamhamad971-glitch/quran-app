@@ -13,10 +13,12 @@ import com.example.data.audio.RecitationRange
 import com.example.data.audio.VerifiedReciter
 import com.example.data.integrity.AssetHashStatus
 import com.example.data.integrity.VerifiedDiskCache
+import com.example.data.pdf.ColorsGuideParser
 import com.example.data.pdf.PdfMushafEntry
 import com.example.data.pdf.PdfMushafRepository
 import com.example.data.pdf.PdfMushafTransferState
 import com.example.data.pdf.PdfRendererBridge
+import com.example.data.pdf.RiwayaColorGuideSection
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.PageViewMode
 import com.example.data.prefs.PersistedReaderState
@@ -110,6 +112,9 @@ data class ReaderUiState(
   val recitersLoading: Boolean = true,
   val recitersError: String? = null,
   val tajweedRules: List<TajweedRuleInfo> = emptyList(),
+  val colorsGuideSections: List<RiwayaColorGuideSection> = emptyList(),
+  val colorsGuideLoading: Boolean = false,
+  val colorsGuideError: String? = null,
   val credits: List<CreditSourceInfo> = emptyList(),
   val assetHashes: List<AssetHashStatus> = emptyList(),
   val selectedVerseKey: String? = null,
@@ -274,6 +279,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private var juzsJob: Job? = null
   private var tajweedLegendLoaded: Boolean = false
   private var tajweedLegendJob: Job? = null
+  private var colorsGuideLoaded: Boolean = false
+  private var colorsGuideJob: Job? = null
   private var creditsLoaded: Boolean = false
   private var creditsJob: Job? = null
   private var recitersJob: Job? = null
@@ -368,6 +375,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     viewModelScope.launch {
       val saved: PersistedReaderState = preferences.stateFlow.first()
       val cachedManifest = pdfMushafRepository.readCachedManifestOrEmpty()
+      val cachedGuide = pdfMushafRepository.readCachedColorsGuideOrNull()
+      val orderedCachedSections = if (cachedGuide != null) {
+        ColorsGuideParser.orderSectionsByManifest(cachedGuide.riwayat, cachedManifest)
+      } else {
+        emptyList()
+      }
       _uiState.update {
         it.copy(
           currentPage = saved.lastPage,
@@ -379,6 +392,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           activeMushafIsPdf = saved.activeMushafIsPdf,
           activePdfMushafId = saved.activePdfMushafId,
           pdfMushafs = cachedManifest,
+          colorsGuideSections = orderedCachedSections,
         )
       }
       activeRenderSpec = rebuildRenderSpec()
@@ -529,6 +543,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
             pdfMushafs = list,
             pdfManifestLoading = false,
             pdfManifestError = null,
+            colorsGuideSections = ColorsGuideParser.orderSectionsByManifest(
+              sections = it.colorsGuideSections,
+              manifest = list,
+            ),
           )
         }
       }.onFailure { err ->
@@ -610,13 +628,84 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun ensureTajweedLegendLoaded() {
-    if (tajweedLegendLoaded || tajweedLegendJob?.isActive == true) return
-    tajweedLegendJob = viewModelScope.launch {
-      val legend = quranRepository.loadTajweedLegend()
-      if (legend.isNotEmpty()) {
-        tajweedLegendLoaded = true
+    if (!tajweedLegendLoaded && tajweedLegendJob?.isActive != true) {
+      tajweedLegendJob = viewModelScope.launch {
+        val legend = quranRepository.loadTajweedLegend()
+        if (legend.isNotEmpty()) {
+          tajweedLegendLoaded = true
+        }
+        _uiState.update { it.copy(tajweedRules = legend) }
       }
-      _uiState.update { it.copy(tajweedRules = legend) }
+    }
+    ensureColorsGuideLoaded(forceRefresh = false)
+  }
+
+  fun retryColorsGuide() {
+    ensureColorsGuideLoaded(forceRefresh = true)
+  }
+
+  fun ensureColorsGuideLoaded(forceRefresh: Boolean = false) {
+    if (!forceRefresh && (colorsGuideLoaded || colorsGuideJob?.isActive == true)) return
+    if (forceRefresh) {
+      colorsGuideJob?.cancel()
+    }
+    colorsGuideJob = viewModelScope.launch {
+      val cachedManifest = _uiState.value.pdfMushafs.ifEmpty {
+        pdfMushafRepository.readCachedManifestOrEmpty()
+      }
+      val cachedGuide = pdfMushafRepository.readCachedColorsGuideOrNull()
+      if (cachedGuide != null && _uiState.value.colorsGuideSections.isEmpty()) {
+        val orderedCached = ColorsGuideParser.orderSectionsByManifest(cachedGuide.riwayat, cachedManifest)
+        _uiState.update {
+          it.copy(
+            pdfMushafs = if (it.pdfMushafs.isEmpty()) cachedManifest else it.pdfMushafs,
+            colorsGuideSections = orderedCached,
+            colorsGuideError = null,
+          )
+        }
+      }
+
+      if (forceRefresh || _uiState.value.colorsGuideSections.isEmpty()) {
+        _uiState.update { it.copy(colorsGuideLoading = true, colorsGuideError = null) }
+      }
+
+      coroutineScope {
+        val manifestDeferred = if (_uiState.value.pdfMushafs.isEmpty() || forceRefresh) {
+          async { pdfMushafRepository.fetchManifest(forceRefresh = forceRefresh) }
+        } else {
+          null
+        }
+        val guideDeferred = async { pdfMushafRepository.fetchColorsGuide() }
+
+        val manifestRes = manifestDeferred?.await()
+        val guideRes = guideDeferred.await()
+
+        val effectiveManifest = manifestRes?.getOrNull()
+          ?.takeIf { it.isNotEmpty() }
+          ?: _uiState.value.pdfMushafs.ifEmpty { cachedManifest }
+
+        guideRes.onSuccess { guide ->
+          val ordered = ColorsGuideParser.orderSectionsByManifest(guide.riwayat, effectiveManifest)
+          colorsGuideLoaded = true
+          _uiState.update {
+            it.copy(
+              pdfMushafs = effectiveManifest,
+              colorsGuideSections = ordered,
+              colorsGuideLoading = false,
+              colorsGuideError = null,
+            )
+          }
+        }.onFailure {
+          _uiState.update { st ->
+            val hasFallback = st.colorsGuideSections.isNotEmpty()
+            st.copy(
+              pdfMushafs = effectiveManifest,
+              colorsGuideLoading = false,
+              colorsGuideError = if (hasFallback) null else "تعذر تحميل دليل الألوان، تحقق من الاتصال",
+            )
+          }
+        }
+      }
     }
   }
 

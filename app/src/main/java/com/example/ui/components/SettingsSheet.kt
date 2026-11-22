@@ -289,7 +289,7 @@ fun SettingsSheet(
         ) {
           Icon(Icons.Filled.ColorLens, contentDescription = null, modifier = Modifier.size(18.dp))
           Spacer(Modifier.width(6.dp))
-          Text("دليل التجويد")
+          Text("دليل الألوان")
         }
         OutlinedButton(
           onClick = {

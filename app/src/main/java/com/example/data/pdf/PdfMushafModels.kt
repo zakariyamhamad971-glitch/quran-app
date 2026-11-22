@@ -29,3 +29,29 @@ data class PdfMushafTransferState(
 ) {
   val isBusy: Boolean get() = isDownloadingOffline || isStreamingOpen
 }
+
+enum class ColorSwatchStyle {
+  FILLED,
+  RING,
+}
+
+@Immutable
+data class RiwayaColorGuideItem(
+  val label: String,
+  val colorHex: String,
+  val style: ColorSwatchStyle = ColorSwatchStyle.FILLED,
+)
+
+@Immutable
+data class RiwayaColorGuideSection(
+  val id: String,
+  val riwayaAr: String,
+  val items: List<RiwayaColorGuideItem>,
+)
+
+@Immutable
+data class ColorsGuideData(
+  val version: Int = 1,
+  val riwayat: List<RiwayaColorGuideSection> = emptyList(),
+)
+

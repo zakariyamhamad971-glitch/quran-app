@@ -1013,4 +1013,85 @@ class MushafLayoutUnitTest {
     assertEquals(1, timings[0].ayah)
     assertEquals(3, timings[1].ayah)
   }
+
+  @Test
+  fun `colors guide parser reads filled and ring styles verbatim without merging`() {
+    val json = """
+      {
+        "version": 1,
+        "riwayat": [
+          {
+            "id": 7,
+            "riwayaAr": "ورش عن نافع",
+            "items": [
+              { "label": "حرف مد لازم", "color": "#1A2B3C", "style": "filled" },
+              { "label": "إمالة كبرى", "color": "#FF5500", "style": "ring" },
+              { "label": "صلة ميم الجمع", "color": "#008844", "style": "RING" }
+            ]
+          },
+          {
+            "id": 3,
+            "riwayaAr": "قالون عن نافع",
+            "items": [
+              { "label": "مد منفصل", "color": "#1A2B3C", "style": "filled" },
+              { "label": "غنة", "color": "#169200", "style": "filled" }
+            ]
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val parsed = com.example.data.pdf.ColorsGuideParser.parseColorsGuideJson(json)
+    assertEquals(1, parsed.version)
+    assertEquals(2, parsed.riwayat.size)
+
+    val warsh = parsed.riwayat[0]
+    assertEquals("7", warsh.id)
+    assertEquals("ورش عن نافع", warsh.riwayaAr)
+    assertEquals(3, warsh.items.size)
+    assertEquals("حرف مد لازم", warsh.items[0].label)
+    assertEquals("#1A2B3C", warsh.items[0].colorHex)
+    assertEquals(com.example.data.pdf.ColorSwatchStyle.FILLED, warsh.items[0].style)
+    assertEquals("إمالة كبرى", warsh.items[1].label)
+    assertEquals("#FF5500", warsh.items[1].colorHex)
+    assertEquals(com.example.data.pdf.ColorSwatchStyle.RING, warsh.items[1].style)
+    assertEquals(com.example.data.pdf.ColorSwatchStyle.RING, warsh.items[2].style)
+
+    val qaloon = parsed.riwayat[1]
+    assertEquals("3", qaloon.id)
+    assertEquals("قالون عن نافع", qaloon.riwayaAr)
+    assertEquals(2, qaloon.items.size)
+    // Same hex color in another riwaya keeps its own riwaya-specific label verbatim
+    assertEquals("مد منفصل", qaloon.items[0].label)
+    assertEquals("#1A2B3C", qaloon.items[0].colorHex)
+  }
+
+  @Test
+  fun `colors guide sections order by manifest order matching riwayat id with manifest entry id`() {
+    val guideJson = """
+      {
+        "version": 1,
+        "riwayat": [
+          { "id": 10, "riwayaAr": "رواية عاشرة", "items": [{ "label": "بند ١", "color": "#111111", "style": "filled" }] },
+          { "id": 2, "riwayaAr": "رواية ثانية", "items": [{ "label": "بند ٢", "color": "#222222", "style": "ring" }] },
+          { "id": 5, "riwayaAr": "رواية خامسة", "items": [{ "label": "بند ٣", "color": "#333333", "style": "filled" }] },
+          { "id": 99, "riwayaAr": "غير مدرجة", "items": [{ "label": "بند ٤", "color": "#444444", "style": "filled" }] }
+        ]
+      }
+    """.trimIndent()
+    val manifestJson = """
+      [
+        { "id": 5, "order": 1, "file": "pdfs/5.pdf", "thumb": "thumbs/5.jpg", "titleAr": "5", "riwayaAr": "رواية خامسة", "pages": 604, "sizeMB": 50.0, "apiRiwayaIds": [] },
+        { "id": 10, "order": 3, "file": "pdfs/10.pdf", "thumb": "thumbs/10.jpg", "titleAr": "10", "riwayaAr": "رواية عاشرة", "pages": 604, "sizeMB": 50.0, "apiRiwayaIds": [] },
+        { "id": 2, "order": 2, "file": "pdfs/2.pdf", "thumb": "thumbs/2.jpg", "titleAr": "2", "riwayaAr": "رواية ثانية", "pages": 604, "sizeMB": 50.0, "apiRiwayaIds": [] }
+      ]
+    """.trimIndent()
+
+    val guide = com.example.data.pdf.ColorsGuideParser.parseColorsGuideJson(guideJson)
+    val manifest = com.example.data.pdf.PdfManifestParser.parseManifestJson(manifestJson)
+    val ordered = com.example.data.pdf.ColorsGuideParser.orderSectionsByManifest(guide.riwayat, manifest)
+
+    assertEquals(listOf("5", "2", "10", "99"), ordered.map { it.id })
+    assertEquals(com.example.data.pdf.ColorSwatchStyle.RING, ordered[1].items[0].style)
+  }
 }

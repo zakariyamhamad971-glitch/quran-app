@@ -462,8 +462,16 @@ private fun ReaderScreenContent(
     }
 
     if (showTajweedLegend) {
+      val activePdfEntry = uiState.pdfMushafs.firstOrNull { it.id == uiState.activePdfMushafId }
       TajweedLegendSheet(
         rules = uiState.tajweedRules,
+        colorsGuideSections = uiState.colorsGuideSections,
+        colorsGuideLoading = uiState.colorsGuideLoading,
+        colorsGuideError = uiState.colorsGuideError,
+        activeMushafIsPdf = uiState.activeMushafIsPdf,
+        activePdfMushafId = uiState.activePdfMushafId,
+        activePdfRiwayaAr = activePdfEntry?.riwayaAr,
+        onRetryColorsGuide = { viewModel.retryColorsGuide() },
         onDismiss = { showTajweedLegend = false },
       )
     }
@@ -1174,7 +1182,7 @@ private fun QabasatTopBar(
           ) {
             Icon(
               imageVector = Icons.Filled.ColorLens,
-              contentDescription = "دليل ألوان التجويد",
+              contentDescription = "دليل الألوان",
               tint = MaterialTheme.colorScheme.secondary,
               modifier = Modifier.size(20.dp),
             )
