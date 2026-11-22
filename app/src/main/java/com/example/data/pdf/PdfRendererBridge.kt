@@ -124,10 +124,10 @@ class PdfRendererBridge {
         val usefulTop = UNCROPPED_ORIGIN_TOP.coerceIn(0f, ph - 30f)
         val usefulBottom = UNCROPPED_ORIGIN_BOTTOM.coerceIn(usefulTop + 30f, ph)
 
-        val usefulWidthFrac = (usefulRight - usefulLeft) / pw
-        val fullW = (targetCroppedW.toFloat() / usefulWidthFrac).roundToInt().coerceAtLeast(64)
+        val usefulWidthFrac = ((usefulRight - usefulLeft) / pw).coerceIn(0.15f, 1.0f)
+        val fullW = (targetCroppedW.toFloat() / usefulWidthFrac).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX)
         val scale = fullW.toFloat() / pw
-        val fullH = (ph * scale).roundToInt().coerceAtLeast(64)
+        val fullH = (ph * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX * 2)
 
         val cropX = (scale * usefulLeft).roundToInt().coerceIn(0, fullW - 2)
         val cropY = (scale * usefulTop).roundToInt().coerceIn(0, fullH - 2)
@@ -152,8 +152,8 @@ class PdfRendererBridge {
       if (cropLeftPt > 0f || cropRightPt > 0f) {
         val usefulW = (pw - cropLeftPt - cropRightPt).coerceAtLeast(30f)
         val scale = targetCroppedW.toFloat() / usefulW
-        val fullW = (pw * scale).roundToInt().coerceAtLeast(64)
-        val fullH = (ph * scale).roundToInt().coerceAtLeast(64)
+        val fullW = (pw * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX)
+        val fullH = (ph * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX * 2)
         val cropX = (scale * cropLeftPt).roundToInt().coerceIn(0, fullW - 2)
         val cropRightPx = (scale * (pw - cropRightPt)).roundToInt().coerceIn(cropX + 1, fullW)
         return PdfCropScalePlan(
@@ -171,12 +171,12 @@ class PdfRendererBridge {
       }
 
       val scale = targetCroppedW.toFloat() / pw
-      val fullH = (ph * scale).roundToInt().coerceAtLeast(64)
+      val fullH = (ph * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX * 2)
       return PdfCropScalePlan(
         pageWidthPt = pageWidthPt,
         pageHeightPt = pageHeightPt,
         isUncroppedA4 = false,
-        fullRenderWidthPx = targetCroppedW,
+        fullRenderWidthPx = targetCroppedW.coerceIn(64, MAX_RENDER_WIDTH_PX),
         fullRenderHeightPx = fullH,
         renderScale = scale,
         cropLeftPx = 0,
