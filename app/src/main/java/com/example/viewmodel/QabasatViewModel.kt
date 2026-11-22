@@ -1471,6 +1471,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
             pdfFile = pdfFile,
             pageNumber = page,
             onScreenWidthPx = bodyW,
+            cropLeftPt = entry.cropLeftPt,
+            cropRightPt = entry.cropRightPt,
           )
 
           if (activeRenderSpec != spec || !pageLruOrder.contains(page)) {

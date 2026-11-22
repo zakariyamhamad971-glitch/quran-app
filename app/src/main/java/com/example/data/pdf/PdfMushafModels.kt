@@ -15,6 +15,31 @@ data class PdfMushafEntry(
   val pages: Int,
   val sizeMB: Double,
   val apiRiwayaIds: List<Int>,
+  val cropLeftPt: Float = 0f,
+  val cropRightPt: Float = 0f,
+)
+
+@Immutable
+data class PdfLineStripFraction(
+  val srcTopFraction: Float,
+  val srcBottomFraction: Float,
+  val minXFraction: Float,
+  val maxXFraction: Float,
+)
+
+@Immutable
+data class PdfPageSegmentation(
+  val hasLabelBand: Boolean = false,
+  val labelCutFraction: Float = 0f,
+  val hasLegendBand: Boolean = false,
+  val legendCutFraction: Float = 1f,
+  val textMinXFraction: Float = 0f,
+  val textMaxXFraction: Float = 1f,
+  val textMinYFraction: Float = 0f,
+  val textMaxYFraction: Float = 1f,
+  val widestLineWidthFraction: Float = 1f,
+  val isFewLines: Boolean = false,
+  val lines: List<PdfLineStripFraction> = emptyList(),
 )
 
 @Immutable

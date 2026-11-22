@@ -85,6 +85,18 @@ class WordHitBoxes(
 )
 
 @Immutable
+data class PdfLineDestinationMetrics(
+  val srcLeftPx: Int,
+  val srcTopPx: Int,
+  val srcWidthPx: Int,
+  val srcHeightPx: Int,
+  val dstLeftPx: Int,
+  val dstTopPx: Int,
+  val dstWidthPx: Int,
+  val dstHeightPx: Int,
+)
+
+@Immutable
 data class PdfPageOverlayData(
   val pdfBitmap: ImageBitmap,
   val bmpWidthPx: Int,
@@ -100,6 +112,7 @@ data class PdfPageOverlayData(
   val bodyRightPx: Float,
   val bodyBottomPx: Float,
   val topSurah: SurahMeta?,
+  val segmentation: com.example.data.pdf.PdfPageSegmentation,
 )
 
 data class PdfPageLayoutMetrics(
@@ -120,6 +133,8 @@ data class PdfPageLayoutMetrics(
   val bannerWidth: Float,
   val bannerHeight: Float,
   val appliedZoomRelativeToNatural: Float,
+  val isFewLines: Boolean = false,
+  val lineLayouts: List<PdfLineDestinationMetrics> = emptyList(),
 )
 
 fun computePdfPageLayout(
@@ -129,12 +144,7 @@ fun computePdfPageLayout(
   frameBottom: Float,
   bmpWidthPx: Int,
   bmpHeightPx: Int,
-  topBandEndY: Int,
-  bottomBandStartY: Int,
-  textSrcLeft: Int,
-  textSrcTop: Int,
-  textSrcRight: Int,
-  textSrcBottom: Int,
+  segmentation: com.example.data.pdf.PdfPageSegmentation,
   hasTopSurahBanner: Boolean,
   densityPxPerDp: Float,
   surahBannerAspectRatio: Float = SurahHeaderOrnamentRenderer.HEADER_GLYPH_ASPECT_RATIO,
@@ -142,24 +152,28 @@ fun computePdfPageLayout(
   val frameW = (frameRight - frameLeft).coerceAtLeast(1f)
   val frameH = (frameBottom - frameTop).coerceAtLeast(1f)
   val safeBmpW = bmpWidthPx.coerceAtLeast(1).toFloat()
-  val safeTopEndY = topBandEndY.coerceIn(1, (bmpHeightPx - 2).coerceAtLeast(1))
-  val safeBotStartY = bottomBandStartY.coerceIn(safeTopEndY + 1, (bmpHeightPx - 1).coerceAtLeast(safeTopEndY + 1))
+  val safeBmpH = bmpHeightPx.coerceAtLeast(1).toFloat()
 
-  val topNaturalH = frameW * (safeTopEndY.toFloat() / safeBmpW)
-  val topDstH = minOf(topNaturalH, frameH * 0.16f).coerceAtLeast(1f)
-
-  val botSrcH = (bmpHeightPx - safeBotStartY).coerceAtLeast(1)
-  val botNaturalH = frameW * (botSrcH.toFloat() / safeBmpW)
-  val botDstH = minOf(botNaturalH, frameH * 0.20f).coerceAtLeast(1f)
-
+  // 1. Label band pinned at top at natural scale (fit to width)
   val topBandDstLeft = frameLeft.roundToInt()
   val topBandDstTop = frameTop.roundToInt()
   val topBandDstWidth = frameW.roundToInt().coerceAtLeast(1)
-  val topBandDstHeight = topDstH.roundToInt().coerceAtLeast(1)
+  val topBandDstHeight = if (segmentation.hasLabelBand && segmentation.labelCutFraction > 0f) {
+    val naturalLabelH = frameW * (segmentation.labelCutFraction * safeBmpH / safeBmpW)
+    minOf(naturalLabelH, frameH * 0.12f).roundToInt().coerceAtLeast(1)
+  } else {
+    0
+  }
 
+  // 2. Legend band pinned at bottom at natural scale (fit to width), complete and in one piece
   val bottomBandDstLeft = frameLeft.roundToInt()
   val bottomBandDstWidth = frameW.roundToInt().coerceAtLeast(1)
-  val bottomBandDstHeight = botDstH.roundToInt().coerceAtLeast(1)
+  val bottomBandDstHeight = if (segmentation.hasLegendBand && segmentation.legendCutFraction < 1f) {
+    val naturalLegendH = frameW * ((1f - segmentation.legendCutFraction) * safeBmpH / safeBmpW)
+    minOf(naturalLegendH, frameH * 0.18f).roundToInt().coerceAtLeast(1)
+  } else {
+    0
+  }
   val bottomBandDstTop = (frameBottom.roundToInt() - bottomBandDstHeight)
     .coerceAtLeast(topBandDstTop + topBandDstHeight)
 
@@ -167,36 +181,97 @@ fun computePdfPageLayout(
   val midBottom = bottomBandDstTop.toFloat()
   val midH = (midBottom - midTop).coerceAtLeast(1f)
 
+  // 3. Surah banner sits directly below the label band
   val bannerGapPx = 2.5f * densityPxPerDp.coerceAtLeast(0.5f)
   val bannerIdealH = frameW / surahBannerAspectRatio.coerceAtLeast(1f)
   val bannerH = if (hasTopSurahBanner) minOf(bannerIdealH, midH * 0.16f).coerceAtLeast(1f) else 0f
+  val bannerTop = if (hasTopSurahBanner) midTop + bannerGapPx else 0f
+  val bannerLeft = frameLeft
+
   val textAvailTop = if (hasTopSurahBanner) {
-    (midTop + bannerH + bannerGapPx * 2f).coerceAtMost(midBottom - 1f)
+    (bannerTop + bannerH + bannerGapPx).coerceAtMost(midBottom - 1f)
   } else {
     midTop
   }
   val textAvailH = (midBottom - textAvailTop).coerceAtLeast(1f)
 
-  val srcW = (textSrcRight - textSrcLeft).coerceAtLeast(1).toFloat()
-  val srcH = (textSrcBottom - textSrcTop).coerceAtLeast(1).toFloat()
-  val midBmpH = (safeBotStartY - safeTopEndY).coerceAtLeast(1).toFloat()
+  // 4. Text scaling: widest line fills ~97% of frame width (zoom capped at 2.4x, >= 1.0x)
+  val widestLineW = (segmentation.widestLineWidthFraction * safeBmpW).coerceAtLeast(1f)
+  val unzoomedScale = frameW / safeBmpW
+  val fill97Scale = (0.97f * frameW) / widestLineW
+  val targetScale = fill97Scale.coerceIn(unzoomedScale, unzoomedScale * 2.4f)
 
-  val unzoomedScale = minOf(frameW / safeBmpW, textAvailH / midBmpH).coerceAtLeast(0.0001f)
-  val fitWidthScale = frameW / srcW
-  val fitHeightScale = textAvailH / srcH
-  val desiredScale = minOf(fitWidthScale, fitHeightScale)
-  val finalScale = desiredScale.coerceIn(unzoomedScale, unzoomedScale * 2.2f)
+  val isFewLines = segmentation.isFewLines && segmentation.lines.isNotEmpty()
 
-  val textDstW = (srcW * finalScale).roundToInt().coerceIn(1, frameW.roundToInt().coerceAtLeast(1))
-  val textDstH = (srcH * finalScale).roundToInt().coerceIn(1, textAvailH.roundToInt().coerceAtLeast(1))
+  if (isFewLines) {
+    val lineCount = segmentation.lines.size
+    val slotH = textAvailH / lineCount.toFloat()
+    val lineMetrics = segmentation.lines.mapIndexed { idx, lineStrip ->
+      val srcTop = (lineStrip.srcTopFraction * safeBmpH).roundToInt().coerceIn(0, bmpHeightPx - 1)
+      val srcBot = (lineStrip.srcBottomFraction * safeBmpH).roundToInt().coerceIn(srcTop + 1, bmpHeightPx)
+      val srcH = (srcBot - srcTop).coerceAtLeast(1)
+
+      val srcLeft = (segmentation.textMinXFraction * safeBmpW).roundToInt().coerceIn(0, bmpWidthPx - 1)
+      val srcRight = (segmentation.textMaxXFraction * safeBmpW).roundToInt().coerceIn(srcLeft + 1, bmpWidthPx)
+      val srcW = (srcRight - srcLeft).coerceAtLeast(1)
+
+      val lineScale = minOf(targetScale, (slotH * 0.94f) / srcH.toFloat()).coerceAtLeast(0.001f)
+      val dstW = (srcW * lineScale).roundToInt().coerceIn(1, frameW.roundToInt())
+      val dstH = (srcH * lineScale).roundToInt().coerceIn(1, slotH.roundToInt().coerceAtLeast(1))
+      val dstLeft = (frameLeft + (frameW - dstW) * 0.5f).roundToInt()
+      val slotTop = textAvailTop + idx * slotH
+      val dstTop = (slotTop + (slotH - dstH) * 0.5f).roundToInt()
+
+      PdfLineDestinationMetrics(
+        srcLeftPx = srcLeft,
+        srcTopPx = srcTop,
+        srcWidthPx = srcW,
+        srcHeightPx = srcH,
+        dstLeftPx = dstLeft,
+        dstTopPx = dstTop,
+        dstWidthPx = dstW,
+        dstHeightPx = dstH,
+      )
+    }
+
+    return PdfPageLayoutMetrics(
+      topBandDstLeft = topBandDstLeft,
+      topBandDstTop = topBandDstTop,
+      topBandDstWidth = topBandDstWidth,
+      topBandDstHeight = topBandDstHeight,
+      bottomBandDstLeft = bottomBandDstLeft,
+      bottomBandDstTop = bottomBandDstTop,
+      bottomBandDstWidth = bottomBandDstWidth,
+      bottomBandDstHeight = bottomBandDstHeight,
+      textDstLeft = frameLeft.roundToInt(),
+      textDstTop = textAvailTop.roundToInt(),
+      textDstWidth = frameW.roundToInt(),
+      textDstHeight = textAvailH.roundToInt(),
+      bannerLeft = bannerLeft,
+      bannerTop = bannerTop,
+      bannerWidth = if (hasTopSurahBanner) frameW else 0f,
+      bannerHeight = bannerH,
+      appliedZoomRelativeToNatural = targetScale / unzoomedScale,
+      isFewLines = true,
+      lineLayouts = lineMetrics,
+    )
+  }
+
+  // Normal full page: single text block scaled to fill frame width and height
+  val srcTop = (segmentation.labelCutFraction * safeBmpH).roundToInt().coerceIn(0, bmpHeightPx - 1)
+  val srcBot = (segmentation.legendCutFraction * safeBmpH).roundToInt().coerceIn(srcTop + 1, bmpHeightPx)
+  val srcH = (srcBot - srcTop).coerceAtLeast(1)
+
+  val srcLeft = (segmentation.textMinXFraction * safeBmpW).roundToInt().coerceIn(0, bmpWidthPx - 1)
+  val srcRight = (segmentation.textMaxXFraction * safeBmpW).roundToInt().coerceIn(srcLeft + 1, bmpWidthPx)
+  val srcW = (srcRight - srcLeft).coerceAtLeast(1)
+
+  val maxScaleH = textAvailH / srcH.toFloat()
+  val finalScale = minOf(targetScale, maxScaleH).coerceAtLeast(0.001f)
+  val textDstW = (srcW * finalScale).roundToInt().coerceIn(1, frameW.roundToInt())
+  val textDstH = (srcH * finalScale).roundToInt().coerceIn(1, textAvailH.roundToInt())
   val textDstLeft = (frameLeft + (frameW - textDstW) * 0.5f).roundToInt()
   val textDstTop = (textAvailTop + (textAvailH - textDstH) * 0.5f).roundToInt()
-
-  val bannerTop = if (hasTopSurahBanner) {
-    (textDstTop.toFloat() - bannerH - bannerGapPx).coerceAtLeast(midTop + bannerGapPx)
-  } else {
-    0f
-  }
 
   return PdfPageLayoutMetrics(
     topBandDstLeft = topBandDstLeft,
@@ -211,11 +286,13 @@ fun computePdfPageLayout(
     textDstTop = textDstTop,
     textDstWidth = textDstW,
     textDstHeight = textDstH,
-    bannerLeft = frameLeft,
+    bannerLeft = bannerLeft,
     bannerTop = bannerTop,
     bannerWidth = if (hasTopSurahBanner) frameW else 0f,
     bannerHeight = bannerH,
     appliedZoomRelativeToNatural = finalScale / unzoomedScale,
+    isFewLines = false,
+    lineLayouts = emptyList(),
   )
 }
 
@@ -848,6 +925,7 @@ class MushafPageBitmapRenderer(
         bodyRightPx = bodyRightPx,
         bodyBottomPx = bodyBottomPx,
         topSurah = topSurah,
+        segmentation = renderedPdf.segmentation,
       ),
     )
   }

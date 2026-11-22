@@ -140,6 +140,7 @@ fun SettingsSheet(
   audioTransferStates: Map<String, SurahTransferState>,
   onRetryLoadDownloadableReciters: () -> Unit,
   onOpenReciterDownloads: (VerifiedReciter) -> Unit,
+  onOpenReciterManager: () -> Unit = {},
   onOpenMushafsManager: () -> Unit,
   onToggleDarkMode: () -> Unit,
   onSelectBackgroundTheme: (BackgroundTheme) -> Unit,
@@ -421,141 +422,68 @@ fun SettingsSheet(
         }
       }
 
-      // Reciter audio downloads section header + search (TASK 3c)
-      item(key = "reciter_downloads_header") {
+      // Reciter audio management entry (Task B)
+      item(key = "reciter_management_entry") {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
           HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(
-                imageVector = Icons.Filled.RecordVoiceOver,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp),
-              )
-              Spacer(Modifier.width(8.dp))
-              Text(
-                text = "تحميل القراء",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary,
-              )
-            }
-            if (downloadableReciters.isNotEmpty()) {
-              Text(
-                text = "${toArabicIndic(downloadableReciters.size)} قارئ",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            }
-          }
-
-          OutlinedTextField(
-            value = reciterSearchQuery,
-            onValueChange = { reciterSearchQuery = it },
-            placeholder = { Text("ابحث عن قارئ بالاسم أو الرواية...") },
-            leadingIcon = {
-              Icon(Icons.Filled.Search, contentDescription = null)
-            },
-            trailingIcon = {
-              if (reciterSearchQuery.isNotEmpty()) {
-                IconButton(onClick = { reciterSearchQuery = "" }) {
-                  Icon(Icons.Filled.Close, contentDescription = "مسح البحث")
-                }
-              }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier
-              .fillMaxWidth()
-              .testTag("settings_reciters_search_input"),
-          )
-        }
-      }
-
-      if (downloadableRecitersLoading && downloadableReciters.isEmpty()) {
-        item(key = "reciter_downloads_loading") {
-          Box(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(vertical = 18.dp),
-            contentAlignment = Alignment.Center,
-          ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-              Spacer(Modifier.width(10.dp))
-              Text(
-                text = "جاري تحميل قائمة القراء...",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            }
-          }
-        }
-      } else if (downloadableRecitersError != null && downloadableReciters.isEmpty()) {
-        item(key = "reciter_downloads_error") {
           Surface(
+            onClick = {
+              onDismiss()
+              onOpenReciterManager()
+            },
             shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
-            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("settings_open_reciters_manager"),
           ) {
             Row(
               modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-              verticalAlignment = Alignment.CenterVertically,
+                .padding(horizontal = 14.dp, vertical = 14.dp),
               horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
             ) {
-              Text(
-                text = downloadableRecitersError,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
+              Row(
                 modifier = Modifier.weight(1f),
-              )
-              TextButton(onClick = onRetryLoadDownloadableReciters) {
-                Text("إعادة المحاولة")
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(40.dp)
+                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.RecordVoiceOver,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(22.dp),
+                  )
+                }
+                Spacer(Modifier.width(14.dp))
+                Column {
+                  Text(
+                    text = "إدارة القراء",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                  )
+                  Spacer(Modifier.height(2.dp))
+                  Text(
+                    text = "تحميل وإدارة تلاوات القراء",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
               }
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
             }
           }
-        }
-      } else if (filteredReciters.isEmpty()) {
-        item(key = "reciter_downloads_empty") {
-          Text(
-            text = "لا يوجد قارئ مطابق لبحثك",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(vertical = 12.dp),
-            textAlign = TextAlign.Center,
-          )
-        }
-      } else {
-        items(
-          items = filteredReciters,
-          key = { "dl_reciter_${it.key}" },
-          contentType = { "dl_reciter_row" },
-        ) { reciter ->
-          val summary = reciterSummaries[reciter.key]
-          val totalAvailable = reciter.availableSurahs.size
-          val downloadedCount = summary?.downloadedCount ?: 0
-          val totalBytes = summary?.totalBytes ?: 0L
-          val isDownloading = activeTransferReciterKeys.contains(reciter.key)
-
-          SettingsReciterDownloadRow(
-            reciter = reciter,
-            totalAvailable = totalAvailable,
-            downloadedCount = downloadedCount,
-            totalBytes = totalBytes,
-            isDownloading = isDownloading,
-            onClick = {
-              onDismiss()
-              onOpenReciterDownloads(reciter)
-            },
-          )
         }
       }
 
@@ -834,80 +762,6 @@ private fun TajweedMushafSettingsCard(
   }
 }
 
-@Composable
-private fun SettingsReciterDownloadRow(
-  reciter: VerifiedReciter,
-  totalAvailable: Int,
-  downloadedCount: Int,
-  totalBytes: Long,
-  isDownloading: Boolean,
-  onClick: () -> Unit,
-) {
-  Surface(
-    shape = RoundedCornerShape(12.dp),
-    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
-    modifier = Modifier
-      .fillMaxWidth()
-      .clip(RoundedCornerShape(12.dp))
-      .clickable(onClick = onClick)
-      .testTag("settings_reciter_download_row_${reciter.key}"),
-  ) {
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .minimumInteractiveComponentSize()
-        .padding(horizontal = 12.dp, vertical = 10.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-      Column(modifier = Modifier.weight(1f)) {
-        Text(
-          text = reciter.displayName,
-          style = MaterialTheme.typography.titleSmall.copy(fontFamily = AmiriFontFamily),
-          fontWeight = FontWeight.Bold,
-          color = MaterialTheme.colorScheme.onSurface,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-        val riwaya = reciter.riwayaName.ifBlank { "حفص عن عاصم" }
-        val sizePart = if (totalBytes > 0L) " • ${AudioCacheManager.formatBytesArabic(totalBytes)}" else ""
-        Text(
-          text = "$riwaya • ${toArabicIndic(totalAvailable)} سورة للتحميل • ${toArabicIndic(downloadedCount)} من ${toArabicIndic(totalAvailable)} محملة$sizePart",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          maxLines = 2,
-          overflow = TextOverflow.Ellipsis,
-        )
-      }
-
-      Spacer(Modifier.width(8.dp))
-
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        if (isDownloading) {
-          CircularProgressIndicator(
-            strokeWidth = 2.dp,
-            modifier = Modifier.size(16.dp),
-          )
-          Spacer(Modifier.width(6.dp))
-        } else if (downloadedCount > 0) {
-          Icon(
-            imageVector = Icons.Filled.Download,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(16.dp),
-          )
-          Spacer(Modifier.width(4.dp))
-        }
-        Icon(
-          imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-          contentDescription = "فتح تحميلات القارئ",
-          tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-      }
-    }
-  }
-}
 
 @Composable
 private fun BackgroundColorOption(

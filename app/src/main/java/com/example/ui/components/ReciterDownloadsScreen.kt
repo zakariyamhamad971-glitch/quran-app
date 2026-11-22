@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,23 +33,29 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -61,14 +68,18 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.data.audio.AudioBatchUiSummary
 import com.example.data.audio.AudioCacheManager
+import com.example.data.audio.AudioRepository
 import com.example.data.audio.ReciterStorageSummary
 import com.example.data.audio.SurahDownloadStatus
 import com.example.data.audio.SurahTransferState
@@ -82,9 +93,7 @@ fun rememberNotificationPermissionRequester(): () -> Unit {
   var askedOnce by rememberSaveable { mutableStateOf(false) }
   val launcher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestPermission(),
-  ) { _ ->
-    // Downloads run in foreground service / background regardless of grant or denial
-  }
+  ) { _ -> }
 
   return remember(context, launcher) {
     {
@@ -118,9 +127,574 @@ private fun padSurah(surahId: Int): String = when {
   else -> surahId.toString()
 }
 
+data class RiwayaUiGroup(
+  val id: String,
+  val displayName: String,
+  val matchKeywords: List<String>,
+)
+
+// The 20 Riwayat: Hafs first, then the 19 riwayat from "المصاحف" in exact order
+val CANONICAL_RIWAYAT_GROUPS = listOf(
+  RiwayaUiGroup("hafs", "حفص عن عاصم", listOf("حفص")),
+  RiwayaUiGroup("qaloon", "قالون عن نافع", listOf("قالون")),
+  RiwayaUiGroup("warsh", "ورش عن نافع", listOf("ورش")),
+  RiwayaUiGroup("al_bazzi", "البزي عن ابن كثير", listOf("البزي", "بزي")),
+  RiwayaUiGroup("qunbul", "قنبل عن ابن كثير", listOf("قنبل")),
+  RiwayaUiGroup("ad_duri_abu_amr", "الدوري عن أبي عمرو", listOf("الدوري عن أبي عمرو", "الدوري عن ابي عمرو")),
+  RiwayaUiGroup("as_soosi", "السوسي عن أبي عمرو", listOf("السوسي")),
+  RiwayaUiGroup("hisham", "هشام عن ابن عامر", listOf("هشام")),
+  RiwayaUiGroup("ibn_dhakwan", "ابن ذكوان عن ابن عامر", listOf("ابن ذكوان", "ذكوان")),
+  RiwayaUiGroup("shubah", "شعبة عن عاصم", listOf("شعبة")),
+  RiwayaUiGroup("khalaf_hamzah", "خلف عن حمزة", listOf("خلف عن حمزة")),
+  RiwayaUiGroup("khallad", "خلاد عن حمزة", listOf("خلاد")),
+  RiwayaUiGroup("abu_al_harith", "أبو الحارث عن الكسائي", listOf("أبو الحارث", "ابو الحارث")),
+  RiwayaUiGroup("ad_duri_al_kisai", "الدوري عن الكسائي", listOf("الدوري عن الكسائي")),
+  RiwayaUiGroup("ibn_wardan", "ابن وردان عن أبي جعفر", listOf("ابن وردان", "وردان")),
+  RiwayaUiGroup("ibn_jammaz", "ابن جماز عن أبي جعفر", listOf("ابن جماز", "جماز")),
+  RiwayaUiGroup("ruways", "رويس عن يعقوب الحضرمي", listOf("رويس")),
+  RiwayaUiGroup("rawh", "روح عن يعقوب الحضرمي", listOf("روح")),
+  RiwayaUiGroup("idris", "إدريس الحداد عن خلف العاشر", listOf("إدريس", "ادريس")),
+  RiwayaUiGroup("ishaq", "إسحاق الوراق عن خلف العاشر", listOf("إسحاق", "اسحاق")),
+)
+
+fun matchReciterToRiwayaGroup(reciter: VerifiedReciter): String {
+  val name = reciter.riwayaName.trim()
+  if (name.isEmpty() || reciter.riwayaId == 1 || name.contains("حفص")) {
+    return "hafs"
+  }
+  if (name.contains("الدوري")) {
+    if (name.contains("عمرو") || name.contains("عمر")) return "ad_duri_abu_amr"
+    if (name.contains("كسائي") || name.contains("الكسائي")) return "ad_duri_al_kisai"
+  }
+  for (group in CANONICAL_RIWAYAT_GROUPS) {
+    if (group.id == "hafs") continue
+    for (kw in group.matchKeywords) {
+      if (name.contains(kw)) return group.id
+    }
+  }
+  val mName = reciter.moshafName.orEmpty()
+  if (mName.contains("الدوري")) {
+    if (mName.contains("عمرو") || mName.contains("عمر")) return "ad_duri_abu_amr"
+    if (mName.contains("كسائي") || mName.contains("الكسائي")) return "ad_duri_al_kisai"
+  }
+  for (group in CANONICAL_RIWAYAT_GROUPS) {
+    if (group.id == "hafs") continue
+    for (kw in group.matchKeywords) {
+      if (mName.contains(kw)) return group.id
+    }
+  }
+  return "other"
+}
+
+sealed interface ReciterNavDestination {
+  data object PageARiwayatList : ReciterNavDestination
+  data class PageBRiwayaReciters(val riwayaId: String, val riwayaName: String) : ReciterNavDestination
+  data class PageCReciterSurahs(val riwayaId: String, val riwayaName: String, val reciterKey: String) : ReciterNavDestination
+}
+
+/**
+ * Three-screen full-screen reciter manager:
+ * Page A: 20 Riwayat list (Hafs first, 19 PDF mushaf riwayat in exact order, then others).
+ * Page B: Searchable, alphabetically sorted reciters of chosen riwaya.
+ * Page C: 114 surahs download list for chosen reciter.
+ */
 @Composable
-fun ReciterDownloadsScreen(
+fun FullReciterManagerScreen(
+  allReciters: List<VerifiedReciter>,
+  surahs: List<SurahMeta>,
+  downloadedKeys: Set<String>,
+  transferStates: Map<String, SurahTransferState>,
+  reciterSummaries: Map<String, ReciterStorageSummary>,
+  batchSummary: AudioBatchUiSummary,
+  onDownloadSurah: (VerifiedReciter, Int) -> Unit,
+  onCancelSurah: (String, Int) -> Unit,
+  onDeleteSurah: (VerifiedReciter, Int) -> Unit,
+  onDownloadAll: (VerifiedReciter) -> Unit,
+  onCancelAllForReciter: (String) -> Unit,
+  onDeleteAllForReciter: (VerifiedReciter) -> Unit,
+  onDismissLowStorageMessage: () -> Unit,
+  onClose: () -> Unit,
+  initialReciterKey: String? = null,
+  modifier: Modifier = Modifier,
+) {
+  val initialDest = remember(initialReciterKey, allReciters) {
+    if (!initialReciterKey.isNullOrBlank()) {
+      val r = allReciters.firstOrNull { it.key == initialReciterKey }
+      if (r != null) {
+        val rId = matchReciterToRiwayaGroup(r)
+        val rName = CANONICAL_RIWAYAT_GROUPS.firstOrNull { it.id == rId }?.displayName
+          ?: if (rId == "other") "تلاوات أخرى" else r.riwayaName.ifBlank { "حفص عن عاصم" }
+        ReciterNavDestination.PageCReciterSurahs(
+          riwayaId = rId,
+          riwayaName = rName,
+          reciterKey = r.key,
+        )
+      } else {
+        ReciterNavDestination.PageARiwayatList
+      }
+    } else {
+      ReciterNavDestination.PageARiwayatList
+    }
+  }
+
+  var currentDest by remember { mutableStateOf<ReciterNavDestination>(initialDest) }
+
+  // Partition reciters by riwaya
+  val recitersByGroup = remember(allReciters) {
+    val map = HashMap<String, MutableList<VerifiedReciter>>()
+    for (r in allReciters) {
+      val gid = matchReciterToRiwayaGroup(r)
+      map.getOrPut(gid) { ArrayList() }.add(r)
+    }
+    map
+  }
+
+  val displayGroups = remember(recitersByGroup) {
+    val list = ArrayList(CANONICAL_RIWAYAT_GROUPS)
+    val otherReciters = recitersByGroup["other"].orEmpty()
+    if (otherReciters.isNotEmpty()) {
+      list += RiwayaUiGroup("other", "تلاوات أخرى", emptyList())
+    }
+    list
+  }
+
+  when (val dest = currentDest) {
+    is ReciterNavDestination.PageARiwayatList -> {
+      PageARiwayatListScreen(
+        groups = displayGroups,
+        recitersByGroup = recitersByGroup,
+        reciterSummaries = reciterSummaries,
+        onSelectRiwaya = { group ->
+          currentDest = ReciterNavDestination.PageBRiwayaReciters(
+            riwayaId = group.id,
+            riwayaName = group.displayName,
+          )
+        },
+        onClose = onClose,
+        modifier = modifier,
+      )
+    }
+
+    is ReciterNavDestination.PageBRiwayaReciters -> {
+      val reciters = remember(dest.riwayaId, recitersByGroup) {
+        recitersByGroup[dest.riwayaId].orEmpty()
+      }
+      PageBRiwayaRecitersScreen(
+        riwayaName = dest.riwayaName,
+        reciters = reciters,
+        reciterSummaries = reciterSummaries,
+        onSelectReciter = { reciter ->
+          currentDest = ReciterNavDestination.PageCReciterSurahs(
+            riwayaId = dest.riwayaId,
+            riwayaName = dest.riwayaName,
+            reciterKey = reciter.key,
+          )
+        },
+        onBack = { currentDest = ReciterNavDestination.PageARiwayatList },
+        modifier = modifier,
+      )
+    }
+
+    is ReciterNavDestination.PageCReciterSurahs -> {
+      val reciter = remember(dest.reciterKey, allReciters) {
+        allReciters.firstOrNull { it.key == dest.reciterKey }
+      }
+      if (reciter == null) {
+        currentDest = ReciterNavDestination.PageBRiwayaReciters(dest.riwayaId, dest.riwayaName)
+      } else {
+        PageCReciterSurahsScreen(
+          reciter = reciter,
+          riwayaName = dest.riwayaName,
+          surahs = surahs,
+          downloadedKeys = downloadedKeys,
+          transferStates = transferStates,
+          reciterSummary = reciterSummaries[reciter.key] ?: ReciterStorageSummary(),
+          batchSummary = batchSummary,
+          onDownloadSurah = { sId -> onDownloadSurah(reciter, sId) },
+          onCancelSurah = { sId -> onCancelSurah(reciter.key, sId) },
+          onDeleteSurah = { sId -> onDeleteSurah(reciter, sId) },
+          onDownloadAll = { onDownloadAll(reciter) },
+          onCancelAllForReciter = { onCancelAllForReciter(reciter.key) },
+          onDeleteAllForReciter = { onDeleteAllForReciter(reciter) },
+          onDismissLowStorageMessage = onDismissLowStorageMessage,
+          onBack = {
+            currentDest = ReciterNavDestination.PageBRiwayaReciters(dest.riwayaId, dest.riwayaName)
+          },
+          modifier = modifier,
+        )
+      }
+    }
+  }
+}
+
+// -------------------------------------------------------------
+// PAGE A: 20 Riwayat List Screen
+// -------------------------------------------------------------
+@Composable
+private fun PageARiwayatListScreen(
+  groups: List<RiwayaUiGroup>,
+  recitersByGroup: Map<String, List<VerifiedReciter>>,
+  reciterSummaries: Map<String, ReciterStorageSummary>,
+  onSelectRiwaya: (RiwayaUiGroup) -> Unit,
+  onClose: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  BackHandler(onBack = onClose)
+
+  Surface(
+    modifier = modifier
+      .fillMaxSize()
+      .testTag("reciters_page_a_riwayat_screen"),
+    color = MaterialTheme.colorScheme.background,
+  ) {
+    Box(
+      modifier = Modifier.fillMaxSize(),
+      contentAlignment = Alignment.TopCenter,
+    ) {
+      Column(
+        modifier = Modifier
+          .widthIn(max = 860.dp)
+          .fillMaxSize(),
+      ) {
+        // Top Bar
+        Surface(
+          color = MaterialTheme.colorScheme.surface,
+          tonalElevation = 2.dp,
+          modifier = Modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.statusBars),
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            IconButton(
+              onClick = onClose,
+              modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .testTag("reciters_page_a_back_button"),
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "رجوع",
+                tint = MaterialTheme.colorScheme.primary,
+              )
+            }
+            Spacer(Modifier.width(8.dp))
+            Column {
+              Text(
+                text = "إدارة القراء",
+                style = MaterialTheme.typography.titleLarge.copy(fontFamily = AmiriFontFamily),
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+              )
+              Text(
+                text = "اختر الرواية لاستعراض القراء وتحميل التلاوات",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+        LazyColumn(
+          modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .testTag("reciters_riwayat_list"),
+          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          items(
+            items = groups,
+            key = { "riwaya_group_${it.id}" },
+          ) { group ->
+            val reciters = recitersByGroup[group.id].orEmpty()
+            val hasReciters = reciters.isNotEmpty()
+
+            val downloadedSurahs = if (hasReciters) {
+              reciters.sumOf { reciterSummaries[it.key]?.downloadedCount ?: 0 }
+            } else 0
+            val totalBytes = if (hasReciters) {
+              reciters.sumOf { reciterSummaries[it.key]?.totalBytes ?: 0L }
+            } else 0L
+
+            val subtitleText = when {
+              !hasReciters -> "لا يوجد قارئ متاح لهذه الرواية حاليًا"
+              downloadedSurahs > 0 ->
+                "${toArabicDigits(reciters.size)} قارئ • ${toArabicDigits(downloadedSurahs)} سورة محملة • ${AudioCacheManager.formatBytesArabic(totalBytes)}"
+              else -> "${toArabicDigits(reciters.size)} قارئ"
+            }
+
+            Surface(
+              onClick = { if (hasReciters) onSelectRiwaya(group) },
+              enabled = hasReciters,
+              shape = RoundedCornerShape(12.dp),
+              color = if (hasReciters) {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+              } else {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
+              },
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("riwaya_row_${group.id}"),
+            ) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 14.dp, vertical = 13.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Column(
+                  modifier = Modifier
+                    .weight(1f)
+                    .alpha(if (hasReciters) 1f else 0.65f),
+                ) {
+                  Text(
+                    text = group.displayName,
+                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = AmiriFontFamily),
+                    fontWeight = FontWeight.Bold,
+                    color = if (hasReciters) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                  Spacer(Modifier.height(3.dp))
+                  Text(
+                    text = subtitleText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (hasReciters) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.outline,
+                  )
+                }
+
+                if (hasReciters) {
+                  Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// -------------------------------------------------------------
+// PAGE B: Searchable Reciters List for Chosen Riwaya
+// -------------------------------------------------------------
+@Composable
+private fun PageBRiwayaRecitersScreen(
+  riwayaName: String,
+  reciters: List<VerifiedReciter>,
+  reciterSummaries: Map<String, ReciterStorageSummary>,
+  onSelectReciter: (VerifiedReciter) -> Unit,
+  onBack: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  BackHandler(onBack = onBack)
+  var searchQuery by rememberSaveable { mutableStateOf("") }
+
+  val sortedReciters = remember(reciters) {
+    reciters.sortedBy { AudioRepository.normalizeArabicForSearch(it.displayName) }
+  }
+
+  val filteredReciters = remember(sortedReciters, searchQuery) {
+    val q = AudioRepository.normalizeArabicForSearch(searchQuery)
+    if (q.isEmpty()) {
+      sortedReciters
+    } else {
+      sortedReciters.filter { r ->
+        AudioRepository.normalizeArabicForSearch(r.displayName).contains(q) ||
+          AudioRepository.normalizeArabicForSearch(r.requestedName).contains(q)
+      }
+    }
+  }
+
+  Surface(
+    modifier = modifier
+      .fillMaxSize()
+      .testTag("reciters_page_b_screen"),
+    color = MaterialTheme.colorScheme.background,
+  ) {
+    Box(
+      modifier = Modifier.fillMaxSize(),
+      contentAlignment = Alignment.TopCenter,
+    ) {
+      Column(
+        modifier = Modifier
+          .widthIn(max = 860.dp)
+          .fillMaxSize(),
+      ) {
+        // Top Bar
+        Surface(
+          color = MaterialTheme.colorScheme.surface,
+          tonalElevation = 2.dp,
+          modifier = Modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.statusBars),
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                  .minimumInteractiveComponentSize()
+                  .testTag("reciters_page_b_back_button"),
+              ) {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                  contentDescription = "رجوع",
+                  tint = MaterialTheme.colorScheme.primary,
+                )
+              }
+              Spacer(Modifier.width(8.dp))
+              Column {
+                Text(
+                  text = riwayaName,
+                  style = MaterialTheme.typography.titleLarge.copy(fontFamily = AmiriFontFamily),
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                  text = "${toArabicDigits(reciters.size)} قارئ متوفر",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+            }
+
+            // Search box
+            OutlinedTextField(
+              value = searchQuery,
+              onValueChange = { searchQuery = it },
+              placeholder = { Text("ابحث عن قارئ بالاسم...") },
+              leadingIcon = {
+                Icon(Icons.Filled.Search, contentDescription = null)
+              },
+              trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                  IconButton(onClick = { searchQuery = "" }) {
+                    Icon(Icons.Filled.Close, contentDescription = "مسح البحث")
+                  }
+                }
+              },
+              singleLine = true,
+              shape = RoundedCornerShape(12.dp),
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("reciters_page_b_search_input"),
+            )
+          }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+        if (filteredReciters.isEmpty()) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+              .padding(24.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(
+              text = if (searchQuery.isNotBlank()) "لا يوجد قارئ مطابق لبحثك" else "لا يوجد قراء متوفرين",
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              textAlign = TextAlign.Center,
+            )
+          }
+        } else {
+          LazyColumn(
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+              .windowInsetsPadding(WindowInsets.navigationBars)
+              .testTag("reciters_page_b_list"),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            items(
+              items = filteredReciters,
+              key = { "reciter_item_${it.key}" },
+            ) { reciter ->
+              val summary = reciterSummaries[reciter.key]
+              val downloadedCount = summary?.downloadedCount ?: 0
+              val totalBytes = summary?.totalBytes ?: 0L
+
+              val subtitle = if (downloadedCount == 0) {
+                "لم يتم تحميل سور بعد"
+              } else {
+                "${toArabicDigits(downloadedCount)} من ${toArabicDigits(reciter.availableSurahs.size)} محملة • ${AudioCacheManager.formatBytesArabic(totalBytes)}"
+              }
+
+              Surface(
+                onClick = { onSelectReciter(reciter) },
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("reciter_row_${reciter.key}"),
+              ) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = reciter.displayName,
+                      style = MaterialTheme.typography.titleMedium.copy(fontFamily = AmiriFontFamily),
+                      fontWeight = FontWeight.Bold,
+                      color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                      text = subtitle,
+                      style = MaterialTheme.typography.bodySmall,
+                      color = if (downloadedCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                  }
+
+                  Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// -------------------------------------------------------------
+// PAGE C: 114 Surahs Download List for Chosen Reciter
+// -------------------------------------------------------------
+@Composable
+private fun PageCReciterSurahsScreen(
   reciter: VerifiedReciter,
+  riwayaName: String,
   surahs: List<SurahMeta>,
   downloadedKeys: Set<String>,
   transferStates: Map<String, SurahTransferState>,
@@ -133,13 +707,14 @@ fun ReciterDownloadsScreen(
   onCancelAllForReciter: () -> Unit,
   onDeleteAllForReciter: () -> Unit,
   onDismissLowStorageMessage: () -> Unit,
-  onClose: () -> Unit,
+  onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  BackHandler(onBack = onClose)
+  BackHandler(onBack = onBack)
 
   val requestNotifPermissionIfNeeded = rememberNotificationPermissionRequester()
   var showDeleteAllConfirm by remember { mutableStateOf(false) }
+  var showOverflowMenu by remember { mutableStateOf(false) }
   val listState = rememberLazyListState()
 
   val orderedSurahs = remember(surahs) {
@@ -183,7 +758,7 @@ fun ReciterDownloadsScreen(
   Surface(
     modifier = modifier
       .fillMaxSize()
-      .testTag("reciter_downloads_screen"),
+      .testTag("reciters_page_c_screen"),
     color = MaterialTheme.colorScheme.background,
   ) {
     Box(
@@ -214,10 +789,10 @@ fun ReciterDownloadsScreen(
               verticalAlignment = Alignment.CenterVertically,
             ) {
               IconButton(
-                onClick = onClose,
+                onClick = onBack,
                 modifier = Modifier
                   .minimumInteractiveComponentSize()
-                  .testTag("reciter_downloads_back_button"),
+                  .testTag("reciters_page_c_back_button"),
               ) {
                 Icon(
                   imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -235,79 +810,97 @@ fun ReciterDownloadsScreen(
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
                 )
-                val riwayaLabel = reciter.riwayaName.ifBlank { "حفص عن عاصم" }
                 val sizeLabel = AudioCacheManager.formatBytesArabic(reciterSummary.totalBytes)
                 Text(
-                  text = "$riwayaLabel • ${toArabicDigits(downloadedCount)} من ${toArabicDigits(availableCount)} محملة • $sizeLabel",
+                  text = "$riwayaName • ${toArabicDigits(downloadedCount)} من ${toArabicDigits(availableCount)} محملة • $sizeLabel",
                   style = MaterialTheme.typography.bodySmall,
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
                 )
               }
+
+              // Overflow menu with Delete All
+              Box {
+                IconButton(
+                  onClick = { showOverflowMenu = true },
+                  modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("reciter_surahs_overflow_menu_button"),
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "المزيد من الخيارات",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+
+                DropdownMenu(
+                  expanded = showOverflowMenu,
+                  onDismissRequest = { showOverflowMenu = false },
+                ) {
+                  DropdownMenuItem(
+                    text = {
+                      val totalSizeStr = AudioCacheManager.formatBytesArabic(reciterSummary.totalBytes)
+                      Text("حذف الكل ($totalSizeStr)", color = MaterialTheme.colorScheme.error)
+                    },
+                    leadingIcon = {
+                      Icon(
+                        Icons.Filled.DeleteOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                      )
+                    },
+                    enabled = downloadedCount > 0 || hasActiveOrQueued,
+                    onClick = {
+                      showOverflowMenu = false
+                      showDeleteAllConfirm = true
+                    },
+                  )
+                }
+              }
             }
 
-            // Action row beside reciter name: تحميل الكل / حذف الكل (+ إلغاء التحميل when active)
+            // Top action button row: "تحميل الكل" or "إيقاف"
             Row(
               modifier = Modifier.fillMaxWidth(),
               horizontalArrangement = Arrangement.spacedBy(8.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
               if (hasActiveOrQueued) {
-                OutlinedButton(
+                Button(
                   onClick = onCancelAllForReciter,
                   shape = RoundedCornerShape(10.dp),
+                  colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                  ),
                   modifier = Modifier
-                    .weight(1f)
+                    .fillMaxWidth()
                     .minimumInteractiveComponentSize()
-                    .testTag("reciter_cancel_all_button"),
+                    .testTag("reciter_stop_all_button"),
                 ) {
-                  Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(16.dp))
-                  Spacer(Modifier.width(6.dp))
-                  Text("إلغاء التحميل", maxLines = 1)
+                  Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                  Spacer(Modifier.width(8.dp))
+                  Text("إيقاف التحميل", fontWeight = FontWeight.Bold)
                 }
-              }
-
-              Button(
-                onClick = {
-                  requestNotifPermissionIfNeeded()
-                  onDownloadAll()
-                },
-                enabled = missingAvailableCount > 0,
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier
-                  .weight(1f)
-                  .minimumInteractiveComponentSize()
-                  .testTag("reciter_download_all_button"),
-              ) {
-                Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("تحميل الكل", maxLines = 1)
-              }
-
-              OutlinedButton(
-                onClick = { showDeleteAllConfirm = true },
-                enabled = downloadedCount > 0 || hasActiveOrQueued,
-                colors = ButtonDefaults.outlinedButtonColors(
-                  contentColor = MaterialTheme.colorScheme.error,
-                ),
-                border = BorderStroke(
-                  1.dp,
-                  if (downloadedCount > 0 || hasActiveOrQueued) {
-                    MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
-                  } else {
-                    MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+              } else {
+                Button(
+                  onClick = {
+                    requestNotifPermissionIfNeeded()
+                    onDownloadAll()
                   },
-                ),
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier
-                  .weight(1f)
-                  .minimumInteractiveComponentSize()
-                  .testTag("reciter_delete_all_button"),
-              ) {
-                Icon(Icons.Filled.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("حذف الكل", maxLines = 1)
+                  enabled = missingAvailableCount > 0,
+                  shape = RoundedCornerShape(10.dp),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+                    .testTag("reciter_download_all_button"),
+                ) {
+                  Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                  Spacer(Modifier.width(8.dp))
+                  Text("تحميل الكل (${toArabicDigits(missingAvailableCount)} سورة متبقية)", fontWeight = FontWeight.Bold)
+                }
               }
             }
           }
@@ -400,7 +993,7 @@ fun ReciterDownloadsScreen(
               reciterSummary.downloadedSurahs.contains(surah.id)
             val transfer = transferStates[key]
 
-            ReciterSurahDownloadRow(
+            SurahDownloadItemRow(
               surah = surah,
               isAvailable = isAvailable,
               isDownloaded = isDownloaded,
@@ -424,7 +1017,8 @@ fun ReciterDownloadsScreen(
       onDismissRequest = { showDeleteAllConfirm = false },
       title = { Text("حذف جميع التلاوات") },
       text = {
-        Text("هل تريد حذف جميع السور المحملة للقارئ ${reciter.displayName}؟")
+        val totalSizeStr = AudioCacheManager.formatBytesArabic(reciterSummary.totalBytes)
+        Text("هل تريد حذف جميع السور المحملة للقارئ ${reciter.displayName}؟ الحجم الإجمالي: $totalSizeStr")
       },
       confirmButton = {
         TextButton(
@@ -448,7 +1042,7 @@ fun ReciterDownloadsScreen(
 }
 
 @Composable
-private fun ReciterSurahDownloadRow(
+private fun SurahDownloadItemRow(
   surah: SurahMeta,
   isAvailable: Boolean,
   isDownloaded: Boolean,
@@ -465,7 +1059,7 @@ private fun ReciterSurahDownloadRow(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.SpaceBetween,
   ) {
-    // Surah info (non-clickable — tapping the surah name itself does nothing)
+    // Surah info
     Row(
       modifier = Modifier.weight(1f),
       verticalAlignment = Alignment.CenterVertically,
@@ -515,7 +1109,7 @@ private fun ReciterSurahDownloadRow(
 
     Spacer(Modifier.width(8.dp))
 
-    // Action side
+    // Action side with circular download button + tiny label "تحميل هذه السورة"
     when {
       !isAvailable -> {
         Text(
@@ -531,7 +1125,7 @@ private fun ReciterSurahDownloadRow(
           CircularProgressIndicator(
             progress = { transferState.progress.coerceIn(0.02f, 1f) },
             strokeWidth = 2.5.dp,
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(22.dp),
           )
           Spacer(Modifier.width(6.dp))
           Text(
@@ -630,19 +1224,75 @@ private fun ReciterSurahDownloadRow(
       }
 
       else -> {
-        FilledTonalButton(
-          onClick = onDownload,
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-          shape = RoundedCornerShape(10.dp),
-          modifier = Modifier
-            .minimumInteractiveComponentSize()
-            .testTag("reciter_surah_download_${surah.id}"),
+        // Circular download button with tiny label "تحميل هذه السورة"
+        Column(
+          horizontalAlignment = Alignment.CenterHorizontally,
+          modifier = Modifier.padding(horizontal = 4.dp),
         ) {
-          Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-          Spacer(Modifier.width(4.dp))
-          Text("تحميل")
+          FilledTonalButton(
+            onClick = onDownload,
+            shape = CircleShape,
+            contentPadding = PaddingValues(0.dp),
+            modifier = Modifier
+              .size(38.dp)
+              .testTag("reciter_surah_download_${surah.id}"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Download,
+              contentDescription = "تحميل هذه السورة",
+              modifier = Modifier.size(18.dp),
+            )
+          }
+          Spacer(Modifier.height(2.dp))
+          Text(
+            text = "تحميل هذه السورة",
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+          )
         }
       }
     }
   }
+}
+
+/**
+ * Backward-compatible single-reciter download screen.
+ */
+@Composable
+fun ReciterDownloadsScreen(
+  reciter: VerifiedReciter,
+  surahs: List<SurahMeta>,
+  downloadedKeys: Set<String>,
+  transferStates: Map<String, SurahTransferState>,
+  reciterSummary: ReciterStorageSummary,
+  batchSummary: AudioBatchUiSummary,
+  onDownloadSurah: (Int) -> Unit,
+  onCancelSurah: (Int) -> Unit,
+  onDeleteSurah: (Int) -> Unit,
+  onDownloadAll: () -> Unit,
+  onCancelAllForReciter: () -> Unit,
+  onDeleteAllForReciter: () -> Unit,
+  onDismissLowStorageMessage: () -> Unit,
+  onClose: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  PageCReciterSurahsScreen(
+    reciter = reciter,
+    riwayaName = reciter.riwayaName.ifBlank { "حفص عن عاصم" },
+    surahs = surahs,
+    downloadedKeys = downloadedKeys,
+    transferStates = transferStates,
+    reciterSummary = reciterSummary,
+    batchSummary = batchSummary,
+    onDownloadSurah = onDownloadSurah,
+    onCancelSurah = onCancelSurah,
+    onDeleteSurah = onDeleteSurah,
+    onDownloadAll = onDownloadAll,
+    onCancelAllForReciter = onCancelAllForReciter,
+    onDeleteAllForReciter = onDeleteAllForReciter,
+    onDismissLowStorageMessage = onDismissLowStorageMessage,
+    onBack = onClose,
+    modifier = modifier,
+  )
 }

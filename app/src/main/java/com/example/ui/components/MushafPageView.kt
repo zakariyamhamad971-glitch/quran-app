@@ -309,12 +309,7 @@ fun MushafPageFrame(
                   frameBottom = pdfContent.bodyBottomPx * sy,
                   bmpWidthPx = pdfContent.bmpWidthPx,
                   bmpHeightPx = pdfContent.bmpHeightPx,
-                  topBandEndY = pdfContent.topBandEndY,
-                  bottomBandStartY = pdfContent.bottomBandStartY,
-                  textSrcLeft = pdfContent.textSrcLeft,
-                  textSrcTop = pdfContent.textSrcTop,
-                  textSrcRight = pdfContent.textSrcRight,
-                  textSrcBottom = pdfContent.textSrcBottom,
+                  segmentation = pdfContent.segmentation,
                   hasTopSurahBanner = pdfContent.topSurah != null,
                   densityPxPerDp = density.density,
                 )
@@ -382,41 +377,72 @@ fun MushafPageFrame(
               )
 
               if (pdfContent != null && pdfLayout != null) {
-                // 1. Pinned top band (riwaya label, rows 0..30pt)
-                drawImage(
-                  image = pdfContent.pdfBitmap,
-                  srcOffset = IntOffset(0, 0),
-                  srcSize = IntSize(pdfContent.bmpWidthPx, pdfContent.topBandEndY),
-                  dstOffset = IntOffset(pdfLayout.topBandDstLeft, pdfLayout.topBandDstTop),
-                  dstSize = IntSize(pdfLayout.topBandDstWidth, pdfLayout.topBandDstHeight),
-                  filterQuality = FilterQuality.High,
-                  colorFilter = pdfColorFilter,
-                )
+                // 1. Pinned top band (riwaya label)
+                if (pdfLayout.topBandDstHeight > 0) {
+                  val labelSrcH = (pdfContent.segmentation.labelCutFraction * pdfContent.bmpHeightPx)
+                    .roundToInt()
+                    .coerceIn(1, pdfContent.bmpHeightPx)
+                  drawImage(
+                    image = pdfContent.pdfBitmap,
+                    srcOffset = IntOffset(0, 0),
+                    srcSize = IntSize(pdfContent.bmpWidthPx, labelSrcH),
+                    dstOffset = IntOffset(pdfLayout.topBandDstLeft, pdfLayout.topBandDstTop),
+                    dstSize = IntSize(pdfLayout.topBandDstWidth, pdfLayout.topBandDstHeight),
+                    filterQuality = FilterQuality.High,
+                    colorFilter = pdfColorFilter,
+                  )
+                }
 
-                // 2. Zoomed & centered Quran text block (middle non-white bbox + 2% padding)
-                val textSrcW = (pdfContent.textSrcRight - pdfContent.textSrcLeft).coerceAtLeast(1)
-                val textSrcH = (pdfContent.textSrcBottom - pdfContent.textSrcTop).coerceAtLeast(1)
-                drawImage(
-                  image = pdfContent.pdfBitmap,
-                  srcOffset = IntOffset(pdfContent.textSrcLeft, pdfContent.textSrcTop),
-                  srcSize = IntSize(textSrcW, textSrcH),
-                  dstOffset = IntOffset(pdfLayout.textDstLeft, pdfLayout.textDstTop),
-                  dstSize = IntSize(pdfLayout.textDstWidth, pdfLayout.textDstHeight),
-                  filterQuality = FilterQuality.High,
-                  colorFilter = pdfColorFilter,
-                )
+                // 2. Quran text block: either evenly spread line strips (3..11 lines) or scaled single block
+                if (pdfLayout.isFewLines && pdfLayout.lineLayouts.isNotEmpty()) {
+                  for (lineMetrics in pdfLayout.lineLayouts) {
+                    drawImage(
+                      image = pdfContent.pdfBitmap,
+                      srcOffset = IntOffset(lineMetrics.srcLeftPx, lineMetrics.srcTopPx),
+                      srcSize = IntSize(lineMetrics.srcWidthPx, lineMetrics.srcHeightPx),
+                      dstOffset = IntOffset(lineMetrics.dstLeftPx, lineMetrics.dstTopPx),
+                      dstSize = IntSize(lineMetrics.dstWidthPx, lineMetrics.dstHeightPx),
+                      filterQuality = FilterQuality.High,
+                      colorFilter = pdfColorFilter,
+                    )
+                  }
+                } else {
+                  val srcLeft = (pdfContent.segmentation.textMinXFraction * pdfContent.bmpWidthPx)
+                    .roundToInt().coerceIn(0, pdfContent.bmpWidthPx - 1)
+                  val srcRight = (pdfContent.segmentation.textMaxXFraction * pdfContent.bmpWidthPx)
+                    .roundToInt().coerceIn(srcLeft + 1, pdfContent.bmpWidthPx)
+                  val srcTop = (pdfContent.segmentation.labelCutFraction * pdfContent.bmpHeightPx)
+                    .roundToInt().coerceIn(0, pdfContent.bmpHeightPx - 1)
+                  val srcBottom = (pdfContent.segmentation.legendCutFraction * pdfContent.bmpHeightPx)
+                    .roundToInt().coerceIn(srcTop + 1, pdfContent.bmpHeightPx)
+                  val textSrcW = (srcRight - srcLeft).coerceAtLeast(1)
+                  val textSrcH = (srcBottom - srcTop).coerceAtLeast(1)
+                  drawImage(
+                    image = pdfContent.pdfBitmap,
+                    srcOffset = IntOffset(srcLeft, srcTop),
+                    srcSize = IntSize(textSrcW, textSrcH),
+                    dstOffset = IntOffset(pdfLayout.textDstLeft, pdfLayout.textDstTop),
+                    dstSize = IntSize(pdfLayout.textDstWidth, pdfLayout.textDstHeight),
+                    filterQuality = FilterQuality.High,
+                    colorFilter = pdfColorFilter,
+                  )
+                }
 
-                // 3. Pinned bottom legend band (rows 640..688pt)
-                val botSrcH = (pdfContent.bmpHeightPx - pdfContent.bottomBandStartY).coerceAtLeast(1)
-                drawImage(
-                  image = pdfContent.pdfBitmap,
-                  srcOffset = IntOffset(0, pdfContent.bottomBandStartY),
-                  srcSize = IntSize(pdfContent.bmpWidthPx, botSrcH),
-                  dstOffset = IntOffset(pdfLayout.bottomBandDstLeft, pdfLayout.bottomBandDstTop),
-                  dstSize = IntSize(pdfLayout.bottomBandDstWidth, pdfLayout.bottomBandDstHeight),
-                  filterQuality = FilterQuality.High,
-                  colorFilter = pdfColorFilter,
-                )
+                // 3. Pinned bottom legend band (complete in one piece, drawn once)
+                if (pdfLayout.bottomBandDstHeight > 0) {
+                  val legendSrcY = (pdfContent.segmentation.legendCutFraction * pdfContent.bmpHeightPx)
+                    .roundToInt().coerceIn(0, pdfContent.bmpHeightPx - 1)
+                  val botSrcH = (pdfContent.bmpHeightPx - legendSrcY).coerceAtLeast(1)
+                  drawImage(
+                    image = pdfContent.pdfBitmap,
+                    srcOffset = IntOffset(0, legendSrcY),
+                    srcSize = IntSize(pdfContent.bmpWidthPx, botSrcH),
+                    dstOffset = IntOffset(pdfLayout.bottomBandDstLeft, pdfLayout.bottomBandDstTop),
+                    dstSize = IntSize(pdfLayout.bottomBandDstWidth, pdfLayout.bottomBandDstHeight),
+                    filterQuality = FilterQuality.High,
+                    colorFilter = pdfColorFilter,
+                  )
+                }
               }
 
               if (isPdfMode || pdfContent != null) return@Canvas

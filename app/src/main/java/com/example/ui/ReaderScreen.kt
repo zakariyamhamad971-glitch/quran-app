@@ -165,6 +165,7 @@ private fun ReaderScreenContent(
   var activeAudioSheet by remember { mutableStateOf<ReaderAudioSheet?>(null) }
   var showSettingsSheet by remember { mutableStateOf(false) }
   var showMushafsManager by rememberSaveable { mutableStateOf(false) }
+  var showRecitersManager by rememberSaveable { mutableStateOf(false) }
   var downloadReciterKey by rememberSaveable { mutableStateOf<String?>(null) }
   var showTajweedLegend by remember { mutableStateOf(false) }
   var showCreditsDialog by remember { mutableStateOf(false) }
@@ -440,6 +441,10 @@ private fun ReaderScreenContent(
         activeMushafIsPdf = uiState.activeMushafIsPdf,
         activePdfMushafLabel = uiState.pdfMushafs.firstOrNull { it.id == uiState.activePdfMushafId }?.riwayaAr,
         onOpenReciterDownloads = { reciter -> downloadReciterKey = reciter.key },
+        onOpenReciterManager = {
+          viewModel.ensureAllDownloadableRecitersLoaded()
+          showRecitersManager = true
+        },
         onOpenMushafsManager = {
           viewModel.loadPdfManifest()
           showMushafsManager = true
@@ -473,14 +478,15 @@ private fun ReaderScreenContent(
       )
     }
 
-    downloadReciterKey?.let { reciterKey ->
-      ReaderReciterDownloadsHost(
+    if (showRecitersManager || downloadReciterKey != null) {
+      ReaderReciterManagerHost(
         viewModel = viewModel,
-        reciterKey = reciterKey,
         surahs = uiState.surahs,
-        primaryReciters = uiState.primaryReciters,
-        additionalReciters = uiState.additionalReciters,
-        onClose = { downloadReciterKey = null },
+        initialReciterKey = downloadReciterKey,
+        onClose = {
+          showRecitersManager = false
+          downloadReciterKey = null
+        },
       )
     }
 
@@ -769,6 +775,7 @@ private fun ReaderSettingsHost(
   activeMushafIsPdf: Boolean,
   activePdfMushafLabel: String?,
   onOpenReciterDownloads: (VerifiedReciter) -> Unit,
+  onOpenReciterManager: () -> Unit,
   onOpenMushafsManager: () -> Unit,
   onOpenTajweedLegend: () -> Unit,
   onOpenCredits: () -> Unit,
@@ -822,6 +829,7 @@ private fun ReaderSettingsHost(
     audioTransferStates = audioTransferStates,
     onRetryLoadDownloadableReciters = { viewModel.ensureAllDownloadableRecitersLoaded(forceRefresh = true) },
     onOpenReciterDownloads = onOpenReciterDownloads,
+    onOpenReciterManager = onOpenReciterManager,
     onOpenMushafsManager = onOpenMushafsManager,
     onToggleDarkMode = { viewModel.toggleDarkMode() },
     onSelectBackgroundTheme = { theme -> viewModel.setBackgroundTheme(theme) },
@@ -839,12 +847,10 @@ private fun ReaderSettingsHost(
 }
 
 @Composable
-private fun ReaderReciterDownloadsHost(
+private fun ReaderReciterManagerHost(
   viewModel: QabasatViewModel,
-  reciterKey: String,
   surahs: List<SurahMeta>,
-  primaryReciters: List<VerifiedReciter>,
-  additionalReciters: List<VerifiedReciter>,
+  initialReciterKey: String?,
   onClose: () -> Unit,
 ) {
   val downloadableRecitersState by viewModel.downloadableRecitersState.collectAsStateWithLifecycle()
@@ -853,57 +859,41 @@ private fun ReaderReciterDownloadsHost(
   val reciterSummaries by viewModel.audioReciterSummaries.collectAsStateWithLifecycle()
   val batchSummary by viewModel.audioBatchSummary.collectAsStateWithLifecycle()
 
-  LaunchedEffect(reciterKey) {
+  LaunchedEffect(Unit) {
     viewModel.ensureAllDownloadableRecitersLoaded()
   }
 
-  val reciter = remember(
-    reciterKey,
-    downloadableRecitersState.reciters,
-    primaryReciters,
-    additionalReciters,
-  ) {
-    downloadableRecitersState.reciters.firstOrNull { it.key == reciterKey }
-      ?: primaryReciters.firstOrNull { it.key == reciterKey }
-      ?: additionalReciters.firstOrNull { it.key == reciterKey }
-  }
-
-  if (reciter != null) {
-    ReciterDownloadsScreen(
-      reciter = reciter,
-      surahs = surahs,
-      downloadedKeys = downloadedKeys,
-      transferStates = transferStates,
-      reciterSummary = reciterSummaries[reciter.key] ?: com.example.data.audio.ReciterStorageSummary(),
-      batchSummary = batchSummary,
-      onDownloadSurah = { surahId -> viewModel.downloadSingleSurahForReciter(reciter, surahId) },
-      onCancelSurah = { surahId -> viewModel.cancelSurahDownloadForReciter(reciter.key, surahId) },
-      onDeleteSurah = { surahId -> viewModel.deleteSurahForReciter(reciter.key, surahId) },
-      onDownloadAll = { viewModel.downloadAllSurahsForReciter(reciter) },
-      onCancelAllForReciter = { viewModel.cancelAllDownloadsForReciter(reciter.key) },
-      onDeleteAllForReciter = { viewModel.deleteAllSurahsForReciter(reciter.key) },
-      onDismissLowStorageMessage = { viewModel.clearAudioLowStorageMessage() },
-      onClose = onClose,
-    )
-  } else {
-    BackHandler(onBack = onClose)
-    LaunchedEffect(downloadableRecitersState.isLoading, downloadableRecitersState.reciters, reciterKey) {
-      if (!downloadableRecitersState.isLoading && downloadableRecitersState.reciters.isNotEmpty()) {
-        onClose()
-      }
-    }
-    Surface(
-      modifier = Modifier.fillMaxSize(),
-      color = MaterialTheme.colorScheme.background,
-    ) {
-      Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
-      ) {
-        androidx.compose.material3.CircularProgressIndicator()
-      }
-    }
-  }
+  FullReciterManagerScreen(
+    allReciters = downloadableRecitersState.reciters,
+    surahs = surahs,
+    downloadedKeys = downloadedKeys,
+    transferStates = transferStates,
+    reciterSummaries = reciterSummaries,
+    batchSummary = batchSummary,
+    onDownloadSurah = { reciter, surahId ->
+      viewModel.downloadSingleSurahForReciter(reciter, surahId)
+    },
+    onCancelSurah = { reciterKey, surahId ->
+      viewModel.cancelSurahDownloadForReciter(reciterKey, surahId)
+    },
+    onDeleteSurah = { reciter, surahId ->
+      viewModel.deleteSurahForReciter(reciter.key, surahId)
+    },
+    onDownloadAll = { reciter ->
+      viewModel.downloadAllSurahsForReciter(reciter)
+    },
+    onCancelAllForReciter = { reciterKey ->
+      viewModel.cancelAllDownloadsForReciter(reciterKey)
+    },
+    onDeleteAllForReciter = { reciter ->
+      viewModel.deleteAllSurahsForReciter(reciter.key)
+    },
+    onDismissLowStorageMessage = {
+      viewModel.clearAudioLowStorageMessage()
+    },
+    onClose = onClose,
+    initialReciterKey = initialReciterKey,
+  )
 }
 
 @Composable

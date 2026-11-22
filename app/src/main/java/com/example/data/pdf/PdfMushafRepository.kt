@@ -95,6 +95,8 @@ object PdfManifestParser {
       var pages = 604
       var sizeMB = 0.0
       val apiRiwayaIds = mutableListOf<Int>()
+      var cropLeftPt = 0f
+      var cropRightPt = 0f
 
       reader.beginObject()
       while (reader.hasNext()) {
@@ -107,6 +109,8 @@ object PdfManifestParser {
           "riwayaAr" -> riwayaAr = reader.nextStringOrNull().orEmpty()
           "pages" -> pages = (reader.nextIntOrNull() ?: 604).coerceAtLeast(1)
           "sizeMB" -> sizeMB = reader.nextDoubleOrNull() ?: 0.0
+          "cropLeftPt" -> cropLeftPt = reader.nextDoubleOrNull()?.toFloat() ?: 0f
+          "cropRightPt" -> cropRightPt = reader.nextDoubleOrNull()?.toFloat() ?: 0f
           "apiRiwayaIds" -> {
             if (reader.peek() == JsonReader.Token.BEGIN_ARRAY) {
               reader.beginArray()
@@ -135,6 +139,8 @@ object PdfManifestParser {
           pages = pages,
           sizeMB = sizeMB,
           apiRiwayaIds = apiRiwayaIds,
+          cropLeftPt = cropLeftPt,
+          cropRightPt = cropRightPt,
         )
       }
     }
