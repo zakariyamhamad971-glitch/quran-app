@@ -111,6 +111,23 @@ class VerifiedDiskCache(private val context: Context) {
     file
   }
 
+  suspend fun deleteTajweedCacheFiles() = withContext(Dispatchers.IO) {
+    runCatching {
+      val tajweedFontsDir = File(cacheRoot, "fonts/qcf_v4_raw")
+      if (tajweedFontsDir.exists()) {
+        tajweedFontsDir.deleteRecursively()
+      }
+      val apiDir = File(cacheRoot, "api")
+      if (apiDir.exists() && apiDir.isDirectory) {
+        apiDir.listFiles()?.forEach { file ->
+          if (file.name.startsWith("tajweed_page_")) {
+            file.delete()
+          }
+        }
+      }
+    }
+  }
+
   suspend fun verifyBundledAssetsManifest(): List<AssetHashStatus> = withContext(Dispatchers.IO) {
     val manifestBytes = context.assets.open("quran/manifest.sha256.json").use { it.readBytes() }
     val root = JSONObject(manifestBytes.decodeToString())

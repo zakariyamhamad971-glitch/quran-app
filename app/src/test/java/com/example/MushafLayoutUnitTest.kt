@@ -1094,4 +1094,346 @@ class MushafLayoutUnitTest {
     assertEquals(listOf("5", "2", "10", "99"), ordered.map { it.id })
     assertEquals(com.example.data.pdf.ColorSwatchStyle.RING, ordered[1].items[0].style)
   }
+
+  @Test
+  fun `pdf manifest parser ignores extra cropLeftPt and cropRightPt fields`() {
+    val json = """
+      [
+        {
+          "id": "with_crop",
+          "order": 1,
+          "file": "pdfs/1.pdf",
+          "thumb": "thumbs/1.jpg",
+          "titleAr": "مصحف ١",
+          "riwayaAr": "حفص",
+          "pages": 604,
+          "sizeMB": 85.0,
+          "cropLeftPt": 14.5,
+          "cropRightPt": 456.0
+        }
+      ]
+    """.trimIndent()
+
+    val entries = com.example.data.pdf.PdfManifestParser.parseManifestJson(json)
+    assertEquals(1, entries.size)
+    assertEquals("with_crop", entries[0].id)
+    assertEquals(85.0, entries[0].sizeMB, 0.001)
+  }
+
+  @Test
+  fun `pdf renderer computeCropScalePlan renders at 2x screen width capped at 2400 and crops 595x842 by exact fractions`() {
+    // 1) Cropped 472x688 for 1000px screen body -> 2000px wide
+    val plan2x = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
+      pageWidthPt = 472,
+      pageHeightPt = 688,
+      onScreenWidthPx = 1000,
+    )
+    assertFalse(plan2x.isUncroppedA4)
+    assertEquals(2000, plan2x.croppedWidthPx)
+    assertEquals(2000, plan2x.fullRenderWidthPx)
+    assertTrue(plan2x.croppedHeightPx > 2900)
+
+    // 2) Tablet width 1400px -> 2x would be 2800px, capped at 2400px
+    val planCapped = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
+      pageWidthPt = 472,
+      pageHeightPt = 688,
+      onScreenWidthPx = 1400,
+    )
+    assertEquals(2400, planCapped.croppedWidthPx)
+
+    // 3) Uncropped 595x842 crops to [62..534, 80..768] fractions while keeping cropped width >= 2x screen width
+    val uncroppedPlan = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
+      pageWidthPt = 595,
+      pageHeightPt = 842,
+      onScreenWidthPx = 900,
+    )
+    assertTrue(uncroppedPlan.isUncroppedA4)
+    assertEquals(1800, uncroppedPlan.croppedWidthPx)
+    assertTrue(uncroppedPlan.fullRenderWidthPx > 2200)
+    assertEquals(
+      com.example.data.pdf.PdfRendererBridge.CROPPED_PAGE_WIDTH_PT /
+        com.example.data.pdf.PdfRendererBridge.CROPPED_PAGE_HEIGHT_PT,
+      uncroppedPlan.croppedWidthPx.toFloat() / uncroppedPlan.croppedHeightPx.toFloat(),
+      0.01f,
+    )
+  }
+
+  @Test
+  fun `pdf pixel scanner finds non-white middle text bounds with 2 percent padding ignoring top and bottom bands`() {
+    val bmpW = 200
+    val bmpH = 688
+    val (topEndY, botStartY) = com.example.data.pdf.PdfRendererBridge.computeBandBoundariesPx(bmpH)
+    assertEquals(30, topEndY)
+    assertEquals(640, botStartY)
+
+    val whiteRow = IntArray(bmpW) { 0xFFFFFFFF.toInt() }
+    val darkPx = 0xFF202020.toInt()
+    val nearWhitePx = 0xFFF2F2F2.toInt() // gray = 242 >= 235 -> ignored
+
+    val (_, _, bounds) = com.example.data.pdf.PdfRendererBridge.scanTextBoundsInMiddleBand(
+      bmpWidthPx = bmpW,
+      bmpHeightPx = bmpH,
+    ) { y, buf ->
+      java.util.Arrays.fill(buf, 0xFFFFFFFF.toInt())
+      // Put dark pixels inside top band (y=10) & bottom band (y=660) -> must be ignored
+      if (y == 10 || y == 660) {
+        buf[5] = darkPx
+        buf[195] = darkPx
+      }
+      // Put near-white noise at x=10,y=100 -> must be ignored
+      if (y == 100) {
+        buf[10] = nearWhitePx
+      }
+      // Actual text block: x in 50..149 (w=100), y in 150..349 (h=200)
+      if (y in 150..349) {
+        for (x in 50..149) buf[x] = darkPx
+      }
+    }
+
+    // 2% of 100 = 2px horizontal pad -> 48..152; 2% of 200 = 4px vertical pad -> 146..354
+    assertEquals(48, bounds.left)
+    assertEquals(152, bounds.right)
+    assertEquals(146, bounds.top)
+    assertEquals(354, bounds.bottom)
+  }
+
+  @Test
+  fun `computePdfPageLayout pins bands zooms text up to 2_2x fits height in landscape and reserves surah banner`() {
+    val bmpW = 2000
+    val bmpH = 2915
+    val (topEndY, botStartY) = com.example.data.pdf.PdfRendererBridge.computeBandBoundariesPx(bmpH)
+
+    // 1) Portrait sparse narrow text (500px out of 2000px -> would want 4x width, must cap at 2.2x)
+    val sparsePortrait = com.example.ui.components.computePdfPageLayout(
+      frameLeft = 20f,
+      frameTop = 40f,
+      frameRight = 1020f,
+      frameBottom = 1840f,
+      bmpWidthPx = bmpW,
+      bmpHeightPx = bmpH,
+      topBandEndY = topEndY,
+      bottomBandStartY = botStartY,
+      textSrcLeft = 750,
+      textSrcTop = 500,
+      textSrcRight = 1250,
+      textSrcBottom = 1000,
+      hasTopSurahBanner = true,
+      densityPxPerDp = 3f,
+    )
+    assertEquals(20, sparsePortrait.topBandDstLeft)
+    assertEquals(40, sparsePortrait.topBandDstTop)
+    assertEquals(1000, sparsePortrait.topBandDstWidth)
+    assertEquals(1840, sparsePortrait.bottomBandDstTop + sparsePortrait.bottomBandDstHeight)
+    assertEquals(2.2f, sparsePortrait.appliedZoomRelativeToNatural, 0.02f)
+    assertTrue(sparsePortrait.bannerHeight > 0f)
+    assertTrue(sparsePortrait.bannerTop >= sparsePortrait.topBandDstTop + sparsePortrait.topBandDstHeight)
+    assertTrue(sparsePortrait.bannerTop + sparsePortrait.bannerHeight <= sparsePortrait.textDstTop + 1f)
+
+    // 2) Short landscape height -> fits height cleanly between top band and bottom band
+    val landscapeLayout = com.example.ui.components.computePdfPageLayout(
+      frameLeft = 0f,
+      frameTop = 0f,
+      frameRight = 1200f,
+      frameBottom = 700f,
+      bmpWidthPx = bmpW,
+      bmpHeightPx = bmpH,
+      topBandEndY = topEndY,
+      bottomBandStartY = botStartY,
+      textSrcLeft = 100,
+      textSrcTop = topEndY + 20,
+      textSrcRight = 1900,
+      textSrcBottom = botStartY - 20,
+      hasTopSurahBanner = false,
+      densityPxPerDp = 3f,
+    )
+    assertEquals(0f, landscapeLayout.bannerWidth, 0.01f)
+    assertTrue(landscapeLayout.textDstTop >= landscapeLayout.topBandDstTop + landscapeLayout.topBandDstHeight)
+    assertTrue(landscapeLayout.textDstTop + landscapeLayout.textDstHeight <= landscapeLayout.bottomBandDstTop)
+    assertTrue(landscapeLayout.appliedZoomRelativeToNatural >= 1.0f)
+  }
+
+  @Test
+  fun `pdf manifest stale file size detector flags differences over 5 percent`() {
+    val oneHundredMbBytes = (100.0 * 1024.0 * 1024.0).toLong()
+    assertFalse(com.example.data.pdf.PdfManifestParser.isStaleFileSize(oneHundredMbBytes, 100.0))
+    assertFalse(
+      com.example.data.pdf.PdfManifestParser.isStaleFileSize((oneHundredMbBytes * 0.96).toLong(), 100.0),
+    )
+    assertFalse(
+      com.example.data.pdf.PdfManifestParser.isStaleFileSize((oneHundredMbBytes * 1.04).toLong(), 100.0),
+    )
+    assertTrue(
+      com.example.data.pdf.PdfManifestParser.isStaleFileSize((oneHundredMbBytes * 0.94).toLong(), 100.0),
+    )
+    assertTrue(
+      com.example.data.pdf.PdfManifestParser.isStaleFileSize((oneHundredMbBytes * 1.06).toLong(), 100.0),
+    )
+    assertTrue(com.example.data.pdf.PdfManifestParser.isStaleFileSize(0L, 100.0))
+  }
+
+  @Test
+  fun `pdf page cache key distinguishes file pageIndex and widthPx`() {
+    val k1 = com.example.data.pdf.PdfPageCacheKey(
+      filePath = "/data/warsh.pdf",
+      fileLength = 1000L,
+      lastModified = 10L,
+      pageIndex = 4,
+      widthPx = 1000,
+    )
+    assertFalse(k1 == k1.copy(fileLength = 2000L))
+    assertFalse(k1 == k1.copy(pageIndex = 5))
+    assertFalse(k1 == k1.copy(widthPx = 600))
+  }
+
+  private fun applyColorMatrix(matrixValues: FloatArray, r: Int, g: Int, b: Int): Triple<Int, Int, Int> {
+    val rf = r.toFloat()
+    val gf = g.toFloat()
+    val bf = b.toFloat()
+    val outR = (matrixValues[0] * rf + matrixValues[1] * gf + matrixValues[2] * bf + matrixValues[4]).toInt().coerceIn(0, 255)
+    val outG = (matrixValues[5] * rf + matrixValues[6] * gf + matrixValues[7] * bf + matrixValues[9]).toInt().coerceIn(0, 255)
+    val outB = (matrixValues[10] * rf + matrixValues[11] * gf + matrixValues[12] * bf + matrixValues[14]).toInt().coerceIn(0, 255)
+    return Triple(outR, outG, outB)
+  }
+
+  @Test
+  fun `pdf dark mode color matrix maps white to black black to white and preserves tajweed hues`() {
+    val m = com.example.ui.components.createPdfDarkModeColorMatrix().values
+
+    // White (#FFFFFF) -> Black (#000000), matching Madani dark background
+    val (wr, wg, wb) = applyColorMatrix(m, 255, 255, 255)
+    assertEquals(0, wr)
+    assertEquals(0, wg)
+    assertEquals(0, wb)
+
+    // Black (#000000) -> White (#FFFFFF)
+    val (kr, kg, kb) = applyColorMatrix(m, 0, 0, 0)
+    assertEquals(255, kr)
+    assertEquals(255, kg)
+    assertEquals(255, kb)
+
+    // Tajweed red stays predominantly red
+    val (rr, rg, rb) = applyColorMatrix(m, 200, 30, 30)
+    assertTrue("Expected red channel dominant, got ($rr, $rg, $rb)", rr > rg + 50 && rr > rb + 50)
+
+    // Tajweed blue stays predominantly blue
+    val (br, bg, bb) = applyColorMatrix(m, 20, 90, 210)
+    assertTrue("Expected blue channel dominant, got ($br, $bg, $bb)", bb > bg + 40 && bb > br + 80)
+
+    // Tajweed green stays predominantly green
+    val (gr, gg, gb) = applyColorMatrix(m, 20, 150, 50)
+    assertTrue("Expected green channel dominant, got ($gr, $gg, $gb)", gg > gr + 40 && gg > gb + 40)
+
+    // Tajweed orange keeps warm R > G > B ordering
+    val (or, og, ob) = applyColorMatrix(m, 230, 120, 20)
+    assertTrue("Expected orange ordering R > G > B, got ($or, $og, $ob)", or > og && og > ob)
+  }
+
+  @Test
+  fun `quran word search normalizer strips diacritics marks tatweel and wasla only`() {
+    val norm = com.example.data.quran.QuranWordSearchNormalizer
+    // Alef wasla ٱ maps to plain alef ا; harakat and shadda stripped
+    assertEquals("الله", norm.normalizeKey("ٱللَّهِ"))
+    // Dagger alef ٰ, tatweel ـ, maddah ٓ stripped
+    assertEquals("الرحمن", norm.normalizeKey("ٱلرَّحْمَـٰنِ"))
+    assertEquals("أيها", norm.normalizeKey("أَيُّهَآ"))
+    // Strict letter distinction: never merge hamza forms, alef variants, yaa/alef maqsura, or taa marbuta/haa
+    assertFalse(norm.normalizeKey("إن") == norm.normalizeKey("أن"))
+    assertFalse(norm.normalizeKey("إن") == norm.normalizeKey("ان"))
+    assertFalse(norm.normalizeKey("آمن") == norm.normalizeKey("أمن"))
+    assertFalse(norm.normalizeKey("على") == norm.normalizeKey("علي"))
+    assertFalse(norm.normalizeKey("جنة") == norm.normalizeKey("جنه"))
+    assertFalse(norm.normalizeKey("مؤمن") == norm.normalizeKey("مئمن"))
+    assertFalse(norm.normalizeKey("يا") == norm.normalizeKey("يَـٰٓأَيُّهَا"))
+  }
+
+  @Test
+  fun `quran word search index handles exact whole word substring ordering and original highlights`() {
+    val verses = listOf(
+      VerseDto(
+        id = 1,
+        verse_key = "112:1",
+        page_number = 604,
+        juz_number = 30,
+        hizb_number = 60,
+        text_uthmani = "قُلْ هُوَ ٱللَّهُ أَحَدٌ",
+      ),
+      VerseDto(
+        id = 2,
+        verse_key = "1:1",
+        page_number = 1,
+        juz_number = 1,
+        hizb_number = 1,
+        text_uthmani = "بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ",
+      ),
+      VerseDto(
+        id = 3,
+        verse_key = "2:153",
+        page_number = 23,
+        juz_number = 2,
+        hizb_number = 3,
+        text_uthmani = "يَـٰٓأَيُّهَا ٱلَّذِينَ ءَامَنُوا۟ ۞ إِنَّ ٱللَّهَ مَعَ ٱلصَّـٰبِرِينَ",
+      ),
+      VerseDto(
+        id = 4,
+        verse_key = "2:6",
+        page_number = 2,
+        juz_number = 1,
+        hizb_number = 1,
+        text_uthmani = "إِنَّ ٱلَّذِينَ كَفَرُوا۟ وَٱللَّهِ أَن لَّا يُؤْمِنُونَ",
+      ),
+      VerseDto(
+        id = 5,
+        verse_key = "18:19",
+        page_number = 295,
+        juz_number = 15,
+        hizb_number = 30,
+        text_uthmani = "فَلْيَنظُرْ أَيُّهَآ أَزْكَىٰ طَعَامًا",
+      ),
+    )
+    val surahsById = mapOf(
+      1 to SurahMeta(1, "الفاتحة", 5, 7, false, 1, 1, true),
+      2 to SurahMeta(2, "البقرة", 87, 286, true, 2, 49, false),
+      18 to SurahMeta(18, "الكهف", 69, 110, true, 293, 304, true),
+      112 to SurahMeta(112, "الإخلاص", 22, 4, true, 604, 604, true),
+    )
+
+    val index = com.example.data.quran.QuranWordSearchIndex.buildFromVerses(verses)
+
+    // 1) Whole-word "الله": matches 1:1, 2:153, 112:1 (NOT وَٱللَّهِ in 2:6), sorted in mushaf order
+    val allahWhole = index.search("الله", isSubstring = false, surahsById = surahsById)
+    assertEquals(3, allahWhole.totalOccurrences)
+    assertEquals(3, allahWhole.surahCount)
+    assertEquals(listOf(1, 2, 112), allahWhole.groups.map { it.surahId })
+    val hit1 = allahWhole.groups[0].hits.single()
+    val highlighted1 = hit1.highlightRanges.map { hit1.originalText.substring(it.first, it.last + 1) }
+    assertEquals(listOf("ٱللَّهِ"), highlighted1)
+
+    // 2) Substring mode "الله": also finds وَٱللَّهِ in 2:6 and highlights exact substring on original text
+    val allahSub = index.search("الله", isSubstring = true, surahsById = surahsById)
+    assertEquals(4, allahSub.totalOccurrences)
+    val baqarahHits = allahSub.groups.first { it.surahId == 2 }.hits
+    assertEquals(listOf("2:6", "2:153"), baqarahHits.map { it.verseKey })
+    val waAllahHit = baqarahHits[0]
+    val subHighlighted = waAllahHit.highlightRanges.map {
+      waAllahHit.originalText.substring(it.first, it.last + 1)
+    }
+    assertEquals(listOf("ٱللَّهِ"), subHighlighted)
+
+    // 3) Strict hamza distinction: "إن" vs "أن"
+    val innaRes = index.search("إن", isSubstring = false, surahsById = surahsById)
+    val annaRes = index.search("أن", isSubstring = false, surahsById = surahsById)
+    assertEquals(2, innaRes.totalOccurrences)
+    assertEquals(1, annaRes.totalOccurrences)
+    assertEquals(listOf("2:6", "2:153"), innaRes.groups.single().hits.map { it.verseKey })
+    assertEquals(listOf("2:6"), annaRes.groups.single().hits.map { it.verseKey })
+
+    // 4) "يا" must NOT match "يَـٰٓأَيُّهَا", and "أيها" whole-word matches only 18:19 (while substring matches 2:153 + 18:19)
+    assertEquals(0, index.search("يا", isSubstring = false, surahsById = surahsById).totalOccurrences)
+    assertEquals(0, index.search("يا", isSubstring = true, surahsById = surahsById).totalOccurrences)
+    val ayyuhaWhole = index.search("أيها", isSubstring = false, surahsById = surahsById)
+    assertEquals(1, ayyuhaWhole.totalOccurrences)
+    assertEquals("18:19", ayyuhaWhole.groups.single().hits.single().verseKey)
+    val ayyuhaSub = index.search("أيها", isSubstring = true, surahsById = surahsById)
+    assertEquals(2, ayyuhaSub.totalOccurrences)
+  }
 }

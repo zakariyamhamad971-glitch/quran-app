@@ -192,6 +192,12 @@ class MushafDownloadManager(
     }
   }
 
+  fun resetState(mushafId: String) {
+    activeJobs[mushafId]?.cancel()
+    activeJobs.remove(mushafId)
+    _states.update { current -> current - mushafId }
+  }
+
   private fun updateState(id: String, transform: (MushafDownloadState) -> MushafDownloadState) {
     _states.update { current ->
       val old = current[id] ?: MushafDownloadState(mushafId = id)

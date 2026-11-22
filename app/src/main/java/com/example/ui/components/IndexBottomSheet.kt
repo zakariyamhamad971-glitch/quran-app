@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -37,6 +39,8 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
@@ -46,10 +50,12 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -59,6 +65,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -77,9 +84,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -88,19 +99,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.audio.VerifiedReciter
+import com.example.data.quran.AyahWordHit
 import com.example.data.quran.JuzMeta
-import com.example.data.quran.MushafEdition
 import com.example.data.quran.SurahMeta
-import com.example.data.quran.VerseSearchHit
+import com.example.data.quran.SurahSearchGroup
 import com.example.player.AudioMiniUiState
 import com.example.player.AudioPlaybackUiState
 import com.example.ui.theme.AmiriFontFamily
-import kotlinx.coroutines.delay
+import com.example.viewmodel.QuranWordSearchUiState
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
-
-private val INDEX_DIACRITICS_REGEX = Regex("[\\u064B-\\u065F\\u0670]")
 
 private fun padSurahId(surahId: Int): String = when {
   surahId < 10 -> "00$surahId"
@@ -131,16 +140,6 @@ private fun arabicDigitsToAscii(input: String): String {
   }
 }
 
-private fun normalizeArabicQuery(input: String): String {
-  return arabicDigitsToAscii(input)
-    .replace("أ", "ا")
-    .replace("إ", "ا")
-    .replace("آ", "ا")
-    .replace("ى", "ي")
-    .replace("ة", "ه")
-    .replace(INDEX_DIACRITICS_REGEX, "")
-    .trim()
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -150,21 +149,25 @@ fun FullScreenQuranIndex(
   juzsLoading: Boolean,
   bookmarks: List<Int>,
   currentPage: Int,
-  mushafEdition: MushafEdition,
   isDarkTheme: Boolean,
   activeReciterFlow: StateFlow<VerifiedReciter?>,
   miniAudioStateFlow: StateFlow<AudioMiniUiState>,
   audioStateFlow: StateFlow<AudioPlaybackUiState>,
   downloadedKeys: Set<String>,
   downloadProgress: Map<String, Float>,
-  verseSearchResults: List<VerseSearchHit>,
-  verseSearchLoading: Boolean,
-  verseSearchError: String?,
+  wordSearchStateFlow: StateFlow<QuranWordSearchUiState>,
   metadataError: String?,
   hasActiveReaderPage: Boolean,
   onRetryMetadata: () -> Unit,
   onSelectJuzTab: () -> Unit,
-  onSearchVerses: (String) -> Unit,
+  onOpenWordSearch: () -> Unit,
+  onWordSearchQueryChanged: (String) -> Unit,
+  onToggleWordSearchSubstring: (Boolean) -> Unit,
+  onSubmitWordSearchFull: () -> Unit,
+  onToggleWordSearchSurahCollapsed: (Int) -> Unit,
+  onLoadMoreWordSearchResults: () -> Unit,
+  onRetryWordSearch: () -> Unit,
+  onClearWordSearch: () -> Unit,
   onJumpToPage: (Int) -> Unit,
   onJumpToVerse: (verseKey: String, pageNumber: Int) -> Unit,
   onPlaySurah: (Int) -> Unit,
@@ -172,7 +175,6 @@ fun FullScreenQuranIndex(
   onDeleteDownloadedSurah: (Int) -> Unit,
   onRemoveBookmark: (Int) -> Unit,
   onOpenReader: () -> Unit,
-  onToggleEdition: (MushafEdition) -> Unit,
   onToggleTheme: () -> Unit,
   onOpenSettings: () -> Unit,
   onOpenCredits: () -> Unit,
@@ -185,14 +187,13 @@ fun FullScreenQuranIndex(
   onCycleSpeed: (Float) -> Unit,
   onOpenReciterPicker: () -> Unit,
   modifier: Modifier = Modifier,
-  activeMushafIsPdf: Boolean = false,
 ) {
   var isSearchOpen by rememberSaveable { mutableStateOf(false) }
-  var searchQuery by rememberSaveable { mutableStateOf("") }
   var showOverflowMenu by remember { mutableStateOf(false) }
   var showGoToPageDialog by remember { mutableStateOf(false) }
   var showFullPlayerSheet by remember { mutableStateOf(false) }
 
+  val wordSearchState by wordSearchStateFlow.collectAsStateWithLifecycle()
   val searchFocusRequester = remember { FocusRequester() }
   val isMiniAudioVisible by remember(miniAudioStateFlow) {
     miniAudioStateFlow.map { it.isActive }.distinctUntilChanged()
@@ -200,18 +201,15 @@ fun FullScreenQuranIndex(
 
   BackHandler(enabled = isSearchOpen) {
     isSearchOpen = false
-    searchQuery = ""
-    onSearchVerses("")
+    onClearWordSearch()
   }
 
   LaunchedEffect(isSearchOpen) {
     if (isSearchOpen) {
+      onOpenWordSearch()
       searchFocusRequester.requestFocus()
     }
   }
-
-  val asciiQuery = remember(searchQuery) { arabicDigitsToAscii(searchQuery).trim() }
-  val numericPageQuery = asciiQuery.toIntOrNull()?.takeIf { it in 1..604 }
 
   Surface(
     modifier = modifier.fillMaxSize(),
@@ -226,37 +224,98 @@ fun FullScreenQuranIndex(
           .fillMaxWidth()
           .windowInsetsPadding(WindowInsets.statusBars),
       ) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp)
-            .padding(horizontal = 8.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          if (isSearchOpen) {
-            InlineIndexSearchField(
-              query = searchQuery,
-              onQueryChange = { searchQuery = it },
-              onClose = {
-                isSearchOpen = false
-                searchQuery = ""
-                onSearchVerses("")
-              },
-              onSubmit = {
-                if (numericPageQuery != null) {
-                  onJumpToPage(numericPageQuery)
-                  onOpenReader()
-                } else if (asciiQuery.length >= 2) {
-                  onSearchVerses(asciiQuery)
-                }
-              },
-              focusRequester = searchFocusRequester,
+        if (isSearchOpen) {
+          Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
               modifier = Modifier
-                .weight(1f)
-                .height(34.dp),
-            )
-            Spacer(Modifier.width(4.dp))
-          } else {
+                .fillMaxWidth()
+                .height(48.dp)
+                .padding(horizontal = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              InlineIndexSearchField(
+                query = wordSearchState.query,
+                onQueryChange = onWordSearchQueryChanged,
+                onClose = {
+                  isSearchOpen = false
+                  onClearWordSearch()
+                },
+                onSubmit = onSubmitWordSearchFull,
+                focusRequester = searchFocusRequester,
+                modifier = Modifier
+                  .weight(1f)
+                  .height(36.dp),
+              )
+              Spacer(Modifier.width(6.dp))
+              FilledTonalButton(
+                onClick = onSubmitWordSearchFull,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                modifier = Modifier
+                  .height(36.dp)
+                  .testTag("quran_search_submit_button"),
+              ) {
+                Text(
+                  text = "بحث",
+                  style = MaterialTheme.typography.labelLarge,
+                  maxLines = 1,
+                )
+              }
+            }
+
+            // Word-search mode bar ("جزء من الكلمة" switch)
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                  .clip(RoundedCornerShape(8.dp))
+                  .clickable {
+                    onToggleWordSearchSubstring(!wordSearchState.isSubstringMode)
+                  }
+                  .padding(horizontal = 4.dp, vertical = 2.dp),
+              ) {
+                Switch(
+                  checked = wordSearchState.isSubstringMode,
+                  onCheckedChange = onToggleWordSearchSubstring,
+                  modifier = Modifier.testTag("quran_search_substring_switch"),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                  text = "جزء من الكلمة",
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.onSurface,
+                )
+              }
+
+              if (wordSearchState.isIndexWarming) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(14.dp),
+                  )
+                  Spacer(Modifier.width(6.dp))
+                  Text(
+                    text = "تجهيز الفهرس...",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+              }
+            }
+          }
+        } else {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(48.dp)
+              .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
             Text(
               text = "قبسات",
               style = MaterialTheme.typography.titleMedium.copy(
@@ -286,113 +345,105 @@ fun FullScreenQuranIndex(
                 modifier = Modifier.size(20.dp),
               )
             }
-          }
 
-          Box(
-            modifier = Modifier
-              .size(width = 36.dp, height = 44.dp)
-              .clip(RoundedCornerShape(8.dp))
-              .clickable(onClick = onOpenSettings)
-              .testTag("index_settings_button"),
-            contentAlignment = Alignment.Center,
-          ) {
-            Icon(
-              imageVector = Icons.Filled.Settings,
-              contentDescription = "الإعدادات",
-              tint = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.size(20.dp),
-            )
-          }
-
-          Spacer(Modifier.width(2.dp))
-
-          CompactEditionSegment(
-            mushafEdition = mushafEdition,
-            activeMushafIsPdf = activeMushafIsPdf,
-            onSelectEdition = onToggleEdition,
-          )
-
-          Box {
             Box(
               modifier = Modifier
-                .size(width = 34.dp, height = 44.dp)
+                .size(width = 36.dp, height = 44.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .clickable { showOverflowMenu = true }
-                .testTag("index_overflow_menu_button"),
+                .clickable(onClick = onOpenSettings)
+                .testTag("index_settings_button"),
               contentAlignment = Alignment.Center,
             ) {
               Icon(
-                imageVector = Icons.Filled.MoreVert,
-                contentDescription = "المزيد من الخيارات",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                imageVector = Icons.Filled.Settings,
+                contentDescription = "الإعدادات",
+                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(20.dp),
               )
             }
 
-            DropdownMenu(
-              expanded = showOverflowMenu,
-              onDismissRequest = { showOverflowMenu = false },
-            ) {
-              if (hasActiveReaderPage) {
+            Box {
+              Box(
+                modifier = Modifier
+                  .size(width = 34.dp, height = 44.dp)
+                  .clip(RoundedCornerShape(8.dp))
+                  .clickable { showOverflowMenu = true }
+                  .testTag("index_overflow_menu_button"),
+                contentAlignment = Alignment.Center,
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.MoreVert,
+                  contentDescription = "المزيد من الخيارات",
+                  tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                  modifier = Modifier.size(20.dp),
+                )
+              }
+
+              DropdownMenu(
+                expanded = showOverflowMenu,
+                onDismissRequest = { showOverflowMenu = false },
+              ) {
+                if (hasActiveReaderPage) {
+                  DropdownMenuItem(
+                    text = { Text("العودة للقراءة (ص ${toArabicIndicDigits(currentPage)})") },
+                    leadingIcon = {
+                      Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null)
+                    },
+                    onClick = {
+                      showOverflowMenu = false
+                      onOpenReader()
+                    },
+                    modifier = Modifier.testTag("overflow_return_reader"),
+                  )
+                }
                 DropdownMenuItem(
-                  text = { Text("العودة للقراءة (ص ${toArabicIndicDigits(currentPage)})") },
+                  text = { Text("الانتقال إلى صفحة") },
                   leadingIcon = {
                     Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null)
                   },
                   onClick = {
                     showOverflowMenu = false
-                    onOpenReader()
+                    showGoToPageDialog = true
                   },
-                  modifier = Modifier.testTag("overflow_return_reader"),
+                  modifier = Modifier.testTag("overflow_go_to_page"),
+                )
+                DropdownMenuItem(
+                  text = { Text("نطاق الآيات") },
+                  leadingIcon = {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                  },
+                  onClick = {
+                    showOverflowMenu = false
+                    onOpenRangePicker()
+                  },
+                  modifier = Modifier.testTag("overflow_verse_range"),
+                )
+                DropdownMenuItem(
+                  text = { Text(if (isDarkTheme) "الوضع الفاتح" else "الوضع الداكن") },
+                  leadingIcon = {
+                    Icon(
+                      imageVector = if (isDarkTheme) Icons.Filled.Brightness7 else Icons.Filled.Brightness4,
+                      contentDescription = null,
+                    )
+                  },
+                  onClick = {
+                    showOverflowMenu = false
+                    onToggleTheme()
+                  },
+                  modifier = Modifier.testTag("overflow_toggle_theme"),
+                )
+                DropdownMenuItem(
+                  text = { Text("المصادر والتحقق") },
+                  leadingIcon = {
+                    Icon(Icons.Filled.Info, contentDescription = null)
+                  },
+                  onClick = {
+                    showOverflowMenu = false
+                    onOpenCredits()
+                  },
+                  modifier = Modifier.testTag("overflow_info_credits"),
                 )
               }
-              DropdownMenuItem(
-                text = { Text("الانتقال إلى صفحة") },
-                leadingIcon = {
-                  Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null)
-                },
-                onClick = {
-                  showOverflowMenu = false
-                  showGoToPageDialog = true
-                },
-                modifier = Modifier.testTag("overflow_go_to_page"),
-              )
-              DropdownMenuItem(
-                text = { Text("نطاق الآيات") },
-                leadingIcon = {
-                  Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                },
-                onClick = {
-                  showOverflowMenu = false
-                  onOpenRangePicker()
-                },
-                modifier = Modifier.testTag("overflow_verse_range"),
-              )
-              DropdownMenuItem(
-                text = { Text(if (isDarkTheme) "الوضع الفاتح" else "الوضع الداكن") },
-                leadingIcon = {
-                  Icon(
-                    imageVector = if (isDarkTheme) Icons.Filled.Brightness7 else Icons.Filled.Brightness4,
-                    contentDescription = null,
-                  )
-                },
-                onClick = {
-                  showOverflowMenu = false
-                  onToggleTheme()
-                },
-                modifier = Modifier.testTag("overflow_toggle_theme"),
-              )
-              DropdownMenuItem(
-                text = { Text("المصادر والتحقق") },
-                leadingIcon = {
-                  Icon(Icons.Filled.Info, contentDescription = null)
-                },
-                onClick = {
-                  showOverflowMenu = false
-                  onOpenCredits()
-                },
-                modifier = Modifier.testTag("overflow_info_credits"),
-              )
             }
           }
         }
@@ -431,6 +482,28 @@ fun FullScreenQuranIndex(
             }
           }
         }
+      } else if (isSearchOpen) {
+        val surahsById = remember(surahs) { surahs.associateBy { it.id } }
+        QuranWordSearchResultsView(
+          state = wordSearchState,
+          surahsById = surahsById,
+          bottomExtraPadding = if (isMiniAudioVisible) 6.dp else 18.dp,
+          onSubmitFullSearch = onSubmitWordSearchFull,
+          onToggleSurahCollapsed = onToggleWordSearchSurahCollapsed,
+          onLoadMoreResults = onLoadMoreWordSearchResults,
+          onRetrySearch = onRetryWordSearch,
+          onJumpToVerse = remember(onJumpToVerse, onOpenReader) {
+            { key, page ->
+              onJumpToVerse(key, page)
+              onOpenReader()
+            }
+          },
+          modifier = Modifier
+            .weight(1f)
+            .let { mod ->
+              if (isMiniAudioVisible) mod else mod.windowInsetsPadding(WindowInsets.navigationBars)
+            },
+        )
       } else {
         QuranIndexContentHost(
           surahs = surahs,
@@ -441,22 +514,11 @@ fun FullScreenQuranIndex(
           activeReciterFlow = activeReciterFlow,
           downloadedKeys = downloadedKeys,
           downloadProgress = downloadProgress,
-          verseSearchResults = verseSearchResults,
-          verseSearchLoading = verseSearchLoading,
-          verseSearchError = verseSearchError,
-          searchQuery = searchQuery,
           bottomExtraPadding = if (isMiniAudioVisible) 6.dp else 18.dp,
           onSelectJuzTab = onSelectJuzTab,
-          onSearchVerses = onSearchVerses,
           onJumpToPage = remember(onJumpToPage, onOpenReader) {
             { page ->
               onJumpToPage(page)
-              onOpenReader()
-            }
-          },
-          onJumpToVerse = remember(onJumpToVerse, onOpenReader) {
-            { key, page ->
-              onJumpToVerse(key, page)
               onOpenReader()
             }
           },
@@ -525,15 +587,9 @@ private fun QuranIndexContentHost(
   activeReciterFlow: StateFlow<VerifiedReciter?>,
   downloadedKeys: Set<String>,
   downloadProgress: Map<String, Float>,
-  verseSearchResults: List<VerseSearchHit>,
-  verseSearchLoading: Boolean,
-  verseSearchError: String?,
-  searchQuery: String,
   bottomExtraPadding: androidx.compose.ui.unit.Dp,
   onSelectJuzTab: () -> Unit,
-  onSearchVerses: (String) -> Unit,
   onJumpToPage: (Int) -> Unit,
-  onJumpToVerse: (verseKey: String, pageNumber: Int) -> Unit,
   onPlaySurah: (Int) -> Unit,
   onDownloadSurah: (Int) -> Unit,
   onDeleteDownloadedSurah: (Int) -> Unit,
@@ -549,14 +605,8 @@ private fun QuranIndexContentHost(
     activeReciter = activeReciter,
     downloadedKeys = downloadedKeys,
     downloadProgress = downloadProgress,
-    verseSearchResults = verseSearchResults,
-    verseSearchLoading = verseSearchLoading,
-    verseSearchError = verseSearchError,
-    searchQuery = searchQuery,
     bottomExtraPadding = bottomExtraPadding,
-    onSearchVerses = onSearchVerses,
     onJumpToPage = onJumpToPage,
-    onJumpToVerse = onJumpToVerse,
     onPlaySurah = onPlaySurah,
     onDownloadSurah = onDownloadSurah,
     onDeleteDownloadedSurah = onDeleteDownloadedSurah,
@@ -649,7 +699,7 @@ private fun InlineIndexSearchField(
       ) {
         if (query.isEmpty()) {
           Text(
-            text = "سورة، آية ٢:٢٥٥، أو صفحة",
+            text = "ابحث عن كلمة في القرآن الكريم",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -662,7 +712,7 @@ private fun InlineIndexSearchField(
           singleLine = true,
           textStyle = TextStyle(
             color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 13.sp,
+            fontSize = 14.sp,
           ),
           cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
           keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -673,6 +723,23 @@ private fun InlineIndexSearchField(
             .testTag("index_search_input"),
         )
       }
+      if (query.isNotEmpty()) {
+        Box(
+          modifier = Modifier
+            .size(28.dp)
+            .clip(CircleShape)
+            .clickable { onQueryChange("") }
+            .testTag("index_search_clear_button"),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Close,
+            contentDescription = "مسح نص البحث",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+          )
+        }
+      }
       Box(
         modifier = Modifier
           .size(28.dp)
@@ -682,73 +749,12 @@ private fun InlineIndexSearchField(
         contentAlignment = Alignment.Center,
       ) {
         Icon(
-          imageVector = Icons.Filled.Close,
+          imageVector = Icons.AutoMirrored.Filled.MenuBook,
           contentDescription = "إغلاق البحث",
-          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+          tint = MaterialTheme.colorScheme.primary,
           modifier = Modifier.size(16.dp),
         )
       }
-    }
-  }
-}
-
-@Composable
-private fun CompactEditionSegment(
-  mushafEdition: MushafEdition,
-  activeMushafIsPdf: Boolean,
-  onSelectEdition: (MushafEdition) -> Unit,
-) {
-  Surface(
-    shape = RoundedCornerShape(14.dp),
-    color = MaterialTheme.colorScheme.surfaceVariant,
-    modifier = Modifier.height(30.dp),
-  ) {
-    Row(
-      modifier = Modifier.padding(2.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      CompactSegmentPill(
-        label = "المدينة",
-        selected = !activeMushafIsPdf && mushafEdition == MushafEdition.MADINAH_1421,
-        onClick = { onSelectEdition(MushafEdition.MADINAH_1421) },
-        testTag = "index_edition_madinah",
-      )
-      CompactSegmentPill(
-        label = "التجويد",
-        selected = !activeMushafIsPdf && mushafEdition == MushafEdition.TAJWEED_V4,
-        onClick = { onSelectEdition(MushafEdition.TAJWEED_V4) },
-        testTag = "index_edition_tajweed",
-      )
-    }
-  }
-}
-
-@Composable
-private fun CompactSegmentPill(
-  label: String,
-  selected: Boolean,
-  onClick: () -> Unit,
-  testTag: String,
-) {
-  Surface(
-    shape = RoundedCornerShape(12.dp),
-    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-    modifier = Modifier
-      .fillMaxHeight()
-      .clip(RoundedCornerShape(12.dp))
-      .clickable(onClick = onClick)
-      .testTag(testTag),
-  ) {
-    Box(
-      contentAlignment = Alignment.Center,
-      modifier = Modifier.padding(horizontal = 8.dp),
-    ) {
-      Text(
-        text = label,
-        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-        color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-        maxLines = 1,
-      )
     }
   }
 }
@@ -892,6 +898,469 @@ private fun GoToPageDialog(
   )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun QuranWordSearchResultsView(
+  state: QuranWordSearchUiState,
+  surahsById: Map<Int, SurahMeta>,
+  bottomExtraPadding: androidx.compose.ui.unit.Dp,
+  onSubmitFullSearch: () -> Unit,
+  onToggleSurahCollapsed: (Int) -> Unit,
+  onLoadMoreResults: () -> Unit,
+  onRetrySearch: () -> Unit,
+  onJumpToVerse: (verseKey: String, pageNumber: Int) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val trimmed = state.query.trim()
+  if (trimmed.isEmpty()) {
+    // Empty query shows nothing
+    Box(modifier = modifier.fillMaxWidth())
+    return
+  }
+
+  val result = state.result
+  if (state.isLoading && result == null) {
+    Box(
+      modifier = modifier.fillMaxWidth(),
+      contentAlignment = Alignment.Center,
+    ) {
+      Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(10.dp))
+        Text(
+          text = "جاري البحث في القرآن الكريم...",
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    }
+    return
+  }
+
+  if (state.errorMessage != null && result == null) {
+    Box(
+      modifier = modifier
+        .fillMaxWidth()
+        .padding(20.dp),
+      contentAlignment = Alignment.Center,
+    ) {
+      Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+          text = state.errorMessage,
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.error,
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = onRetrySearch) {
+          Text("إعادة المحاولة")
+        }
+      }
+    }
+    return
+  }
+
+  if (result == null) {
+    Box(modifier = modifier.fillMaxWidth())
+    return
+  }
+
+  if (result.totalMatchingAyahs == 0) {
+    Box(
+      modifier = modifier
+        .fillMaxWidth()
+        .padding(24.dp)
+        .testTag("quran_search_empty"),
+      contentAlignment = Alignment.Center,
+    ) {
+      Text(
+        text = "لا توجد نتائج",
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+    return
+  }
+
+  val isDark = MaterialTheme.colorScheme.background.red < 0.25f
+  val highlightBgColor = if (isDark) {
+    Color(0xFFE0B45C).copy(alpha = 0.34f)
+  } else {
+    Color(0xFFFFE082)
+  }
+  val highlightTextColor = if (isDark) {
+    Color(0xFFFFECB3)
+  } else {
+    Color(0xFF0D2E2A)
+  }
+
+  if (!state.isFullResultsMode) {
+    // Live preview mode (~300ms debounce): first 20 results + total count
+    Column(modifier = modifier.fillMaxWidth()) {
+      Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f),
+          ) {
+            if (state.isLoading) {
+              CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+              Spacer(Modifier.width(8.dp))
+            }
+            Text(
+              text = "عدد المواضع: ${toArabicIndicDigits(result.totalOccurrences)} في ${toArabicIndicDigits(result.surahCount)} سورة (معاينة أول ${toArabicIndicDigits(result.previewHits.size)})",
+              style = MaterialTheme.typography.labelLarge,
+              color = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.testTag("quran_search_preview_summary"),
+            )
+          }
+          if (result.totalMatchingAyahs > result.previewHits.size) {
+            TextButton(
+              onClick = onSubmitFullSearch,
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+            ) {
+              Text("عرض الكل")
+            }
+          }
+        }
+      }
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+      LazyColumn(
+        modifier = Modifier.weight(1f),
+        contentPadding = PaddingValues(top = 6.dp, bottom = bottomExtraPadding),
+      ) {
+        items(
+          items = result.previewHits,
+          key = { "preview_${it.verseKey}" },
+          contentType = { "word_search_hit" },
+        ) { hit ->
+          val surahName = surahsById[hit.surahId]?.nameArabic.orEmpty()
+          WordSearchAyahRow(
+            hit = hit,
+            surahName = surahName,
+            showSurahLabel = true,
+            highlightBgColor = highlightBgColor,
+            highlightTextColor = highlightTextColor,
+            onClick = { onJumpToVerse(hit.verseKey, hit.pageNumber) },
+          )
+        }
+      }
+    }
+    return
+  }
+
+  // Full results mode: summary line + sticky surah headers + expand/collapse + lazy paging
+  val pagedGroups = remember(result.groups, state.collapsedSurahIds, state.visibleResultLimit) {
+    buildPagedSurahGroups(
+      groups = result.groups,
+      collapsedSurahIds = state.collapsedSurahIds,
+      visibleLimit = state.visibleResultLimit,
+    )
+  }
+  val listState = rememberLazyListState()
+
+  Column(modifier = modifier.fillMaxWidth()) {
+    Surface(
+      color = MaterialTheme.colorScheme.surfaceContainerLow,
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 12.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Text(
+          text = "عدد المواضع: ${toArabicIndicDigits(result.totalOccurrences)} في ${toArabicIndicDigits(result.surahCount)} سورة",
+          style = MaterialTheme.typography.titleSmall,
+          color = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.testTag("quran_search_summary"),
+        )
+        if (state.isLoading) {
+          CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+        }
+      }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+    LazyColumn(
+      state = listState,
+      modifier = Modifier
+        .weight(1f)
+        .testTag("quran_search_full_list"),
+      contentPadding = PaddingValues(bottom = bottomExtraPadding),
+    ) {
+      for (paged in pagedGroups.items) {
+        val group = paged.group
+        val isCollapsed = state.collapsedSurahIds.contains(group.surahId)
+
+        stickyHeader(
+          key = "search_surah_header_${group.surahId}",
+          contentType = "surah_sticky_header",
+        ) {
+          SurahSearchStickyHeader(
+            group = group,
+            isCollapsed = isCollapsed,
+            onToggle = { onToggleSurahCollapsed(group.surahId) },
+          )
+        }
+
+        if (!isCollapsed && paged.visibleHits.isNotEmpty()) {
+          items(
+            items = paged.visibleHits,
+            key = { "hit_${it.verseKey}" },
+            contentType = { "word_search_hit" },
+          ) { hit ->
+            WordSearchAyahRow(
+              hit = hit,
+              surahName = group.surahName,
+              showSurahLabel = false,
+              highlightBgColor = highlightBgColor,
+              highlightTextColor = highlightTextColor,
+              onClick = { onJumpToVerse(hit.verseKey, hit.pageNumber) },
+            )
+          }
+        }
+      }
+
+      if (pagedGroups.hasMore) {
+        item(key = "search_load_more_sentinel", contentType = "load_more") {
+          LaunchedEffect(state.visibleResultLimit, pagedGroups.renderedRows) {
+            onLoadMoreResults()
+          }
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 14.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            CircularProgressIndicator(
+              strokeWidth = 2.dp,
+              modifier = Modifier.size(20.dp),
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+private data class PagedSurahGroupSlice(
+  val group: SurahSearchGroup,
+  val visibleHits: List<AyahWordHit>,
+)
+
+private data class PagedSurahGroupsResult(
+  val items: List<PagedSurahGroupSlice>,
+  val renderedRows: Int,
+  val hasMore: Boolean,
+)
+
+private fun buildPagedSurahGroups(
+  groups: List<SurahSearchGroup>,
+  collapsedSurahIds: Set<Int>,
+  visibleLimit: Int,
+): PagedSurahGroupsResult {
+  var remaining = visibleLimit.coerceAtLeast(1)
+  val slices = ArrayList<PagedSurahGroupSlice>(groups.size)
+  var rendered = 0
+  var hasMore = false
+
+  for (idx in groups.indices) {
+    val g = groups[idx]
+    if (collapsedSurahIds.contains(g.surahId)) {
+      slices += PagedSurahGroupSlice(group = g, visibleHits = emptyList())
+      continue
+    }
+    if (remaining <= 0) {
+      hasMore = true
+      break
+    }
+    if (g.hits.size <= remaining) {
+      slices += PagedSurahGroupSlice(group = g, visibleHits = g.hits)
+      remaining -= g.hits.size
+      rendered += g.hits.size
+    } else {
+      slices += PagedSurahGroupSlice(group = g, visibleHits = g.hits.subList(0, remaining))
+      rendered += remaining
+      remaining = 0
+      hasMore = true
+      break
+    }
+  }
+
+  return PagedSurahGroupsResult(
+    items = slices,
+    renderedRows = rendered,
+    hasMore = hasMore,
+  )
+}
+
+@Composable
+private fun SurahSearchStickyHeader(
+  group: SurahSearchGroup,
+  isCollapsed: Boolean,
+  onToggle: () -> Unit,
+) {
+  Surface(
+    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    tonalElevation = 2.dp,
+    modifier = Modifier
+      .fillMaxWidth()
+      .clickable(onClick = onToggle)
+      .testTag("search_surah_header_${group.surahId}"),
+  ) {
+    Column {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 48.dp)
+          .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          modifier = Modifier.weight(1f),
+        ) {
+          Text(
+            text = "سورة ${group.surahName}",
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontFamily = AmiriFontFamily,
+              fontWeight = FontWeight.Bold,
+              fontSize = 17.sp,
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+          ) {
+            Text(
+              text = toArabicIndicDigits(group.occurrenceCount),
+              style = MaterialTheme.typography.labelMedium,
+              color = MaterialTheme.colorScheme.onPrimaryContainer,
+              modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+            )
+          }
+          Spacer(Modifier.width(8.dp))
+          Icon(
+            imageVector = if (isCollapsed) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
+            contentDescription = if (isCollapsed) "توسيع سورة ${group.surahName}" else "طي سورة ${group.surahName}",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(22.dp),
+          )
+        }
+      }
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+    }
+  }
+}
+
+@Composable
+private fun WordSearchAyahRow(
+  hit: AyahWordHit,
+  surahName: String,
+  showSurahLabel: Boolean,
+  highlightBgColor: Color,
+  highlightTextColor: Color,
+  onClick: () -> Unit,
+) {
+  val annotatedAyah = remember(hit.originalText, hit.highlightRanges, highlightBgColor, highlightTextColor) {
+    buildHighlightedAyahAnnotatedString(
+      originalText = hit.originalText,
+      highlightRanges = hit.highlightRanges,
+      highlightBgColor = highlightBgColor,
+      highlightTextColor = highlightTextColor,
+    )
+  }
+
+  Surface(
+    shape = RoundedCornerShape(12.dp),
+    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(horizontal = 12.dp, vertical = 4.dp)
+      .clip(RoundedCornerShape(12.dp))
+      .clickable(onClick = onClick)
+      .testTag("verse_search_hit_${hit.verseKey}"),
+  ) {
+    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          text = if (showSurahLabel && surahName.isNotBlank()) {
+            "سورة $surahName • الآية ${toArabicIndicDigits(hit.ayahNumber)}"
+          } else {
+            "الآية ${toArabicIndicDigits(hit.ayahNumber)}"
+          },
+          style = MaterialTheme.typography.labelLarge.copy(
+            fontFamily = AmiriFontFamily,
+            fontWeight = FontWeight.Bold,
+          ),
+          color = MaterialTheme.colorScheme.primary,
+        )
+        Text(
+          text = "ص ${toArabicIndicDigits(hit.pageNumber)}",
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.secondary,
+        )
+      }
+      Spacer(Modifier.height(6.dp))
+      Text(
+        text = annotatedAyah,
+        style = MaterialTheme.typography.bodyLarge.copy(
+          fontFamily = AmiriFontFamily,
+          fontSize = 18.sp,
+          lineHeight = 31.sp,
+        ),
+        color = MaterialTheme.colorScheme.onSurface,
+      )
+    }
+  }
+}
+
+private fun buildHighlightedAyahAnnotatedString(
+  originalText: String,
+  highlightRanges: List<IntRange>,
+  highlightBgColor: Color,
+  highlightTextColor: Color,
+): AnnotatedString = buildAnnotatedString {
+  append(originalText)
+  val len = originalText.length
+  for (range in highlightRanges) {
+    val start = range.first.coerceIn(0, len)
+    val endExcl = (range.last + 1).coerceIn(start, len)
+    if (start < endExcl) {
+      addStyle(
+        style = SpanStyle(
+          background = highlightBgColor,
+          color = highlightTextColor,
+        ),
+        start = start,
+        end = endExcl,
+      )
+    }
+  }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun IndexBottomSheet(
@@ -902,10 +1371,13 @@ fun IndexBottomSheet(
   activeReciter: VerifiedReciter?,
   downloadedKeys: Set<String>,
   downloadProgress: Map<String, Float>,
-  verseSearchResults: List<VerseSearchHit>,
-  verseSearchLoading: Boolean,
-  verseSearchError: String?,
-  onSearchVerses: (String) -> Unit,
+  wordSearchState: QuranWordSearchUiState,
+  onWordSearchQueryChanged: (String) -> Unit,
+  onToggleWordSearchSubstring: (Boolean) -> Unit,
+  onSubmitWordSearchFull: () -> Unit,
+  onToggleWordSearchSurahCollapsed: (Int) -> Unit,
+  onLoadMoreWordSearchResults: () -> Unit,
+  onRetryWordSearch: () -> Unit,
   onJumpToPage: (Int) -> Unit,
   onJumpToVerse: (verseKey: String, pageNumber: Int) -> Unit,
   onPlaySurah: (Int) -> Unit,
@@ -916,7 +1388,7 @@ fun IndexBottomSheet(
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-  var searchQuery by remember { mutableStateOf("") }
+  val surahsById = remember(surahs) { surahs.associateBy { it.id } }
 
   ModalBottomSheet(
     onDismissRequest = onDismiss,
@@ -929,42 +1401,74 @@ fun IndexBottomSheet(
         .fillMaxHeight(0.88f)
         .padding(horizontal = 12.dp),
     ) {
-      OutlinedTextField(
-        value = searchQuery,
-        onValueChange = { searchQuery = it },
-        placeholder = { Text("ابحث عن سورة أو آية (٢:٢٥٥) أو صفحة") },
-        singleLine = true,
+      Row(
         modifier = Modifier.fillMaxWidth(),
-      )
-      Spacer(Modifier.height(6.dp))
-      QuranIndexContent(
-        surahs = surahs,
-        juzs = juzs,
-        bookmarks = bookmarks,
-        currentPage = currentPage,
-        activeReciter = activeReciter,
-        downloadedKeys = downloadedKeys,
-        downloadProgress = downloadProgress,
-        verseSearchResults = verseSearchResults,
-        verseSearchLoading = verseSearchLoading,
-        verseSearchError = verseSearchError,
-        searchQuery = searchQuery,
-        bottomExtraPadding = 16.dp,
-        onSearchVerses = onSearchVerses,
-        onJumpToPage = { page ->
-          onJumpToPage(page)
-          onDismiss()
-        },
-        onJumpToVerse = { key, page ->
-          onJumpToVerse(key, page)
-          onDismiss()
-        },
-        onPlaySurah = onPlaySurah,
-        onDownloadSurah = onDownloadSurah,
-        onDeleteDownloadedSurah = onDeleteDownloadedSurah,
-        onRemoveBookmark = onRemoveBookmark,
-        modifier = Modifier.weight(1f),
-      )
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        OutlinedTextField(
+          value = wordSearchState.query,
+          onValueChange = onWordSearchQueryChanged,
+          placeholder = { Text("ابحث عن كلمة في القرآن الكريم") },
+          singleLine = true,
+          keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+          keyboardActions = KeyboardActions(onSearch = { onSubmitWordSearchFull() }),
+          modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        Button(onClick = onSubmitWordSearchFull) {
+          Text("بحث")
+        }
+      }
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Switch(
+          checked = wordSearchState.isSubstringMode,
+          onCheckedChange = onToggleWordSearchSubstring,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text("جزء من الكلمة")
+      }
+      Spacer(Modifier.height(4.dp))
+      if (wordSearchState.query.trim().isNotEmpty()) {
+        QuranWordSearchResultsView(
+          state = wordSearchState,
+          surahsById = surahsById,
+          bottomExtraPadding = 16.dp,
+          onSubmitFullSearch = onSubmitWordSearchFull,
+          onToggleSurahCollapsed = onToggleWordSearchSurahCollapsed,
+          onLoadMoreResults = onLoadMoreWordSearchResults,
+          onRetrySearch = onRetryWordSearch,
+          onJumpToVerse = { key, page ->
+            onJumpToVerse(key, page)
+            onDismiss()
+          },
+          modifier = Modifier.weight(1f),
+        )
+      } else {
+        QuranIndexContent(
+          surahs = surahs,
+          juzs = juzs,
+          bookmarks = bookmarks,
+          currentPage = currentPage,
+          activeReciter = activeReciter,
+          downloadedKeys = downloadedKeys,
+          downloadProgress = downloadProgress,
+          bottomExtraPadding = 16.dp,
+          onJumpToPage = { page ->
+            onJumpToPage(page)
+            onDismiss()
+          },
+          onPlaySurah = onPlaySurah,
+          onDownloadSurah = onDownloadSurah,
+          onDeleteDownloadedSurah = onDeleteDownloadedSurah,
+          onRemoveBookmark = onRemoveBookmark,
+          modifier = Modifier.weight(1f),
+        )
+      }
     }
   }
 }
@@ -979,14 +1483,8 @@ private fun QuranIndexContent(
   activeReciter: VerifiedReciter?,
   downloadedKeys: Set<String>,
   downloadProgress: Map<String, Float>,
-  verseSearchResults: List<VerseSearchHit>,
-  verseSearchLoading: Boolean,
-  verseSearchError: String?,
-  searchQuery: String,
   bottomExtraPadding: androidx.compose.ui.unit.Dp,
-  onSearchVerses: (String) -> Unit,
   onJumpToPage: (Int) -> Unit,
-  onJumpToVerse: (verseKey: String, pageNumber: Int) -> Unit,
   onPlaySurah: (Int) -> Unit,
   onDownloadSurah: (Int) -> Unit,
   onDeleteDownloadedSurah: (Int) -> Unit,
@@ -1000,34 +1498,6 @@ private fun QuranIndexContent(
   LaunchedEffect(selectedTab) {
     if (selectedTab == 1) {
       onSelectJuzTab()
-    }
-  }
-
-  val asciiQuery = remember(searchQuery) { arabicDigitsToAscii(searchQuery).trim() }
-  val normalizedQuery = remember(searchQuery) { normalizeArabicQuery(searchQuery) }
-  val numericPageQuery = asciiQuery.toIntOrNull()?.takeIf { it in 1..604 }
-
-  LaunchedEffect(asciiQuery) {
-    if (numericPageQuery == null && asciiQuery.length >= 2) {
-      delay(300L)
-      onSearchVerses(asciiQuery)
-    } else {
-      onSearchVerses("")
-    }
-  }
-
-  val normalizedSurahNames = remember(surahs) {
-    surahs.associate { it.id to normalizeArabicQuery(it.nameArabic) }
-  }
-  val filteredSurahs = remember(surahs, normalizedSurahNames, normalizedQuery) {
-    if (normalizedQuery.isBlank()) {
-      surahs
-    } else {
-      surahs.filter { s ->
-        val norm = normalizedSurahNames[s.id].orEmpty()
-        norm.contains(normalizedQuery, ignoreCase = true) ||
-          s.id.toString() == normalizedQuery
-      }
     }
   }
 
@@ -1064,48 +1534,24 @@ private fun QuranIndexContent(
       }
     }
 
-    if (numericPageQuery != null) {
-      Surface(
-        modifier = Modifier
-          .fillMaxWidth()
-          .padding(horizontal = 12.dp, vertical = 6.dp)
-          .clip(RoundedCornerShape(10.dp))
-          .clickable { onJumpToPage(numericPageQuery) }
-          .testTag("jump_to_page_chip"),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        shape = RoundedCornerShape(10.dp),
-      ) {
-        Text(
-          text = "الانتقال إلى الصفحة ${toArabicIndicDigits(numericPageQuery)}",
-          style = MaterialTheme.typography.titleSmall,
-          color = MaterialTheme.colorScheme.onPrimaryContainer,
-          modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-        )
-      }
-    }
-
-    if (numericPageQuery == null && asciiQuery.length >= 2 && selectedTab == 0) {
-      LazyColumn(
-        modifier = Modifier.weight(1f),
-        contentPadding = PaddingValues(bottom = bottomExtraPadding),
-      ) {
-        if (filteredSurahs.isNotEmpty()) {
-          item(key = "header_matching_surahs", contentType = "section_header") {
-            Text(
-              text = "السور المطابقة",
-              style = MaterialTheme.typography.labelMedium,
-              color = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            )
-          }
-          items(filteredSurahs, key = { "s_${it.id}" }, contentType = { "surah_row" }) { surah ->
+    when (selectedTab) {
+      0 -> {
+        LazyColumn(
+          modifier = Modifier.weight(1f),
+          contentPadding = PaddingValues(bottom = bottomExtraPadding),
+        ) {
+          items(surahs, key = { it.id }, contentType = { "surah_row" }) { surah ->
             val reciterKey = activeReciter?.key
             val dlKey = reciterKey?.let { "${it}_${padSurahId(surah.id)}" }
+            val isDownloaded = dlKey != null && downloadedKeys.contains(dlKey)
+            val progress = dlKey?.let { downloadProgress[it] }
+            val isAvailableForReciter = availableSurahSet.contains(surah.id)
+
             SurahIndexRow(
               surah = surah,
-              isAvailableForReciter = availableSurahSet.contains(surah.id),
-              isDownloaded = dlKey != null && downloadedKeys.contains(dlKey),
-              downloadProgress = dlKey?.let { downloadProgress[it] },
+              isAvailableForReciter = isAvailableForReciter,
+              isDownloaded = isDownloaded,
+              downloadProgress = progress,
               onOpenPage = onOpenSurahPage,
               onPlay = onPlaySurah,
               onDownload = onDownloadSurah,
@@ -1114,105 +1560,7 @@ private fun QuranIndexContent(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
           }
         }
-
-        item(key = "header_verse_hits", contentType = "section_header") {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-          ) {
-            Text(
-              text = "نتائج البحث في الآيات",
-              style = MaterialTheme.typography.labelMedium,
-              color = MaterialTheme.colorScheme.primary,
-            )
-            if (verseSearchLoading) {
-              CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
-            }
-          }
-        }
-
-        if (verseSearchError != null) {
-          item(key = "verse_search_error", contentType = "status_banner") {
-            Text(
-              text = verseSearchError,
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.error,
-              modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            )
-          }
-        }
-
-        items(verseSearchResults, key = { "v_${it.verseKey}" }, contentType = { "verse_hit" }) { hit ->
-          val surahName = surahsById[hit.surahId]?.nameArabic.orEmpty()
-          Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 12.dp, vertical = 3.dp)
-              .clip(RoundedCornerShape(10.dp))
-              .clickable { onJumpToVerse(hit.verseKey, hit.pageNumber) }
-              .testTag("verse_search_hit_${hit.verseKey}"),
-          ) {
-            Column(modifier = Modifier.padding(10.dp)) {
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                Text(
-                  text = "سورة $surahName • الآية ${toArabicIndicDigits(hit.ayahNumber)}",
-                  style = MaterialTheme.typography.labelLarge.copy(fontFamily = AmiriFontFamily),
-                  color = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                  text = "ص ${toArabicIndicDigits(hit.pageNumber)}",
-                  style = MaterialTheme.typography.labelMedium,
-                  color = MaterialTheme.colorScheme.secondary,
-                )
-              }
-              if (hit.snippetText.isNotBlank()) {
-                Spacer(Modifier.height(3.dp))
-                Text(
-                  text = hit.snippetText,
-                  style = MaterialTheme.typography.bodySmall,
-                  maxLines = 2,
-                  overflow = TextOverflow.Ellipsis,
-                )
-              }
-            }
-          }
-        }
       }
-    } else {
-      when (selectedTab) {
-        0 -> {
-          LazyColumn(
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = bottomExtraPadding),
-          ) {
-            items(filteredSurahs, key = { it.id }, contentType = { "surah_row" }) { surah ->
-              val reciterKey = activeReciter?.key
-              val dlKey = reciterKey?.let { "${it}_${padSurahId(surah.id)}" }
-              val isDownloaded = dlKey != null && downloadedKeys.contains(dlKey)
-              val progress = dlKey?.let { downloadProgress[it] }
-              val isAvailableForReciter = availableSurahSet.contains(surah.id)
-
-              SurahIndexRow(
-                surah = surah,
-                isAvailableForReciter = isAvailableForReciter,
-                isDownloaded = isDownloaded,
-                downloadProgress = progress,
-                onOpenPage = onOpenSurahPage,
-                onPlay = onPlaySurah,
-                onDownload = onDownloadSurah,
-                onDeleteDownload = onDeleteDownloadedSurah,
-              )
-              HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-            }
-          }
-        }
 
         1 -> {
           if (juzsLoading && juzs.isEmpty()) {
@@ -1405,7 +1753,6 @@ private fun QuranIndexContent(
       }
     }
   }
-}
 
 @Composable
 private fun SurahIndexRow(

@@ -1,15 +1,18 @@
 package com.example.ui.components
 
+import android.graphics.Typeface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,19 +35,31 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.core.content.res.ResourcesCompat
+import com.example.R
 import com.example.data.prefs.BackgroundTheme
+import com.example.data.quran.MushafEdition
+import com.example.data.quran.SurahMeta
 import com.example.ui.theme.QabasatGold
 import com.example.ui.theme.QabasatNightGold
 import com.example.viewmodel.PageLoadState
@@ -63,6 +78,32 @@ private fun toArabicIndicDigits(number: Int): String {
       append(if (ch in '0'..'9') arabicIndicDigits[ch - '0'] else ch)
     }
   }
+}
+
+/**
+ * Equivalent to CSS `filter: invert(1) hue-rotate(180deg)`:
+ * RGB inversion (`scale -1, translate 255`) followed by W3C `hue-rotate(180deg)`.
+ * Maps pure white (#FFFFFF) -> pure black (#000000), black -> white, and preserves Tajweed hues.
+ */
+internal fun createPdfDarkModeColorMatrix(): ColorMatrix {
+  val invert = ColorMatrix(
+    floatArrayOf(
+      -1f, 0f, 0f, 0f, 255f,
+      0f, -1f, 0f, 0f, 255f,
+      0f, 0f, -1f, 0f, 255f,
+      0f, 0f, 0f, 1f, 0f,
+    ),
+  )
+  val hueRotate180 = ColorMatrix(
+    floatArrayOf(
+      -0.574f, 1.430f, 0.144f, 0f, 0f,
+      0.426f, 0.430f, 0.144f, 0f, 0f,
+      0.426f, 1.430f, -0.856f, 0f, 0f,
+      0f, 0f, 0f, 1f, 0f,
+    ),
+  )
+  hueRotate180.timesAssign(invert)
+  return hueRotate180
 }
 
 private fun DrawScope.drawHighlightRects(
@@ -153,7 +194,14 @@ fun MushafPageFrame(
   modifier: Modifier = Modifier,
   isPdfMode: Boolean = false,
 ) {
-  val effectiveDark = !isPdfMode && (isDarkTheme || backgroundTheme == BackgroundTheme.BLACK)
+  val effectiveDark = isDarkTheme || backgroundTheme == BackgroundTheme.BLACK
+  val pdfColorFilter = remember(isPdfMode, effectiveDark) {
+    if (isPdfMode && effectiveDark) {
+      ColorFilter.colorMatrix(createPdfDarkModeColorMatrix())
+    } else {
+      null
+    }
+  }
   val goldColor = if (effectiveDark) QabasatNightGold else QabasatGold
   val paperColor = if (effectiveDark) Color.Black else Color.White
   val headerTint = if (effectiveDark) QabasatNightGold else Color(0xFF12403C)
@@ -243,7 +291,36 @@ fun MushafPageFrame(
 
         is PageLoadState.Ready -> {
           val rendered = pageState.renderedPage
-          Box(modifier = Modifier.fillMaxSize()) {
+          val pdfContent = rendered.pdfContent
+          val density = LocalDensity.current
+          BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val containerW = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+            val containerH = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+            val pdfLayout = remember(pdfContent, containerW, containerH, rendered.widthPx, rendered.heightPx, density.density) {
+              if (pdfContent == null) {
+                null
+              } else {
+                val sx = containerW / rendered.widthPx.toFloat().coerceAtLeast(1f)
+                val sy = containerH / rendered.heightPx.toFloat().coerceAtLeast(1f)
+                computePdfPageLayout(
+                  frameLeft = pdfContent.bodyLeftPx * sx,
+                  frameTop = pdfContent.bodyTopPx * sy,
+                  frameRight = pdfContent.bodyRightPx * sx,
+                  frameBottom = pdfContent.bodyBottomPx * sy,
+                  bmpWidthPx = pdfContent.bmpWidthPx,
+                  bmpHeightPx = pdfContent.bmpHeightPx,
+                  topBandEndY = pdfContent.topBandEndY,
+                  bottomBandStartY = pdfContent.bottomBandStartY,
+                  textSrcLeft = pdfContent.textSrcLeft,
+                  textSrcTop = pdfContent.textSrcTop,
+                  textSrcRight = pdfContent.textSrcRight,
+                  textSrcBottom = pdfContent.textSrcBottom,
+                  hasTopSurahBanner = pdfContent.topSurah != null,
+                  densityPxPerDp = density.density,
+                )
+              }
+            }
+
             Canvas(
               modifier = Modifier
                 .fillMaxSize()
@@ -301,9 +378,48 @@ fun MushafPageFrame(
               drawImage(
                 image = rendered.imageBitmap,
                 dstSize = IntSize(dstW, dstH),
+                filterQuality = FilterQuality.High,
               )
 
-              if (isPdfMode) return@Canvas
+              if (pdfContent != null && pdfLayout != null) {
+                // 1. Pinned top band (riwaya label, rows 0..30pt)
+                drawImage(
+                  image = pdfContent.pdfBitmap,
+                  srcOffset = IntOffset(0, 0),
+                  srcSize = IntSize(pdfContent.bmpWidthPx, pdfContent.topBandEndY),
+                  dstOffset = IntOffset(pdfLayout.topBandDstLeft, pdfLayout.topBandDstTop),
+                  dstSize = IntSize(pdfLayout.topBandDstWidth, pdfLayout.topBandDstHeight),
+                  filterQuality = FilterQuality.High,
+                  colorFilter = pdfColorFilter,
+                )
+
+                // 2. Zoomed & centered Quran text block (middle non-white bbox + 2% padding)
+                val textSrcW = (pdfContent.textSrcRight - pdfContent.textSrcLeft).coerceAtLeast(1)
+                val textSrcH = (pdfContent.textSrcBottom - pdfContent.textSrcTop).coerceAtLeast(1)
+                drawImage(
+                  image = pdfContent.pdfBitmap,
+                  srcOffset = IntOffset(pdfContent.textSrcLeft, pdfContent.textSrcTop),
+                  srcSize = IntSize(textSrcW, textSrcH),
+                  dstOffset = IntOffset(pdfLayout.textDstLeft, pdfLayout.textDstTop),
+                  dstSize = IntSize(pdfLayout.textDstWidth, pdfLayout.textDstHeight),
+                  filterQuality = FilterQuality.High,
+                  colorFilter = pdfColorFilter,
+                )
+
+                // 3. Pinned bottom legend band (rows 640..688pt)
+                val botSrcH = (pdfContent.bmpHeightPx - pdfContent.bottomBandStartY).coerceAtLeast(1)
+                drawImage(
+                  image = pdfContent.pdfBitmap,
+                  srcOffset = IntOffset(0, pdfContent.bottomBandStartY),
+                  srcSize = IntSize(pdfContent.bmpWidthPx, botSrcH),
+                  dstOffset = IntOffset(pdfLayout.bottomBandDstLeft, pdfLayout.bottomBandDstTop),
+                  dstSize = IntSize(pdfLayout.bottomBandDstWidth, pdfLayout.bottomBandDstHeight),
+                  filterQuality = FilterQuality.High,
+                  colorFilter = pdfColorFilter,
+                )
+              }
+
+              if (isPdfMode || pdfContent != null) return@Canvas
               val activeKey = activePlayingVerseKeyProvider()
               val selectedKey = selectedVerseKeyProvider()
               if (activeKey == null && selectedKey == null) return@Canvas
@@ -358,6 +474,23 @@ fun MushafPageFrame(
               }
             }
 
+            val topSurah = pdfContent?.topSurah
+            if (topSurah != null && pdfLayout != null && pdfLayout.bannerWidth > 4f && pdfLayout.bannerHeight > 4f) {
+              PdfTopSurahBanner(
+                surah = topSurah,
+                effectiveDark = effectiveDark,
+                modifier = Modifier
+                  .offset {
+                    IntOffset(pdfLayout.bannerLeft.roundToInt(), pdfLayout.bannerTop.roundToInt())
+                  }
+                  .size(
+                    width = with(density) { pdfLayout.bannerWidth.toDp() },
+                    height = with(density) { pdfLayout.bannerHeight.toDp() },
+                  )
+                  .testTag("pdf_top_surah_banner_$pageNumber"),
+              )
+            }
+
             // Compact interactive bookmark toggle aligned strictly within the slim footer row
             Box(
               contentAlignment = Alignment.Center,
@@ -382,6 +515,50 @@ fun MushafPageFrame(
           }
         }
       }
+    }
+  }
+}
+
+@Composable
+private fun PdfTopSurahBanner(
+  surah: SurahMeta,
+  effectiveDark: Boolean,
+  modifier: Modifier = Modifier,
+) {
+  val context = LocalContext.current
+  val amiriBold = remember(context) {
+    val base = runCatching { ResourcesCompat.getFont(context, R.font.amiri) }.getOrNull() ?: Typeface.SERIF
+    Typeface.create(base, Typeface.BOLD)
+  }
+  val ibmMedium = remember(context) {
+    val base = runCatching { ResourcesCompat.getFont(context, R.font.ibm_plex_sans_arabic) }.getOrNull()
+      ?: Typeface.SANS_SERIF
+    Typeface.create(base, Typeface.BOLD)
+  }
+  val surahNameV4 = remember(context) {
+    runCatching { ResourcesCompat.getFont(context, R.font.surah_name_v4) }.getOrNull()
+  }
+  val quranCommon = remember(context) {
+    runCatching { ResourcesCompat.getFont(context, R.font.quran_common) }.getOrNull()
+  }
+
+  Canvas(modifier = modifier) {
+    drawIntoCanvas { canvas ->
+      SurahHeaderOrnamentRenderer.drawSurahHeaderBand(
+        canvas = canvas.nativeCanvas,
+        surah = surah,
+        edition = MushafEdition.TAJWEED_V4,
+        effectiveDark = effectiveDark,
+        left = 0f,
+        top = 0f,
+        width = size.width,
+        height = size.height,
+        amiriBold = amiriBold,
+        ibmMedium = ibmMedium,
+        surahNameV4 = surahNameV4,
+        quranCommon = quranCommon,
+        dpFn = { dpVal -> dpVal * density },
+      )
     }
   }
 }

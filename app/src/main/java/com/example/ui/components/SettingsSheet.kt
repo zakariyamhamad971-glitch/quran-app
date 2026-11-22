@@ -1,60 +1,89 @@
 package com.example.ui.components
 
+import android.os.SystemClock
 import androidx.activity.compose.BackHandler
-import androidx.compose.material3.minimumInteractiveComponentSize
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Brightness7
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ColorLens
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.unit.dp
-import android.os.SystemClock
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.example.BuildConfig
+import com.example.data.audio.AudioCacheManager
+import com.example.data.audio.AudioRepository
+import com.example.data.audio.ReciterStorageSummary
+import com.example.data.audio.SurahDownloadStatus
+import com.example.data.audio.SurahTransferState
+import com.example.data.audio.VerifiedReciter
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.PageViewMode
+import com.example.data.quran.MushafDownloadState
+import com.example.data.quran.MushafEdition
+import com.example.ui.theme.AmiriFontFamily
 
 internal object BetaUnlockTapTracker {
   const val REQUIRED_TAPS = 10
@@ -78,6 +107,16 @@ internal object BetaUnlockTapTracker {
   }
 }
 
+private fun toArabicIndic(number: Int): String {
+  val digits = charArrayOf('٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩')
+  val s = number.toString()
+  return buildString(s.length) {
+    for (ch in s) {
+      append(if (ch in '0'..'9') digits[ch - '0'] else ch)
+    }
+  }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsSheet(
@@ -85,6 +124,22 @@ fun SettingsSheet(
   backgroundTheme: BackgroundTheme,
   effectiveTwoPageMode: Boolean,
   activeMushafLabel: String,
+  activeMushafIsPdf: Boolean,
+  activeTextMushafId: String,
+  activeMushafEdition: MushafEdition,
+  downloadedTextMushafIds: Set<String>,
+  tajweedDownloadState: MushafDownloadState,
+  onDownloadTajweed: () -> Unit,
+  onCancelTajweedDownload: () -> Unit,
+  onDeleteTajweed: () -> Unit,
+  onSelectPrimaryMushaf: (MushafEdition) -> Unit,
+  downloadableReciters: List<VerifiedReciter>,
+  downloadableRecitersLoading: Boolean,
+  downloadableRecitersError: String?,
+  reciterSummaries: Map<String, ReciterStorageSummary>,
+  audioTransferStates: Map<String, SurahTransferState>,
+  onRetryLoadDownloadableReciters: () -> Unit,
+  onOpenReciterDownloads: (VerifiedReciter) -> Unit,
   onOpenMushafsManager: () -> Unit,
   onToggleDarkMode: () -> Unit,
   onSelectBackgroundTheme: (BackgroundTheme) -> Unit,
@@ -108,307 +163,748 @@ fun SettingsSheet(
       ),
     )
   }
+  var showDeleteTajweedConfirm by remember { mutableStateOf(false) }
+  var reciterSearchQuery by rememberSaveable { mutableStateOf("") }
+
+  val isMadinahDownloaded = downloadedTextMushafIds.contains("madinah_1421")
+  val isTajweedDownloaded = downloadedTextMushafIds.contains("tajweed_v4")
+  val isTajweedSelected = !activeMushafIsPdf &&
+    (activeTextMushafId == "tajweed_v4" || activeMushafEdition == MushafEdition.TAJWEED_V4)
+  val isMadinahSelected = !activeMushafIsPdf && !isTajweedSelected
+
+  val filteredReciters = remember(downloadableReciters, reciterSearchQuery) {
+    val q = AudioRepository.normalizeArabicForSearch(reciterSearchQuery)
+    if (q.isEmpty()) {
+      downloadableReciters
+    } else {
+      downloadableReciters.filter { r ->
+        AudioRepository.normalizeArabicForSearch(r.displayName).contains(q) ||
+          AudioRepository.normalizeArabicForSearch(r.requestedName).contains(q) ||
+          AudioRepository.normalizeArabicForSearch(r.riwayaName).contains(q)
+      }
+    }
+  }
+
+  val activeTransferReciterKeys = remember(audioTransferStates) {
+    audioTransferStates.values
+      .filter {
+        it.status == SurahDownloadStatus.DOWNLOADING ||
+          it.status == SurahDownloadStatus.QUEUED ||
+          it.status == SurahDownloadStatus.PAUSED_OFFLINE
+      }
+      .mapTo(HashSet()) { it.reciterKey }
+  }
 
   ModalBottomSheet(
     onDismissRequest = onDismiss,
     sheetState = sheetState,
     containerColor = MaterialTheme.colorScheme.surface,
   ) {
-    Column(
+    LazyColumn(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(horizontal = 18.dp, vertical = 6.dp)
-        .verticalScroll(rememberScrollState()),
+        .fillMaxHeight(0.92f)
+        .padding(horizontal = 18.dp),
+      contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-      Text(
-        text = "الإعدادات",
-        style = MaterialTheme.typography.titleLarge,
-        color = MaterialTheme.colorScheme.primary,
-      )
-      Spacer(Modifier.height(14.dp))
+      item(key = "header") {
+        Text(
+          text = "الإعدادات",
+          style = MaterialTheme.typography.titleLarge,
+          color = MaterialTheme.colorScheme.primary,
+        )
+      }
 
       // Light / Dark mode toggle
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        modifier = Modifier.fillMaxWidth(),
-      ) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-              imageVector = if (isDarkMode) Icons.Filled.Brightness4 else Icons.Filled.Brightness7,
-              contentDescription = null,
-              tint = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.width(10.dp))
-            Column {
-              Text(
-                text = if (isDarkMode) "الوضع الداكن" else "الوضع الفاتح",
-                style = MaterialTheme.typography.titleMedium,
-              )
-              Text(
-                text = "التبديل السريع بين الإضاءة النهارية والليلية",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            }
-          }
-          Switch(
-            checked = isDarkMode,
-            onCheckedChange = { onToggleDarkMode() },
-            modifier = Modifier.testTag("settings_dark_mode_switch"),
-          )
-        }
-      }
-
-      Spacer(Modifier.height(16.dp))
-      Text(
-        text = "لون الخلفية",
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.primary,
-      )
-      Spacer(Modifier.height(8.dp))
-
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-      ) {
-        BackgroundColorOption(
-          label = "أبيض",
-          swatchColor = Color(0xFFFFFFFF),
-          selected = backgroundTheme == BackgroundTheme.WHITE,
-          onClick = { onSelectBackgroundTheme(BackgroundTheme.WHITE) },
-          modifier = Modifier
-            .weight(1f)
-            .testTag("bg_option_white"),
-        )
-        BackgroundColorOption(
-          label = "أسود",
-          swatchColor = Color(0xFF000000),
-          selected = backgroundTheme == BackgroundTheme.BLACK,
-          onClick = { onSelectBackgroundTheme(BackgroundTheme.BLACK) },
-          modifier = Modifier
-            .weight(1f)
-            .testTag("bg_option_black"),
-        )
-      }
-
-      Spacer(Modifier.height(16.dp))
-      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-      Spacer(Modifier.height(14.dp))
-
-      // Mushaf Management Button -> opens dedicated full-screen in-app "المصاحف" page
-      Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        modifier = Modifier.fillMaxWidth(),
-      ) {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(12.dp),
-          verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          Text(
-            text = "المصحف الحالي: $activeMushafLabel",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface,
-          )
-          Button(
-            onClick = {
-              onDismiss()
-              onOpenMushafsManager()
-            },
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier
-              .fillMaxWidth()
-              .minimumInteractiveComponentSize()
-              .testTag("settings_open_mushafs_button"),
-          ) {
-            Icon(
-              imageVector = Icons.AutoMirrored.Filled.MenuBook,
-              contentDescription = null,
-              modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text("المصاحف")
-          }
-        }
-      }
-
-      Spacer(Modifier.height(16.dp))
-      Text(
-        text = "عرض الصفحات",
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.primary,
-      )
-      Spacer(Modifier.height(8.dp))
-
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-      ) {
-        EditionChoiceCard(
-          title = "صفحة واحدة",
-          subtitle = "عرض صفحة كاملة متناسبة في المنتصف",
-          selected = !effectiveTwoPageMode,
-          onClick = { onSelectPageViewMode(PageViewMode.SINGLE) },
-          modifier = Modifier
-            .weight(1f)
-            .testTag("settings_page_mode_single"),
-        )
-        EditionChoiceCard(
-          title = "صفحتان",
-          subtitle = "عرض صفحتين متقابلتين كالمصحف المطبوع",
-          selected = effectiveTwoPageMode,
-          onClick = { onSelectPageViewMode(PageViewMode.TWO_PAGES) },
-          modifier = Modifier
-            .weight(1f)
-            .testTag("settings_page_mode_two"),
-        )
-      }
-
-      Spacer(Modifier.height(16.dp))
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-      ) {
-        OutlinedButton(
-          onClick = {
-            onDismiss()
-            onOpenTajweedLegend()
-          },
-          modifier = Modifier.weight(1f),
-        ) {
-          Icon(Icons.Filled.ColorLens, contentDescription = null, modifier = Modifier.size(18.dp))
-          Spacer(Modifier.width(6.dp))
-          Text("دليل الألوان")
-        }
-        OutlinedButton(
-          onClick = {
-            onDismiss()
-            onOpenCredits()
-          },
-          modifier = Modifier.weight(1f),
-        ) {
-          Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(18.dp))
-          Spacer(Modifier.width(6.dp))
-          Text("المصادر والتحقق")
-        }
-      }
-
-      Spacer(Modifier.height(10.dp))
-      OutlinedButton(
-        onClick = onCheckForUpdate,
-        enabled = !isCheckingUpdate,
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("check_update_button"),
-      ) {
-        if (isCheckingUpdate) {
-          CircularProgressIndicator(
-            strokeWidth = 2.dp,
-            modifier = Modifier.size(18.dp),
-          )
-          Spacer(Modifier.width(8.dp))
-          Text("جاري التحقق من التحديث...")
-        } else {
-          Icon(Icons.Filled.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
-          Spacer(Modifier.width(8.dp))
-          Text("تحقق من التحديث")
-        }
-      }
-
-      val showBetaSwitch = isBetaChannelUnlocked || isBetaChannelEnabled || tapState.unlocked
-      if (showBetaSwitch) {
-        Spacer(Modifier.height(10.dp))
+      item(key = "dark_mode") {
         Surface(
           shape = RoundedCornerShape(14.dp),
           color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-          modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .clickable { onToggleBetaChannel(!isBetaChannelEnabled) },
+          modifier = Modifier.fillMaxWidth(),
         ) {
           Row(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(horizontal = 14.dp, vertical = 10.dp),
+              .padding(horizontal = 14.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
           ) {
-            Column(modifier = Modifier.weight(1f)) {
-              Text(
-                text = "قناة التجربة",
-                style = MaterialTheme.typography.titleSmall,
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              modifier = Modifier.weight(1f),
+            ) {
+              Icon(
+                imageVector = if (isDarkMode) Icons.Filled.Brightness4 else Icons.Filled.Brightness7,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
               )
-              Text(
-                text = "استلام التحديثات التجريبية (Beta) قبل الإصدار الرسمي",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
+              Spacer(Modifier.width(10.dp))
+              Column {
+                Text(
+                  text = if (isDarkMode) "الوضع الداكن" else "الوضع الفاتح",
+                  style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                  text = "التبديل السريع بين الإضاءة النهارية والليلية",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
             }
-            Spacer(Modifier.width(10.dp))
             Switch(
-              checked = isBetaChannelEnabled,
-              onCheckedChange = onToggleBetaChannel,
-              modifier = Modifier.testTag("settings_beta_channel_switch"),
+              checked = isDarkMode,
+              onCheckedChange = { onToggleDarkMode() },
+              modifier = Modifier.testTag("settings_dark_mode_switch"),
             )
           }
         }
       }
 
-      Spacer(Modifier.height(14.dp))
-      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-      Spacer(Modifier.height(8.dp))
+      // Background color
+      item(key = "bg_theme") {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Text(
+            text = "لون الخلفية",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+          )
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            BackgroundColorOption(
+              label = "أبيض",
+              swatchColor = Color(0xFFFFFFFF),
+              selected = backgroundTheme == BackgroundTheme.WHITE,
+              onClick = { onSelectBackgroundTheme(BackgroundTheme.WHITE) },
+              modifier = Modifier
+                .weight(1f)
+                .testTag("bg_option_white"),
+            )
+            BackgroundColorOption(
+              label = "أسود",
+              swatchColor = Color(0xFF000000),
+              selected = backgroundTheme == BackgroundTheme.BLACK,
+              onClick = { onSelectBackgroundTheme(BackgroundTheme.BLACK) },
+              modifier = Modifier
+                .weight(1f)
+                .testTag("bg_option_black"),
+            )
+          }
+        }
+      }
 
-      Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-      ) {
-        Box(
-          contentAlignment = Alignment.Center,
-          modifier = Modifier
-            .fillMaxWidth()
-            .minimumInteractiveComponentSize()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable {
-              val next = BetaUnlockTapTracker.onTap(tapState, SystemClock.elapsedRealtime())
-              tapState = next
-              if (next.unlocked && !isBetaChannelUnlocked) {
-                onUnlockBetaChannel()
+      // Mushafs page link + Tajweed section + Primary Mushaf selector
+      item(key = "mushaf_management") {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+          HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+
+          Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+              verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Text(
+                text = "المصحف الحالي: $activeMushafLabel",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+              )
+              Button(
+                onClick = {
+                  onDismiss()
+                  onOpenMushafsManager()
+                },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .minimumInteractiveComponentSize()
+                  .testTag("settings_open_mushafs_button"),
+              ) {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                  contentDescription = null,
+                  modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("المصاحف")
               }
             }
-            .padding(horizontal = 12.dp, vertical = 10.dp)
-            .testTag("settings_version_row"),
-        ) {
+          }
+
+          // Tajweed mushaf section (TASK 2)
+          TajweedMushafSettingsCard(
+            isDownloaded = isTajweedDownloaded,
+            canDelete = isTajweedDownloaded && isMadinahDownloaded,
+            state = tajweedDownloadState,
+            onDownload = onDownloadTajweed,
+            onCancel = onCancelTajweedDownload,
+            onRequestDelete = { showDeleteTajweedConfirm = true },
+          )
+
+          // Primary Mushaf selector (TASK 2)
+          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+              text = "المصحف الأساسي",
+              style = MaterialTheme.typography.titleMedium,
+              color = MaterialTheme.colorScheme.primary,
+            )
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+              EditionChoiceCard(
+                title = "المدينة",
+                subtitle = if (isMadinahDownloaded) "مصحف المدينة ١٤٢١" else "غير محمّل",
+                selected = isMadinahSelected,
+                enabled = isMadinahDownloaded,
+                onClick = { onSelectPrimaryMushaf(MushafEdition.MADINAH_1421) },
+                modifier = Modifier
+                  .weight(1f)
+                  .testTag("settings_primary_mushaf_madinah"),
+              )
+              EditionChoiceCard(
+                title = "التجويد",
+                subtitle = if (isTajweedDownloaded) "مصحف التجويد الملون" else "غير محمّل",
+                selected = isTajweedSelected,
+                enabled = isTajweedDownloaded,
+                onClick = { onSelectPrimaryMushaf(MushafEdition.TAJWEED_V4) },
+                modifier = Modifier
+                  .weight(1f)
+                  .testTag("settings_primary_mushaf_tajweed"),
+              )
+            }
+          }
+        }
+      }
+
+      // Page view mode
+      item(key = "page_view_mode") {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
           Text(
-            text = "رقم الإصدار ${BuildConfig.VERSION_NAME}",
-            style = MaterialTheme.typography.bodyMedium,
+            text = "عرض الصفحات",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+          )
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            EditionChoiceCard(
+              title = "صفحة واحدة",
+              subtitle = "عرض صفحة كاملة متناسبة في المنتصف",
+              selected = !effectiveTwoPageMode,
+              enabled = true,
+              onClick = { onSelectPageViewMode(PageViewMode.SINGLE) },
+              modifier = Modifier
+                .weight(1f)
+                .testTag("settings_page_mode_single"),
+            )
+            EditionChoiceCard(
+              title = "صفحتان",
+              subtitle = "عرض صفحتين متقابلتين كالمصحف المطبوع",
+              selected = effectiveTwoPageMode,
+              enabled = true,
+              onClick = { onSelectPageViewMode(PageViewMode.TWO_PAGES) },
+              modifier = Modifier
+                .weight(1f)
+                .testTag("settings_page_mode_two"),
+            )
+          }
+        }
+      }
+
+      // Reciter audio downloads section header + search (TASK 3c)
+      item(key = "reciter_downloads_header") {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              Icon(
+                imageVector = Icons.Filled.RecordVoiceOver,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+              )
+              Spacer(Modifier.width(8.dp))
+              Text(
+                text = "تحميل القراء",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+              )
+            }
+            if (downloadableReciters.isNotEmpty()) {
+              Text(
+                text = "${toArabicIndic(downloadableReciters.size)} قارئ",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+
+          OutlinedTextField(
+            value = reciterSearchQuery,
+            onValueChange = { reciterSearchQuery = it },
+            placeholder = { Text("ابحث عن قارئ بالاسم أو الرواية...") },
+            leadingIcon = {
+              Icon(Icons.Filled.Search, contentDescription = null)
+            },
+            trailingIcon = {
+              if (reciterSearchQuery.isNotEmpty()) {
+                IconButton(onClick = { reciterSearchQuery = "" }) {
+                  Icon(Icons.Filled.Close, contentDescription = "مسح البحث")
+                }
+              }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("settings_reciters_search_input"),
+          )
+        }
+      }
+
+      if (downloadableRecitersLoading && downloadableReciters.isEmpty()) {
+        item(key = "reciter_downloads_loading") {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 18.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.width(10.dp))
+              Text(
+                text = "جاري تحميل قائمة القراء...",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+        }
+      } else if (downloadableRecitersError != null && downloadableReciters.isEmpty()) {
+        item(key = "reciter_downloads_error") {
+          Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+              Text(
+                text = downloadableRecitersError,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.weight(1f),
+              )
+              TextButton(onClick = onRetryLoadDownloadableReciters) {
+                Text("إعادة المحاولة")
+              }
+            }
+          }
+        }
+      } else if (filteredReciters.isEmpty()) {
+        item(key = "reciter_downloads_empty") {
+          Text(
+            text = "لا يوجد قارئ مطابق لبحثك",
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 12.dp),
             textAlign = TextAlign.Center,
           )
         }
-        Text(
-          text = "تم صنعه و تطويره بواسطه محمد زكريا المخزنجي.",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
-          textAlign = TextAlign.Center,
+      } else {
+        items(
+          items = filteredReciters,
+          key = { "dl_reciter_${it.key}" },
+          contentType = { "dl_reciter_row" },
+        ) { reciter ->
+          val summary = reciterSummaries[reciter.key]
+          val totalAvailable = reciter.availableSurahs.size
+          val downloadedCount = summary?.downloadedCount ?: 0
+          val totalBytes = summary?.totalBytes ?: 0L
+          val isDownloading = activeTransferReciterKeys.contains(reciter.key)
+
+          SettingsReciterDownloadRow(
+            reciter = reciter,
+            totalAvailable = totalAvailable,
+            downloadedCount = downloadedCount,
+            totalBytes = totalBytes,
+            isDownloading = isDownloading,
+            onClick = {
+              onDismiss()
+              onOpenReciterDownloads(reciter)
+            },
+          )
+        }
+      }
+
+      // Legend / Credits / Update / Beta / Version footer
+      item(key = "footer") {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            OutlinedButton(
+              onClick = {
+                onDismiss()
+                onOpenTajweedLegend()
+              },
+              modifier = Modifier.weight(1f),
+            ) {
+              Icon(Icons.Filled.ColorLens, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.width(6.dp))
+              Text("دليل الألوان")
+            }
+            OutlinedButton(
+              onClick = {
+                onDismiss()
+                onOpenCredits()
+              },
+              modifier = Modifier.weight(1f),
+            ) {
+              Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.width(6.dp))
+              Text("المصادر والتحقق")
+            }
+          }
+
+          OutlinedButton(
+            onClick = onCheckForUpdate,
+            enabled = !isCheckingUpdate,
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("check_update_button"),
+          ) {
+            if (isCheckingUpdate) {
+              CircularProgressIndicator(
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(18.dp),
+              )
+              Spacer(Modifier.width(8.dp))
+              Text("جاري التحقق من التحديث...")
+            } else {
+              Icon(Icons.Filled.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.width(8.dp))
+              Text("تحقق من التحديث")
+            }
+          }
+
+          val showBetaSwitch = isBetaChannelUnlocked || isBetaChannelEnabled || tapState.unlocked
+          if (showBetaSwitch) {
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .clickable { onToggleBetaChannel(!isBetaChannelEnabled) },
+            ) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = "قناة التجربة",
+                    style = MaterialTheme.typography.titleSmall,
+                  )
+                  Text(
+                    text = "استلام التحديثات التجريبية (Beta) قبل الإصدار الرسمي",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+                Spacer(Modifier.width(10.dp))
+                Switch(
+                  checked = isBetaChannelEnabled,
+                  onCheckedChange = onToggleBetaChannel,
+                  modifier = Modifier.testTag("settings_beta_channel_switch"),
+                )
+              }
+            }
+          }
+
+          HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+          ) {
+            Box(
+              contentAlignment = Alignment.Center,
+              modifier = Modifier
+                .fillMaxWidth()
+                .minimumInteractiveComponentSize()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable {
+                  val next = BetaUnlockTapTracker.onTap(tapState, SystemClock.elapsedRealtime())
+                  tapState = next
+                  if (next.unlocked && !isBetaChannelUnlocked) {
+                    onUnlockBetaChannel()
+                  }
+                }
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .testTag("settings_version_row"),
+            ) {
+              Text(
+                text = "رقم الإصدار ${BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+              )
+            }
+            Text(
+              text = "تم صنعه و تطويره بواسطه محمد زكريا المخزنجي.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+              textAlign = TextAlign.Center,
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp)
+                .testTag("settings_developer_credit"),
+            )
+          }
+        }
+      }
+    }
+  }
+
+  if (showDeleteTajweedConfirm) {
+    AlertDialog(
+      onDismissRequest = { showDeleteTajweedConfirm = false },
+      title = { Text("حذف مصحف التجويد") },
+      text = {
+        Text("هل تريد حذف ملفات مصحف التجويد؟ سيتم التبديل تلقائياً إلى مصحف المدينة إذا كان التجويد هو المختار.")
+      },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            showDeleteTajweedConfirm = false
+            onDeleteTajweed()
+          },
+          colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+          modifier = Modifier.testTag("confirm_delete_tajweed_button"),
+        ) {
+          Text("حذف")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { showDeleteTajweedConfirm = false }) {
+          Text("إلغاء")
+        }
+      },
+    )
+  }
+}
+
+@Composable
+private fun TajweedMushafSettingsCard(
+  isDownloaded: Boolean,
+  canDelete: Boolean,
+  state: MushafDownloadState,
+  onDownload: () -> Unit,
+  onCancel: () -> Unit,
+  onRequestDelete: () -> Unit,
+) {
+  Surface(
+    shape = RoundedCornerShape(14.dp),
+    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("settings_tajweed_mushaf_section"),
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(12.dp),
+      verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = "مصحف التجويد",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+          )
+          val statusText = when {
+            state.isScanningCache -> "جاري فحص الملفات..."
+            state.isDownloading -> "جاري التنزيل (${state.progress.percent}%)"
+            isDownloaded -> "محمّل • متاح للاستخدام"
+            state.errorMessage != null -> state.errorMessage
+            else -> "غير محمّل • الحجم تقريبًا ٦٤ ميجابايت"
+          }
+          Text(
+            text = statusText,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (state.errorMessage != null && !state.isDownloading && !isDownloaded) {
+              MaterialTheme.colorScheme.error
+            } else {
+              MaterialTheme.colorScheme.onSurfaceVariant
+            },
+          )
+        }
+
+        if (state.isDownloading || state.isScanningCache) {
+          OutlinedButton(
+            onClick = onCancel,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("settings_tajweed_cancel_button"),
+          ) {
+            Text("إلغاء")
+          }
+        } else if (isDownloaded) {
+          OutlinedButton(
+            onClick = onRequestDelete,
+            enabled = canDelete,
+            colors = ButtonDefaults.outlinedButtonColors(
+              contentColor = MaterialTheme.colorScheme.error,
+            ),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("settings_tajweed_delete_button"),
+          ) {
+            Icon(Icons.Filled.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("حذف")
+          }
+        } else {
+          FilledTonalButton(
+            onClick = onDownload,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("settings_tajweed_download_button"),
+          ) {
+            Icon(
+              imageVector = if (state.errorMessage != null) Icons.Filled.Refresh else Icons.Filled.CloudDownload,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(if (state.errorMessage != null) "إعادة المحاولة" else "تنزيل")
+          }
+        }
+      }
+
+      if (state.isDownloading) {
+        LinearProgressIndicator(
+          progress = { (state.progress.percent / 100f).coerceIn(0f, 1f) },
           modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp)
-            .testTag("settings_developer_credit"),
+            .height(6.dp)
+            .clip(RoundedCornerShape(999.dp)),
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun SettingsReciterDownloadRow(
+  reciter: VerifiedReciter,
+  totalAvailable: Int,
+  downloadedCount: Int,
+  totalBytes: Long,
+  isDownloading: Boolean,
+  onClick: () -> Unit,
+) {
+  Surface(
+    shape = RoundedCornerShape(12.dp),
+    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(12.dp))
+      .clickable(onClick = onClick)
+      .testTag("settings_reciter_download_row_${reciter.key}"),
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .minimumInteractiveComponentSize()
+        .padding(horizontal = 12.dp, vertical = 10.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = reciter.displayName,
+          style = MaterialTheme.typography.titleSmall.copy(fontFamily = AmiriFontFamily),
+          fontWeight = FontWeight.Bold,
+          color = MaterialTheme.colorScheme.onSurface,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+        val riwaya = reciter.riwayaName.ifBlank { "حفص عن عاصم" }
+        val sizePart = if (totalBytes > 0L) " • ${AudioCacheManager.formatBytesArabic(totalBytes)}" else ""
+        Text(
+          text = "$riwaya • ${toArabicIndic(totalAvailable)} سورة للتحميل • ${toArabicIndic(downloadedCount)} من ${toArabicIndic(totalAvailable)} محملة$sizePart",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis,
         )
       }
 
-      Spacer(Modifier.height(22.dp))
+      Spacer(Modifier.width(8.dp))
+
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        if (isDownloading) {
+          CircularProgressIndicator(
+            strokeWidth = 2.dp,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(Modifier.width(6.dp))
+        } else if (downloadedCount > 0) {
+          Icon(
+            imageVector = Icons.Filled.Download,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(Modifier.width(4.dp))
+        }
+        Icon(
+          imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+          contentDescription = "فتح تحميلات القارئ",
+          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
     }
   }
 }
@@ -468,13 +964,15 @@ private fun EditionChoiceCard(
   title: String,
   subtitle: String,
   selected: Boolean,
+  enabled: Boolean = true,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   Surface(
     modifier = modifier
+      .alpha(if (enabled) 1f else 0.48f)
       .clip(RoundedCornerShape(12.dp))
-      .clickable(onClick = onClick),
+      .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
     shape = RoundedCornerShape(12.dp),
     color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
     border = BorderStroke(

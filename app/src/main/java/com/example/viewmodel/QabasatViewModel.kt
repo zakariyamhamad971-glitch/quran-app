@@ -7,9 +7,12 @@ import android.os.Build
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.audio.AudioCacheManager
+import com.example.data.audio.AudioBatchUiSummary
+import com.example.data.audio.AudioDownloadManager
 import com.example.data.audio.AudioRepository
 import com.example.data.audio.RecitationRange
+import com.example.data.audio.ReciterStorageSummary
+import com.example.data.audio.SurahTransferState
 import com.example.data.audio.VerifiedReciter
 import com.example.data.integrity.AssetHashStatus
 import com.example.data.integrity.VerifiedDiskCache
@@ -33,11 +36,12 @@ import com.example.data.quran.MushafRegistry
 import com.example.data.quran.MushafSetupState
 import com.example.data.quran.PageFontManager
 import com.example.data.quran.QuranRepository
+import com.example.data.quran.QuranWordSearchNormalizer
+import com.example.data.quran.QuranWordSearchResult
 import com.example.data.quran.SurahMeta
 import com.example.data.quran.TajweedRuleInfo
 import com.example.data.quran.VerseInsightsData
 import com.example.data.quran.VerseInsightsRepository
-import com.example.data.quran.VerseSearchHit
 import com.example.player.AudioMiniUiState
 import com.example.player.AudioPlaybackUiState
 import com.example.player.PlaybackController
@@ -50,6 +54,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -118,15 +123,32 @@ data class ReaderUiState(
   val credits: List<CreditSourceInfo> = emptyList(),
   val assetHashes: List<AssetHashStatus> = emptyList(),
   val selectedVerseKey: String? = null,
-  val verseSearchResults: List<VerseSearchHit> = emptyList(),
-  val verseSearchLoading: Boolean = false,
-  val verseSearchError: String? = null,
   val metadataError: String? = null,
   val activeMushafIsPdf: Boolean = false,
   val activePdfMushafId: String? = null,
   val pdfMushafs: List<PdfMushafEntry> = emptyList(),
   val pdfManifestLoading: Boolean = false,
   val pdfManifestError: String? = null,
+)
+
+@Immutable
+data class QuranWordSearchUiState(
+  val query: String = "",
+  val isSubstringMode: Boolean = false,
+  val isFullResultsMode: Boolean = false,
+  val isLoading: Boolean = false,
+  val isIndexWarming: Boolean = false,
+  val errorMessage: String? = null,
+  val result: QuranWordSearchResult? = null,
+  val collapsedSurahIds: Set<Int> = emptySet(),
+  val visibleResultLimit: Int = 40,
+)
+
+@Immutable
+data class DownloadableRecitersUiState(
+  val reciters: List<VerifiedReciter> = emptyList(),
+  val isLoading: Boolean = false,
+  val errorMessage: String? = null,
 )
 
 class QabasatViewModel(application: Application) : AndroidViewModel(application) {
@@ -139,7 +161,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private val quranRepository = QuranRepository(application, diskCache, fontManager)
   private val verseInsightsRepository = VerseInsightsRepository(diskCache)
   private val audioRepository = AudioRepository(application, diskCache)
-  private val audioCacheManager = AudioCacheManager(application)
+  private val audioDownloadManager = AudioDownloadManager.getInstance(application)
+  private val audioCacheManager = audioDownloadManager.cacheManager
   private val preferences = ReaderPreferences(application)
   private val pageBitmapRenderer = MushafPageBitmapRenderer(application)
   private val pdfMushafRepository = PdfMushafRepository(application, viewModelScope)
@@ -198,6 +221,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   val pdfTransferStates: StateFlow<Map<String, PdfMushafTransferState>> = pdfMushafRepository.transferStates
   val offlinePdfIds: StateFlow<Set<String>> = pdfMushafRepository.offlineDownloadedIds
+  val localOrCachedPdfIds: StateFlow<Set<String>> = pdfMushafRepository.localOrCachedIds
 
   val setupState: StateFlow<MushafSetupState> = setupManager.state
 
@@ -211,6 +235,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   // Isolated verse insights state so opening/loading tafsir never recomposes the Mushaf pager
   private val _verseInsightsState = MutableStateFlow<VerseInsightsUiState>(VerseInsightsUiState.Hidden)
   val verseInsightsState: StateFlow<VerseInsightsUiState> = _verseInsightsState.asStateFlow()
+
+  // Isolated word search state so typing/scrolling search results never recomposes reader/chrome
+  private val _wordSearchState = MutableStateFlow(QuranWordSearchUiState())
+  val wordSearchState: StateFlow<QuranWordSearchUiState> = _wordSearchState.asStateFlow()
 
   val themeStateFlow: StateFlow<Pair<BackgroundTheme, Boolean>> = _uiState
     .map { it.backgroundTheme to it.isDarkMode }
@@ -262,6 +290,13 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   val downloadedAudioKeys: StateFlow<Set<String>> = audioCacheManager.downloadedKeys
   val audioDownloadProgress: StateFlow<Map<String, Float>> = audioCacheManager.downloadProgress
+  val audioTransferStates: StateFlow<Map<String, SurahTransferState>> = audioDownloadManager.transferStates
+  val audioReciterSummaries: StateFlow<Map<String, ReciterStorageSummary>> = audioDownloadManager.reciterSummaries
+  val audioBatchSummary: StateFlow<AudioBatchUiSummary> = audioDownloadManager.batchSummary
+
+  private val _downloadableRecitersState = MutableStateFlow(DownloadableRecitersUiState())
+  val downloadableRecitersState: StateFlow<DownloadableRecitersUiState> = _downloadableRecitersState.asStateFlow()
+  private var downloadableRecitersJob: Job? = null
 
   private val pageJobs = mutableMapOf<Int, Job>()
   private val pageLruOrder = ArrayDeque<Int>()
@@ -273,7 +308,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private var measuredHeightPx: Int = 0
   private var measuredDensity: Float = 0f
   private var measuredFontScale: Float = 1f
+  private var measuredIsTwoPageMode: Boolean = false
+  private val activePdfFileKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
   private var searchJob: Job? = null
+  private var indexWarmupJob: Job? = null
   private var hasReaderActivated: Boolean = false
   private var juzsLoaded: Boolean = false
   private var juzsJob: Job? = null
@@ -296,6 +334,19 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       onActiveVerseChanged = { verseKey ->
         if (verseKey != null) {
           followPlayingVersePage(verseKey)
+        }
+      },
+      onAutoDownloadSurah = { reciter, surahId, preferredUrl ->
+        val url = preferredUrl ?: audioRepository.buildSurahMp3Url(reciter, surahId)
+        if (!url.isNullOrBlank()) {
+          val surahName = cachedSurahsById[surahId]?.nameArabic
+            ?: _uiState.value.surahs.firstOrNull { it.id == surahId }?.nameArabic.orEmpty()
+          audioDownloadManager.enqueueAutoDownloadOnPlay(
+            reciter = reciter,
+            surahId = surahId,
+            surahName = surahName,
+            url = url,
+          )
         }
       },
     )
@@ -327,6 +378,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   private fun rebuildRenderSpec(): PageRenderSpec {
     val st = _uiState.value
+    val pdfId = if (st.activeMushafIsPdf) st.activePdfMushafId else null
     return PageRenderSpec(
       widthPx = measuredWidthPx,
       heightPx = measuredHeightPx,
@@ -335,7 +387,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       edition = st.mushafEdition,
       isDarkTheme = st.isDarkMode,
       backgroundTheme = st.backgroundTheme,
-      pdfMushafId = if (st.activeMushafIsPdf) st.activePdfMushafId else null,
+      isTwoPageMode = measuredIsTwoPageMode,
+      pdfMushafId = pdfId,
+      pdfFileKey = pdfId?.let { activePdfFileKeys[it] },
     )
   }
 
@@ -344,18 +398,21 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     heightPx: Int,
     density: Float,
     fontScale: Float,
+    isTwoPageMode: Boolean = false,
   ) {
     if (widthPx <= 32 || heightPx <= 32 || density <= 0f) return
     val sizeChanged = widthPx != measuredWidthPx ||
       heightPx != measuredHeightPx ||
       density != measuredDensity ||
-      fontScale != measuredFontScale
+      fontScale != measuredFontScale ||
+      isTwoPageMode != measuredIsTwoPageMode
     if (!sizeChanged && activeRenderSpec.isValid) return
 
     measuredWidthPx = widthPx
     measuredHeightPx = heightPx
     measuredDensity = density
     measuredFontScale = fontScale
+    measuredIsTwoPageMode = isTwoPageMode
 
     val nextSpec = rebuildRenderSpec()
     if (nextSpec == activeRenderSpec) return
@@ -453,10 +510,35 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     ensurePlaybackConnected()
     viewModelScope.launch { audioCacheManager.refreshDownloadedKeys() }
 
-    if (saved.activeMushafIsPdf && _uiState.value.pdfMushafs.none { it.id == saved.activePdfMushafId }) {
-      val fetchedManifest = pdfMushafRepository.fetchManifest(forceRefresh = false)
-      fetchedManifest.onSuccess { list ->
-        _uiState.update { it.copy(pdfMushafs = list, pdfManifestError = null) }
+    if (saved.activeMushafIsPdf) {
+      val currentList = _uiState.value.pdfMushafs
+      if (currentList.isNotEmpty()) {
+        pruneAndRedownloadStalePdfFiles(currentList)
+      }
+      if (currentList.none { it.id == saved.activePdfMushafId }) {
+        val fetchedManifest = pdfMushafRepository.fetchManifest(forceRefresh = false)
+        fetchedManifest.onSuccess { list ->
+          _uiState.update { it.copy(pdfMushafs = list, pdfManifestError = null) }
+          pruneAndRedownloadStalePdfFiles(list)
+        }
+      } else {
+        viewModelScope.launch {
+          pdfMushafRepository.fetchManifest(forceRefresh = false).onSuccess { list ->
+            _uiState.update { it.copy(pdfMushafs = list, pdfManifestError = null) }
+            pruneAndRedownloadStalePdfFiles(list)
+          }
+        }
+      }
+    } else if (localOrCachedPdfIds.value.isNotEmpty() || _uiState.value.pdfMushafs.isNotEmpty()) {
+      viewModelScope.launch {
+        val localManifest = _uiState.value.pdfMushafs
+        if (localManifest.isNotEmpty()) {
+          pruneAndRedownloadStalePdfFiles(localManifest)
+        }
+        pdfMushafRepository.fetchManifest(forceRefresh = false).onSuccess { list ->
+          _uiState.update { it.copy(pdfMushafs = list, pdfManifestError = null) }
+          pruneAndRedownloadStalePdfFiles(list)
+        }
       }
     }
 
@@ -514,10 +596,23 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   fun removeMushaf(id: String) {
     viewModelScope.launch {
+      val downloaded = preferences.stateFlow.first().downloadedMushafIds
+      if (downloaded.size <= 1 || !downloaded.contains(id)) return@launch
+
       preferences.removeDownloadedMushaf(id)
-      val currentActive = preferences.stateFlow.first().activeMushafId
-      val item = MushafRegistry.getById(currentActive)
-      _uiState.update { it.copy(mushafEdition = item.edition) }
+      if (id == "tajweed_v4") {
+        diskCache.deleteTajweedCacheFiles()
+        mushafDownloadManager.resetState("tajweed_v4")
+      }
+      val persistedAfter = preferences.stateFlow.first()
+      val nextItem = MushafRegistry.getById(persistedAfter.activeMushafId)
+      _uiState.update { st ->
+        if (st.activeMushafIsPdf) {
+          st.copy(mushafEdition = if (id == "tajweed_v4" && st.mushafEdition == MushafEdition.TAJWEED_V4) MushafEdition.MADINAH_1421 else st.mushafEdition)
+        } else {
+          st.copy(mushafEdition = nextItem.edition)
+        }
+      }
       val nextSpec = rebuildRenderSpec()
       onRenderSpecUpdated(nextSpec)
     }
@@ -533,6 +628,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       }
       if (!forceRefresh && _uiState.value.pdfMushafs.isNotEmpty()) {
         _uiState.update { it.copy(pdfManifestLoading = false, pdfManifestError = null) }
+        pruneAndRedownloadStalePdfFiles(_uiState.value.pdfMushafs)
         return@launch
       }
       _uiState.update { it.copy(pdfManifestLoading = true, pdfManifestError = null) }
@@ -549,6 +645,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
             ),
           )
         }
+        pruneAndRedownloadStalePdfFiles(list)
       }.onFailure { err ->
         _uiState.update {
           it.copy(
@@ -560,11 +657,80 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
+  private suspend fun pruneAndRedownloadStalePdfFiles(entries: List<PdfMushafEntry>) {
+    if (entries.isEmpty()) return
+    val staleOffline = pdfMushafRepository.pruneStaleFilesAndCollectRedownloadEntries(
+      entries = entries,
+      onBeforeDelete = { staleId ->
+        activePdfFileKeys.remove(staleId)
+        pdfRendererBridge.closeIfMatches(staleId)
+        if (_uiState.value.activeMushafIsPdf && _uiState.value.activePdfMushafId == staleId) {
+          activeRenderSpec = rebuildRenderSpec()
+          clearCachedPages()
+          _pagesState.value = emptyMap()
+          pageBitmapRenderer.clearAll()
+        }
+      },
+    )
+    for (entry in staleOffline) {
+      pdfMushafRepository.startOfflineDownload(entry) {
+        if (_uiState.value.activeMushafIsPdf &&
+          _uiState.value.activePdfMushafId == entry.id &&
+          hasReaderActivated &&
+          activeRenderSpec.isValid
+        ) {
+          loadPageWindow(_uiState.value.currentPage, activeRenderSpec)
+        }
+      }
+    }
+    val activePdfId = _uiState.value.activePdfMushafId
+    val activeEntry = if (_uiState.value.activeMushafIsPdf && activePdfId != null) {
+      entries.firstOrNull { it.id == activePdfId }
+    } else {
+      null
+    }
+    if (activeEntry != null &&
+      staleOffline.none { it.id == activeEntry.id } &&
+      hasReaderActivated &&
+      activeRenderSpec.isValid &&
+      _pagesState.value.isEmpty()
+    ) {
+      loadPageWindow(_uiState.value.currentPage, activeRenderSpec)
+    }
+  }
+
   suspend fun loadPdfThumbnail(entry: PdfMushafEntry): Bitmap? =
     pdfMushafRepository.loadThumbnail(entry)
 
   fun downloadPdfMushafOffline(entry: PdfMushafEntry) {
     pdfMushafRepository.startOfflineDownload(entry)
+  }
+
+  fun forceUpdatePdfMushaf(entry: PdfMushafEntry) {
+    viewModelScope.launch {
+      pdfMushafRepository.forceRedownloadOffline(
+        entry = entry,
+        onBeforeDelete = {
+          activePdfFileKeys.remove(entry.id)
+          pdfRendererBridge.closeIfMatches(entry.id)
+          if (_uiState.value.activeMushafIsPdf && _uiState.value.activePdfMushafId == entry.id) {
+            activeRenderSpec = rebuildRenderSpec()
+            clearCachedPages()
+            _pagesState.value = emptyMap()
+            pageBitmapRenderer.clearAll()
+          }
+        },
+        onCompleted = {
+          if (_uiState.value.activeMushafIsPdf &&
+            _uiState.value.activePdfMushafId == entry.id &&
+            hasReaderActivated &&
+            activeRenderSpec.isValid
+          ) {
+            loadPageWindow(_uiState.value.currentPage, activeRenderSpec)
+          }
+        },
+      )
+    }
   }
 
   fun cancelPdfTransfer(mushafId: String) {
@@ -573,8 +739,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   fun deletePdfMushafOffline(entry: PdfMushafEntry) {
     viewModelScope.launch {
+      activePdfFileKeys.remove(entry.id)
       pdfRendererBridge.closeIfMatches(entry.id)
       pdfMushafRepository.deleteOfflinePdf(entry.id)
+      if (_uiState.value.activeMushafIsPdf && _uiState.value.activePdfMushafId == entry.id) {
+        activeRenderSpec = rebuildRenderSpec()
+      }
     }
   }
 
@@ -987,25 +1157,181 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
-  fun searchVerses(query: String) {
+  fun warmUpWordSearchIndex() {
+    if (indexWarmupJob?.isActive == true) return
+    indexWarmupJob = viewModelScope.launch {
+      _wordSearchState.update { it.copy(isIndexWarming = true) }
+      quranRepository.warmUpWordSearchIndex()
+      _wordSearchState.update { it.copy(isIndexWarming = false) }
+    }
+  }
+
+  fun onWordSearchQueryChanged(query: String) {
     searchJob?.cancel()
-    if (query.trim().length < 2) {
-      _uiState.update {
-        it.copy(verseSearchResults = emptyList(), verseSearchLoading = false, verseSearchError = null)
+    val norm = QuranWordSearchNormalizer.normalizeKey(query.trim())
+    _wordSearchState.update {
+      it.copy(
+        query = query,
+        isFullResultsMode = false,
+        collapsedSurahIds = emptySet(),
+        visibleResultLimit = 40,
+        errorMessage = null,
+        isLoading = norm.isNotEmpty(),
+        result = if (norm.isEmpty()) null else it.result,
+      )
+    }
+    if (norm.isEmpty()) return
+
+    val isSubstring = _wordSearchState.value.isSubstringMode
+    searchJob = viewModelScope.launch {
+      delay(300L)
+      executeWordSearch(query = query, isSubstring = isSubstring, fullMode = false)
+    }
+  }
+
+  fun setWordSearchSubstringMode(enabled: Boolean) {
+    searchJob?.cancel()
+    val current = _wordSearchState.value
+    val norm = QuranWordSearchNormalizer.normalizeKey(current.query.trim())
+    _wordSearchState.update {
+      it.copy(
+        isSubstringMode = enabled,
+        collapsedSurahIds = emptySet(),
+        visibleResultLimit = 40,
+        errorMessage = null,
+        isLoading = norm.isNotEmpty(),
+      )
+    }
+    if (norm.isEmpty()) return
+
+    searchJob = viewModelScope.launch {
+      executeWordSearch(
+        query = current.query,
+        isSubstring = enabled,
+        fullMode = current.isFullResultsMode,
+      )
+    }
+  }
+
+  fun submitWordSearchFullResults() {
+    searchJob?.cancel()
+    val current = _wordSearchState.value
+    val norm = QuranWordSearchNormalizer.normalizeKey(current.query.trim())
+    if (norm.isEmpty()) {
+      _wordSearchState.update {
+        it.copy(
+          isFullResultsMode = true,
+          isLoading = false,
+          errorMessage = null,
+          result = null,
+        )
       }
       return
     }
+
+    val alreadyHasExact = current.result != null &&
+      current.result.query == current.query &&
+      current.result.isSubstringMode == current.isSubstringMode
+    if (alreadyHasExact) {
+      _wordSearchState.update {
+        it.copy(
+          isFullResultsMode = true,
+          isLoading = false,
+          errorMessage = null,
+          collapsedSurahIds = emptySet(),
+          visibleResultLimit = 40,
+        )
+      }
+      return
+    }
+
+    _wordSearchState.update {
+      it.copy(
+        isFullResultsMode = true,
+        isLoading = true,
+        errorMessage = null,
+        collapsedSurahIds = emptySet(),
+        visibleResultLimit = 40,
+      )
+    }
     searchJob = viewModelScope.launch {
-      _uiState.update { it.copy(verseSearchLoading = true, verseSearchError = null) }
-      val res = quranRepository.searchVerses(query)
-      res.onSuccess { hits ->
-        _uiState.update { it.copy(verseSearchResults = hits, verseSearchLoading = false) }
-      }.onFailure { err ->
-        _uiState.update {
-          it.copy(
-            verseSearchResults = emptyList(),
-            verseSearchLoading = false,
-            verseSearchError = err.localizedMessage ?: "تعذر البحث",
+      executeWordSearch(
+        query = current.query,
+        isSubstring = current.isSubstringMode,
+        fullMode = true,
+      )
+    }
+  }
+
+  fun toggleWordSearchSurahCollapsed(surahId: Int) {
+    _wordSearchState.update { st ->
+      val next = st.collapsedSurahIds.toMutableSet()
+      if (!next.add(surahId)) {
+        next.remove(surahId)
+      }
+      st.copy(collapsedSurahIds = next)
+    }
+  }
+
+  fun loadMoreWordSearchResults() {
+    _wordSearchState.update { st ->
+      val max = st.result?.totalMatchingAyahs ?: return@update st
+      if (st.visibleResultLimit >= max) return@update st
+      st.copy(visibleResultLimit = (st.visibleResultLimit + 40).coerceAtMost(max))
+    }
+  }
+
+  fun retryWordSearch() {
+    val current = _wordSearchState.value
+    if (QuranWordSearchNormalizer.normalizeKey(current.query.trim()).isEmpty()) return
+    searchJob?.cancel()
+    _wordSearchState.update { it.copy(isLoading = true, errorMessage = null) }
+    searchJob = viewModelScope.launch {
+      executeWordSearch(
+        query = current.query,
+        isSubstring = current.isSubstringMode,
+        fullMode = current.isFullResultsMode,
+      )
+    }
+  }
+
+  fun clearWordSearch() {
+    searchJob?.cancel()
+    _wordSearchState.value = QuranWordSearchUiState()
+  }
+
+  private suspend fun executeWordSearch(
+    query: String,
+    isSubstring: Boolean,
+    fullMode: Boolean,
+  ) {
+    val res = quranRepository.searchQuranWords(
+      query = query,
+      isSubstring = isSubstring,
+    )
+    res.onSuccess { searchResult ->
+      _wordSearchState.update { st ->
+        if (st.query != query || st.isSubstringMode != isSubstring) {
+          st
+        } else {
+          st.copy(
+            isFullResultsMode = fullMode || st.isFullResultsMode,
+            isLoading = false,
+            errorMessage = null,
+            result = searchResult,
+          )
+        }
+      }
+    }.onFailure { err ->
+      if (err is CancellationException) throw err
+      _wordSearchState.update { st ->
+        if (st.query != query || st.isSubstringMode != isSubstring) {
+          st
+        } else {
+          st.copy(
+            isLoading = false,
+            errorMessage = err.localizedMessage ?: "تعذر البحث في القرآن الكريم",
+            result = null,
           )
         }
       }
@@ -1106,7 +1432,13 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
             return@launch
           }
 
-          val fileRes = pdfMushafRepository.ensurePdfReadyForReader(entry)
+          val fileRes = pdfMushafRepository.ensurePdfReadyForReader(
+            entry = entry,
+            onBeforeDeleteStale = { staleId ->
+              activePdfFileKeys.remove(staleId)
+              pdfRendererBridge.closeIfMatches(staleId)
+            },
+          )
           val pdfFile = fileRes.getOrElse { err ->
             _pagesState.update {
               it + (page to PageLoadState.Error(err.localizedMessage ?: "تعذر تحميل صفحة المصحف PDF"))
@@ -1116,18 +1448,32 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
           if (activeRenderSpec != spec || !pageLruOrder.contains(page)) return@launch
 
+          val pdfFileKey = "${pdfFile.absolutePath}|${pdfFile.length()}|${pdfFile.lastModified()}"
+          activePdfFileKeys[entry.id] = pdfFileKey
+          val fileSpec = spec.copy(pdfFileKey = pdfFileKey)
+          if (!forceReload) {
+            pageBitmapRenderer.getCached(page, fileSpec)?.let { cached ->
+              _pagesState.update {
+                it + (page to PageLoadState.Ready(
+                  renderedPage = cached,
+                  effectiveDark = spec.effectiveDark,
+                  edition = spec.edition,
+                ))
+              }
+              return@launch
+            }
+          }
+
           val headerMeta = quranRepository.getExistingPageHeaderMeta(page)
-          val (bodyW, bodyH) = pageBitmapRenderer.computePdfBodySizePx(spec, page)
-          val pdfBitmap = pdfRendererBridge.renderPage(
+          val (bodyW, _) = pageBitmapRenderer.computePdfBodySizePx(fileSpec, page)
+          val renderedPdf = pdfRendererBridge.renderPage(
             mushafId = entry.id,
             pdfFile = pdfFile,
             pageNumber = page,
-            targetWidthPx = bodyW,
-            targetHeightPx = bodyH,
+            onScreenWidthPx = bodyW,
           )
 
           if (activeRenderSpec != spec || !pageLruOrder.contains(page)) {
-            pdfBitmap.recycle()
             return@launch
           }
 
@@ -1136,25 +1482,28 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
               if (it.isNotEmpty()) cachedSurahsById = it
             }
           }
+          val madaniTopSurahId = com.example.data.quran.QulPageLayoutLoader
+            .getPageLines(getApplication(), MushafEdition.MADINAH_1421, page)
+            .minByOrNull { it.line }
+            ?.takeIf { it.type == "surah_name" }
+            ?.surah
+          val topSurah = madaniTopSurahId?.let { surahsMap[it] }
 
-          val rendered = try {
-            pageBitmapRenderer.renderPdfPageOrGet(
-              pageNumber = page,
-              headerMeta = headerMeta,
-              pdfBitmap = pdfBitmap,
-              spec = spec,
-              surahsById = surahsMap,
-            )
-          } finally {
-            pdfBitmap.recycle()
-          }
+          val rendered = pageBitmapRenderer.renderPdfPageOrGet(
+            pageNumber = page,
+            headerMeta = headerMeta,
+            renderedPdf = renderedPdf,
+            topSurah = topSurah,
+            spec = fileSpec,
+            surahsById = surahsMap,
+          )
 
           if (activeRenderSpec != spec || !pageLruOrder.contains(page)) return@launch
 
           _pagesState.update {
             it + (page to PageLoadState.Ready(
               renderedPage = rendered,
-              effectiveDark = false,
+              effectiveDark = spec.effectiveDark,
               edition = spec.edition,
             ))
           }
@@ -1323,17 +1672,87 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   fun downloadSurahAudio(surahId: Int) {
     val reciter = audioState.value.currentReciter ?: return
-    val url = audioRepository.buildSurahMp3Url(reciter, surahId) ?: return
-    viewModelScope.launch {
-      audioCacheManager.downloadSurah(reciter.key, surahId, url)
-    }
+    downloadSingleSurahForReciter(reciter, surahId)
   }
 
   fun deleteDownloadedSurahAudio(surahId: Int) {
     val reciter = audioState.value.currentReciter ?: return
-    viewModelScope.launch {
-      audioCacheManager.deleteCachedSurah(reciter.key, surahId)
+    deleteSurahForReciter(reciter.key, surahId)
+  }
+
+  fun ensureAllDownloadableRecitersLoaded(forceRefresh: Boolean = false) {
+    val current = _downloadableRecitersState.value
+    if (!forceRefresh && (current.reciters.isNotEmpty() || downloadableRecitersJob?.isActive == true)) {
+      return
     }
+    downloadableRecitersJob?.cancel()
+    downloadableRecitersJob = viewModelScope.launch {
+      _downloadableRecitersState.update { it.copy(isLoading = true, errorMessage = null) }
+      audioCacheManager.refreshDownloadedKeys()
+      val manifestEntries = _uiState.value.pdfMushafs.ifEmpty {
+        pdfMushafRepository.readCachedManifestOrEmpty().ifEmpty {
+          pdfMushafRepository.fetchManifest(forceRefresh = false).getOrDefault(emptyList())
+        }
+      }
+      val manifestRiwayaIds = manifestEntries.flatMap { it.apiRiwayaIds }.distinct()
+      val res = audioRepository.getAllDownloadableRecitersCatalog(manifestRiwayaIds)
+      res.onSuccess { list ->
+        _downloadableRecitersState.value = DownloadableRecitersUiState(
+          reciters = list,
+          isLoading = false,
+          errorMessage = null,
+        )
+      }.onFailure { err ->
+        _downloadableRecitersState.update {
+          it.copy(
+            isLoading = false,
+            errorMessage = err.localizedMessage ?: "تعذر تحميل قائمة القراء",
+          )
+        }
+      }
+    }
+  }
+
+  fun downloadSingleSurahForReciter(reciter: VerifiedReciter, surahId: Int) {
+    val url = audioRepository.buildSurahMp3Url(reciter, surahId) ?: return
+    val surahName = cachedSurahsById[surahId]?.nameArabic
+      ?: _uiState.value.surahs.firstOrNull { it.id == surahId }?.nameArabic.orEmpty()
+    audioDownloadManager.enqueueSingleSurah(
+      reciter = reciter,
+      surahId = surahId,
+      surahName = surahName,
+      url = url,
+    )
+  }
+
+  fun cancelSurahDownloadForReciter(reciterKey: String, surahId: Int) {
+    audioDownloadManager.cancelSurah(reciterKey, surahId)
+  }
+
+  fun downloadAllSurahsForReciter(reciter: VerifiedReciter) {
+    val surahNames = cachedSurahsById.mapValues { it.value.nameArabic }
+      .ifEmpty { _uiState.value.surahs.associate { it.id to it.nameArabic } }
+    audioDownloadManager.enqueueReciterBatch(
+      reciter = reciter,
+      surahNamesById = surahNames,
+      urlBuilder = { r, sId -> audioRepository.buildSurahMp3Url(r, sId) },
+    )
+  }
+
+  fun cancelAllDownloadsForReciter(reciterKey: String) {
+    audioDownloadManager.cancelReciter(reciterKey)
+  }
+
+  fun deleteSurahForReciter(reciterKey: String, surahId: Int) {
+    audioDownloadManager.deleteSurah(reciterKey, surahId)
+  }
+
+  fun deleteAllSurahsForReciter(reciterKey: String) {
+    audioDownloadManager.deleteAllForReciter(reciterKey)
+  }
+
+  fun clearAudioLowStorageMessage() {
+    audioDownloadManager.clearLowStorageMessage()
   }
 
   fun setBetaChannelEnabled(enabled: Boolean) {

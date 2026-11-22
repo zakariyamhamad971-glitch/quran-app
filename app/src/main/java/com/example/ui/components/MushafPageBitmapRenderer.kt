@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.content.res.ResourcesCompat
 import com.example.R
+import com.example.data.pdf.PdfRenderedPageBitmap
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafLine
@@ -46,6 +47,7 @@ data class PageRenderSpec(
   val backgroundTheme: BackgroundTheme = BackgroundTheme.WHITE,
   val isTwoPageMode: Boolean = false,
   val pdfMushafId: String? = null,
+  val pdfFileKey: String? = null,
 ) {
   val isValid: Boolean
     get() = widthPx > 32 && heightPx > 32 && density > 0f
@@ -67,6 +69,7 @@ data class PageBitmapKey(
   val effectiveDark: Boolean,
   val isTwoPageMode: Boolean,
   val pdfMushafId: String? = null,
+  val pdfFileKey: String? = null,
   val layoutVersion: Int = com.example.data.quran.QuranRepository.LAYOUT_CACHE_VERSION,
 )
 
@@ -82,6 +85,141 @@ class WordHitBoxes(
 )
 
 @Immutable
+data class PdfPageOverlayData(
+  val pdfBitmap: ImageBitmap,
+  val bmpWidthPx: Int,
+  val bmpHeightPx: Int,
+  val topBandEndY: Int,
+  val bottomBandStartY: Int,
+  val textSrcLeft: Int,
+  val textSrcTop: Int,
+  val textSrcRight: Int,
+  val textSrcBottom: Int,
+  val bodyLeftPx: Float,
+  val bodyTopPx: Float,
+  val bodyRightPx: Float,
+  val bodyBottomPx: Float,
+  val topSurah: SurahMeta?,
+)
+
+data class PdfPageLayoutMetrics(
+  val topBandDstLeft: Int,
+  val topBandDstTop: Int,
+  val topBandDstWidth: Int,
+  val topBandDstHeight: Int,
+  val bottomBandDstLeft: Int,
+  val bottomBandDstTop: Int,
+  val bottomBandDstWidth: Int,
+  val bottomBandDstHeight: Int,
+  val textDstLeft: Int,
+  val textDstTop: Int,
+  val textDstWidth: Int,
+  val textDstHeight: Int,
+  val bannerLeft: Float,
+  val bannerTop: Float,
+  val bannerWidth: Float,
+  val bannerHeight: Float,
+  val appliedZoomRelativeToNatural: Float,
+)
+
+fun computePdfPageLayout(
+  frameLeft: Float,
+  frameTop: Float,
+  frameRight: Float,
+  frameBottom: Float,
+  bmpWidthPx: Int,
+  bmpHeightPx: Int,
+  topBandEndY: Int,
+  bottomBandStartY: Int,
+  textSrcLeft: Int,
+  textSrcTop: Int,
+  textSrcRight: Int,
+  textSrcBottom: Int,
+  hasTopSurahBanner: Boolean,
+  densityPxPerDp: Float,
+  surahBannerAspectRatio: Float = SurahHeaderOrnamentRenderer.HEADER_GLYPH_ASPECT_RATIO,
+): PdfPageLayoutMetrics {
+  val frameW = (frameRight - frameLeft).coerceAtLeast(1f)
+  val frameH = (frameBottom - frameTop).coerceAtLeast(1f)
+  val safeBmpW = bmpWidthPx.coerceAtLeast(1).toFloat()
+  val safeTopEndY = topBandEndY.coerceIn(1, (bmpHeightPx - 2).coerceAtLeast(1))
+  val safeBotStartY = bottomBandStartY.coerceIn(safeTopEndY + 1, (bmpHeightPx - 1).coerceAtLeast(safeTopEndY + 1))
+
+  val topNaturalH = frameW * (safeTopEndY.toFloat() / safeBmpW)
+  val topDstH = minOf(topNaturalH, frameH * 0.16f).coerceAtLeast(1f)
+
+  val botSrcH = (bmpHeightPx - safeBotStartY).coerceAtLeast(1)
+  val botNaturalH = frameW * (botSrcH.toFloat() / safeBmpW)
+  val botDstH = minOf(botNaturalH, frameH * 0.20f).coerceAtLeast(1f)
+
+  val topBandDstLeft = frameLeft.roundToInt()
+  val topBandDstTop = frameTop.roundToInt()
+  val topBandDstWidth = frameW.roundToInt().coerceAtLeast(1)
+  val topBandDstHeight = topDstH.roundToInt().coerceAtLeast(1)
+
+  val bottomBandDstLeft = frameLeft.roundToInt()
+  val bottomBandDstWidth = frameW.roundToInt().coerceAtLeast(1)
+  val bottomBandDstHeight = botDstH.roundToInt().coerceAtLeast(1)
+  val bottomBandDstTop = (frameBottom.roundToInt() - bottomBandDstHeight)
+    .coerceAtLeast(topBandDstTop + topBandDstHeight)
+
+  val midTop = (topBandDstTop + topBandDstHeight).toFloat()
+  val midBottom = bottomBandDstTop.toFloat()
+  val midH = (midBottom - midTop).coerceAtLeast(1f)
+
+  val bannerGapPx = 2.5f * densityPxPerDp.coerceAtLeast(0.5f)
+  val bannerIdealH = frameW / surahBannerAspectRatio.coerceAtLeast(1f)
+  val bannerH = if (hasTopSurahBanner) minOf(bannerIdealH, midH * 0.16f).coerceAtLeast(1f) else 0f
+  val textAvailTop = if (hasTopSurahBanner) {
+    (midTop + bannerH + bannerGapPx * 2f).coerceAtMost(midBottom - 1f)
+  } else {
+    midTop
+  }
+  val textAvailH = (midBottom - textAvailTop).coerceAtLeast(1f)
+
+  val srcW = (textSrcRight - textSrcLeft).coerceAtLeast(1).toFloat()
+  val srcH = (textSrcBottom - textSrcTop).coerceAtLeast(1).toFloat()
+  val midBmpH = (safeBotStartY - safeTopEndY).coerceAtLeast(1).toFloat()
+
+  val unzoomedScale = minOf(frameW / safeBmpW, textAvailH / midBmpH).coerceAtLeast(0.0001f)
+  val fitWidthScale = frameW / srcW
+  val fitHeightScale = textAvailH / srcH
+  val desiredScale = minOf(fitWidthScale, fitHeightScale)
+  val finalScale = desiredScale.coerceIn(unzoomedScale, unzoomedScale * 2.2f)
+
+  val textDstW = (srcW * finalScale).roundToInt().coerceIn(1, frameW.roundToInt().coerceAtLeast(1))
+  val textDstH = (srcH * finalScale).roundToInt().coerceIn(1, textAvailH.roundToInt().coerceAtLeast(1))
+  val textDstLeft = (frameLeft + (frameW - textDstW) * 0.5f).roundToInt()
+  val textDstTop = (textAvailTop + (textAvailH - textDstH) * 0.5f).roundToInt()
+
+  val bannerTop = if (hasTopSurahBanner) {
+    (textDstTop.toFloat() - bannerH - bannerGapPx).coerceAtLeast(midTop + bannerGapPx)
+  } else {
+    0f
+  }
+
+  return PdfPageLayoutMetrics(
+    topBandDstLeft = topBandDstLeft,
+    topBandDstTop = topBandDstTop,
+    topBandDstWidth = topBandDstWidth,
+    topBandDstHeight = topBandDstHeight,
+    bottomBandDstLeft = bottomBandDstLeft,
+    bottomBandDstTop = bottomBandDstTop,
+    bottomBandDstWidth = bottomBandDstWidth,
+    bottomBandDstHeight = bottomBandDstHeight,
+    textDstLeft = textDstLeft,
+    textDstTop = textDstTop,
+    textDstWidth = textDstW,
+    textDstHeight = textDstH,
+    bannerLeft = frameLeft,
+    bannerTop = bannerTop,
+    bannerWidth = if (hasTopSurahBanner) frameW else 0f,
+    bannerHeight = bannerH,
+    appliedZoomRelativeToNatural = finalScale / unzoomedScale,
+  )
+}
+
+@Immutable
 data class RenderedMushafPage(
   val pageNumber: Int,
   val widthPx: Int,
@@ -91,6 +229,7 @@ data class RenderedMushafPage(
   val verseHighlightRects: Map<String, FloatArray>,
   val rosetteSlotsByVerse: Map<String, FloatArray>,
   val wordHitBoxes: WordHitBoxes,
+  val pdfContent: PdfPageOverlayData? = null,
 )
 
 class MushafPageBitmapRenderer(
@@ -178,9 +317,10 @@ class MushafPageBitmapRenderer(
       densityBits = spec.density.toRawBits(),
       fontScaleBits = spec.fontScale.toRawBits(),
       edition = spec.edition,
-      effectiveDark = if (spec.isPdfMode) false else spec.effectiveDark,
+      effectiveDark = spec.effectiveDark,
       isTwoPageMode = spec.isTwoPageMode,
       pdfMushafId = spec.pdfMushafId,
+      pdfFileKey = if (spec.isPdfMode) spec.pdfFileKey else null,
     )
 
   private fun ensureCacheCapacityFor(spec: PageRenderSpec) {
@@ -253,31 +393,48 @@ class MushafPageBitmapRenderer(
     val footerHeight = maxOf(dp(18f), badgeH + dp(2f))
     val footerTop = contentBottom - footerHeight
 
+    val contentLeft = padH
+    val contentRight = w - padH
     val bodyTop = contentTop + topHeaderHeight + dp(1f)
     val bodyBottom = footerTop - dp(2f)
-    val bodyHeight = (bodyBottom - bodyTop).coerceAtLeast(1f)
-    return contentWidth.roundToInt().coerceAtLeast(1) to bodyHeight.roundToInt().coerceAtLeast(1)
+    val bodyLeftPx = ceil(contentLeft.toDouble()).toInt().coerceIn(0, w - 1)
+    val bodyRightPx = kotlin.math.floor(contentRight.toDouble()).toInt().coerceIn(bodyLeftPx + 1, w)
+    val bodyTopPx = ceil(bodyTop.toDouble()).toInt().coerceIn(0, h - 1)
+    val bodyBottomPx = kotlin.math.floor(bodyBottom.toDouble()).toInt().coerceIn(bodyTopPx + 1, h)
+    val bodyWidthPx = (bodyRightPx - bodyLeftPx).coerceAtLeast(1)
+    val bodyHeightPx = (bodyBottomPx - bodyTopPx).coerceAtLeast(1)
+    return bodyWidthPx to bodyHeightPx
   }
 
   suspend fun renderPdfPageOrGet(
     pageNumber: Int,
     headerMeta: PdfPageHeaderMeta?,
-    pdfBitmap: Bitmap,
+    renderedPdf: PdfRenderedPageBitmap,
+    topSurah: SurahMeta?,
     spec: PageRenderSpec,
     surahsById: Map<Int, SurahMeta>,
   ): RenderedMushafPage {
     val key = makeKey(pageNumber, spec)
-    bitmapCache.get(key)?.let { return it }
+    bitmapCache.get(key)?.let { cached ->
+      if (cached.pdfContent?.topSurah?.id == topSurah?.id) {
+        return cached
+      }
+    }
 
     return withContext(Dispatchers.Default) {
-      bitmapCache.get(key)?.let { return@withContext it }
+      bitmapCache.get(key)?.let { cached ->
+        if (cached.pdfContent?.topSurah?.id == topSurah?.id) {
+          return@withContext cached
+        }
+      }
       ensureCacheCapacityFor(spec)
       ensureUiFontsLoaded()
 
       val rendered = renderPdfPageToBitmap(
         pageNumber = pageNumber,
         headerMeta = headerMeta,
-        pdfBitmap = pdfBitmap,
+        renderedPdf = renderedPdf,
+        topSurah = topSurah,
         spec = spec,
         surahsById = surahsById,
       )
@@ -354,8 +511,7 @@ class MushafPageBitmapRenderer(
     fun dp(v: Float): Float = v * d
     fun sp(v: Float): Float = v * d * fs
 
-    // In PDF mode: pure white paper with readable dark/gold header & footer ink regardless of dark theme
-    val effectiveDark = if (isPdfMode) false else spec.effectiveDark
+    val effectiveDark = spec.effectiveDark
     val goldInt = if (effectiveDark) 0xFFE0B45C.toInt() else 0xFFC29038.toInt()
     val paperInt = if (effectiveDark) android.graphics.Color.BLACK else android.graphics.Color.WHITE
     val inkInt = if (effectiveDark) android.graphics.Color.WHITE else android.graphics.Color.BLACK
@@ -634,7 +790,8 @@ class MushafPageBitmapRenderer(
   private fun renderPdfPageToBitmap(
     pageNumber: Int,
     headerMeta: PdfPageHeaderMeta?,
-    pdfBitmap: Bitmap,
+    renderedPdf: PdfRenderedPageBitmap,
+    topSurah: SurahMeta?,
     spec: PageRenderSpec,
     surahsById: Map<Int, SurahMeta>,
   ): RenderedMushafPage {
@@ -654,13 +811,10 @@ class MushafPageBitmapRenderer(
       isPdfMode = true,
     )
 
-    val dstRect = RectF(
-      chrome.bodyLeft,
-      chrome.bodyTop,
-      chrome.bodyRight,
-      chrome.bodyBottom,
-    )
-    canvas.drawBitmap(pdfBitmap, null, dstRect, Paint(Paint.FILTER_BITMAP_FLAG))
+    val bodyLeftPx = ceil(chrome.bodyLeft.toDouble()).toInt().coerceIn(0, w - 1).toFloat()
+    val bodyTopPx = ceil(chrome.bodyTop.toDouble()).toInt().coerceIn(0, h - 1).toFloat()
+    val bodyRightPx = kotlin.math.floor(chrome.bodyRight.toDouble()).toInt().coerceIn(bodyLeftPx.toInt() + 1, w).toFloat()
+    val bodyBottomPx = kotlin.math.floor(chrome.bodyBottom.toDouble()).toInt().coerceIn(bodyTopPx.toInt() + 1, h).toFloat()
 
     return RenderedMushafPage(
       pageNumber = pageNumber,
@@ -678,6 +832,22 @@ class MushafPageBitmapRenderer(
         bottoms = FloatArray(0),
         verseKeys = emptyArray(),
         codeV2Lines = emptyArray(),
+      ),
+      pdfContent = PdfPageOverlayData(
+        pdfBitmap = renderedPdf.bitmap.asImageBitmap(),
+        bmpWidthPx = renderedPdf.croppedWidthPx,
+        bmpHeightPx = renderedPdf.croppedHeightPx,
+        topBandEndY = renderedPdf.topBandEndY,
+        bottomBandStartY = renderedPdf.bottomBandStartY,
+        textSrcLeft = renderedPdf.textBounds.left,
+        textSrcTop = renderedPdf.textBounds.top,
+        textSrcRight = renderedPdf.textBounds.right,
+        textSrcBottom = renderedPdf.textBounds.bottom,
+        bodyLeftPx = bodyLeftPx,
+        bodyTopPx = bodyTopPx,
+        bodyRightPx = bodyRightPx,
+        bodyBottomPx = bodyBottomPx,
+        topSurah = topSurah,
       ),
     )
   }

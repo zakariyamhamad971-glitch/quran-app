@@ -77,6 +77,7 @@ class PlaybackController(
   private var surahNamesMap: Map<Int, String> = emptyMap()
   private var onSurahCompletedCallback: ((Int) -> Unit)? = null
   private var onActiveVerseChangedCallback: ((String?) -> Unit)? = null
+  private var onAutoDownloadSurahCallback: ((VerifiedReciter, Int, String?) -> Unit)? = null
 
   private data class PendingMediaQueue(
     val items: List<MediaItem>,
@@ -199,9 +200,11 @@ class PlaybackController(
   fun connect(
     onSurahEnded: (Int) -> Unit,
     onActiveVerseChanged: (String?) -> Unit,
+    onAutoDownloadSurah: ((VerifiedReciter, Int, String?) -> Unit)? = null,
   ) {
     onSurahCompletedCallback = onSurahEnded
     onActiveVerseChangedCallback = onActiveVerseChanged
+    onAutoDownloadSurahCallback = onAutoDownloadSurah
     if (isBound) return
     val intent = Intent(context, QabasatPlaybackService::class.java)
     isBound = context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
@@ -445,6 +448,18 @@ class PlaybackController(
           )
         }
         return@launch
+      }
+
+      if (localFile == null && autoPlay) {
+        val preferredWholeSurahUrl = when (resolved) {
+          is com.example.data.audio.ResolvedRecitationAudio.SingleTimedTrack ->
+            if (resolved.matchesSelectedMoshafUrl) resolved.streamUrl else null
+          is com.example.data.audio.ResolvedRecitationAudio.UntimedSingleTrack ->
+            resolved.streamUrl
+          is com.example.data.audio.ResolvedRecitationAudio.VerseByVersePlaylist ->
+            null
+        }
+        onAutoDownloadSurahCallback?.invoke(reciter, surahId, preferredWholeSurahUrl)
       }
 
       val resolvedTitle = surahName.ifBlank { "سورة $surahId" }

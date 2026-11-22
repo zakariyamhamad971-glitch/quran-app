@@ -406,58 +406,24 @@ class QuranRepository(
     parsed?.verse?.page_number?.takeIf { it in 1..604 }
   }
 
-  suspend fun searchVerses(query: String): Result<List<VerseSearchHit>> = runCatching {
-    val trimmed = query.trim()
-    if (trimmed.isBlank()) return@runCatching emptyList()
+  private val wordSearchEngine = QuranWordSearchEngine(
+    diskCache = diskCache,
+    ensurePageCached = ::ensurePageJsonCached,
+  )
 
-    withContext(Dispatchers.IO) {
-      // Direct surah:ayah key lookup (e.g., 2:255)
-      val keyMatch = Regex("^(\\d{1,3})\\s*[:\\-]\\s*(\\d{1,3})$").matchEntire(trimmed)
-      if (keyMatch != null) {
-        val sId = keyMatch.groupValues[1].toIntOrNull() ?: 1
-        val aNum = keyMatch.groupValues[2].toIntOrNull() ?: 1
-        val key = "$sId:$aNum"
-        val resp = QuranApiClient.quranComApi.getVerseByKeyRaw(key)
-        if (!resp.isSuccessful) error("لم يتم العثور على الآية $key")
-        val parsed = verseKeyAdapter.fromJson(resp.body()?.string().orEmpty())
-          ?: error("تعذر قراءة الآية $key")
-        return@withContext listOf(
-          VerseSearchHit(
-            verseKey = parsed.verse.verse_key,
-            surahId = sId,
-            ayahNumber = aNum,
-            pageNumber = parsed.verse.page_number,
-            snippetText = parsed.verse.text_uthmani.orEmpty(),
-          ),
-        )
-      }
+  suspend fun warmUpWordSearchIndex(): Result<Unit> = runCatching {
+    wordSearchEngine.ensureIndexReady()
+  }
 
-      val searchAdapter = QuranApiClient.moshi.adapter(QuranSearchResponse::class.java)
-      val resp = QuranApiClient.quranComApi.searchQuranRaw(query = trimmed, size = 20, language = "ar")
-      if (!resp.isSuccessful) error("تعذر البحث عن الآيات (${resp.code()})")
-      val parsed = searchAdapter.fromJson(resp.body()?.string().orEmpty())
-      val rawResults = parsed?.search?.results.orEmpty()
-      coroutineScope {
-        rawResults.take(15).map { item ->
-          async(Dispatchers.IO) {
-            val parts = item.verse_key.split(":")
-            val sId = parts.getOrNull(0)?.toIntOrNull() ?: 1
-            val aNum = parts.getOrNull(1)?.toIntOrNull() ?: 1
-            val pageNum = getVersePageNumber(item.verse_key) ?: 1
-            val cleanText = androidx.core.text.HtmlCompat.fromHtml(
-              item.text,
-              androidx.core.text.HtmlCompat.FROM_HTML_MODE_COMPACT,
-            ).toString().trim()
-            VerseSearchHit(
-              verseKey = item.verse_key,
-              surahId = sId,
-              ayahNumber = aNum,
-              pageNumber = pageNum,
-              snippetText = cleanText,
-            )
-          }
-        }.awaitAll()
-      }
-    }
+  suspend fun searchQuranWords(
+    query: String,
+    isSubstring: Boolean,
+  ): Result<QuranWordSearchResult> = runCatching {
+    val surahs = getSurahs().getOrDefault(emptyList()).associateBy { it.id }
+    wordSearchEngine.search(
+      query = query,
+      isSubstring = isSubstring,
+      surahsById = surahs,
+    )
   }
 }

@@ -160,8 +160,19 @@ class ReaderPreferences(private val context: Context) {
       if (current.size > 1 && current.contains(id)) {
         current.remove(id)
         prefs[Keys.DOWNLOADED_MUSHAF_IDS] = current
-        if (prefs[Keys.ACTIVE_MUSHAF_ID] == id) {
-          prefs[Keys.ACTIVE_MUSHAF_ID] = current.first()
+        val fallback = current.firstOrNull { it == "madinah_1421" } ?: current.first()
+        if (prefs[Keys.ACTIVE_MUSHAF_ID] == id || prefs[Keys.ACTIVE_MUSHAF_ID].isNullOrBlank()) {
+          prefs[Keys.ACTIVE_MUSHAF_ID] = fallback
+        }
+        val activeAfter = prefs[Keys.ACTIVE_MUSHAF_ID] ?: fallback
+        if (id == "tajweed_v4" &&
+          (prefs[Keys.MUSHAF_EDITION] == MushafEdition.TAJWEED_V4.name || activeAfter == "madinah_1421")
+        ) {
+          prefs[Keys.MUSHAF_EDITION] = if (activeAfter == "tajweed_v4") {
+            MushafEdition.TAJWEED_V4.name
+          } else {
+            MushafEdition.MADINAH_1421.name
+          }
         }
       }
     }
@@ -246,5 +257,10 @@ class ReaderPreferences(private val context: Context) {
 
   suspend fun setBetaChannelUnlocked(unlocked: Boolean) {
     context.dataStore.edit { it[Keys.BETA_CHANNEL_UNLOCKED] = unlocked }
+  }
+
+  @androidx.annotation.VisibleForTesting
+  internal suspend fun resetForTest() {
+    context.dataStore.edit { it.clear() }
   }
 }

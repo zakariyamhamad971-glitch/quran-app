@@ -142,20 +142,32 @@ object PdfManifestParser {
   }
 
   fun hasPdfMagicHeader(file: File): Boolean {
-      if (!file.exists() || file.length() < 5L) return false
-      return runCatching {
-        FileInputStream(file).use { input ->
-          val buf = ByteArray(5)
-          val read = input.read(buf)
-          read == 5 &&
-            buf[0] == '%'.code.toByte() &&
-            buf[1] == 'P'.code.toByte() &&
-            buf[2] == 'D'.code.toByte() &&
-            buf[3] == 'F'.code.toByte() &&
-            buf[4] == '-'.code.toByte()
-        }
-      }.getOrDefault(false)
-    }
+    if (!file.exists() || file.length() < 5L) return false
+    return runCatching {
+      FileInputStream(file).use { input ->
+        val buf = ByteArray(5)
+        val read = input.read(buf)
+        read == 5 &&
+          buf[0] == '%'.code.toByte() &&
+          buf[1] == 'P'.code.toByte() &&
+          buf[2] == 'D'.code.toByte() &&
+          buf[3] == 'F'.code.toByte() &&
+          buf[4] == '-'.code.toByte()
+      }
+    }.getOrDefault(false)
+  }
+
+  fun isStaleFileSize(
+    actualBytes: Long,
+    expectedSizeMB: Double,
+    toleranceRatio: Double = 0.05,
+  ): Boolean {
+    if (actualBytes <= 0L) return true
+    if (expectedSizeMB <= 0.0) return false
+    val expectedBytes = expectedSizeMB * 1024.0 * 1024.0
+    val diffRatio = kotlin.math.abs(actualBytes.toDouble() - expectedBytes) / expectedBytes
+    return diffRatio > toleranceRatio
+  }
 }
 
 object ColorsGuideParser {
@@ -345,6 +357,9 @@ class PdfMushafRepository(
   private val _offlineDownloadedIds = MutableStateFlow<Set<String>>(scanOfflineDownloadedIds())
   val offlineDownloadedIds: StateFlow<Set<String>> = _offlineDownloadedIds.asStateFlow()
 
+  private val _localOrCachedIds = MutableStateFlow<Set<String>>(scanLocalOrCachedIds())
+  val localOrCachedIds: StateFlow<Set<String>> = _localOrCachedIds.asStateFlow()
+
   private fun offlinePdfFile(id: String): File = File(persistentDir, "$id.pdf")
   private fun cachePdfFile(id: String): File = File(cachePdfDir, "$id.pdf")
   private fun thumbFile(id: String): File = File(thumbCacheDir, "$id.img")
@@ -360,12 +375,61 @@ class PdfMushafRepository(
     }.toHashSet()
   }
 
-  fun refreshOfflineDownloadedIds() {
+  private fun scanLocalOrCachedIds(): Set<String> {
+    val out = scanOfflineDownloadedIds().toHashSet()
+    cachePdfDir.listFiles()?.forEach { f ->
+      if (f.isFile && f.name.endsWith(".pdf") && PdfManifestParser.hasPdfMagicHeader(f)) {
+        out += f.name.removeSuffix(".pdf")
+      }
+    }
+    return out
+  }
+
+  private fun refreshFileStateFlows() {
     _offlineDownloadedIds.value = scanOfflineDownloadedIds()
+    _localOrCachedIds.value = scanLocalOrCachedIds()
+  }
+
+  fun refreshOfflineDownloadedIds() {
+    refreshFileStateFlows()
   }
 
   fun isOfflineDownloaded(mushafId: String): Boolean =
     PdfManifestParser.hasPdfMagicHeader(offlinePdfFile(mushafId))
+
+  fun isFileStale(file: File, entry: PdfMushafEntry): Boolean =
+    !PdfManifestParser.hasPdfMagicHeader(file) ||
+      PdfManifestParser.isStaleFileSize(file.length(), entry.sizeMB)
+
+  suspend fun pruneStaleFilesAndCollectRedownloadEntries(
+    entries: List<PdfMushafEntry>,
+    onBeforeDelete: suspend (String) -> Unit = {},
+  ): List<PdfMushafEntry> = withContext(Dispatchers.IO) {
+    if (entries.isEmpty()) return@withContext emptyList()
+    val staleOfflineEntries = ArrayList<PdfMushafEntry>()
+    var changed = false
+
+    for (entry in entries) {
+      val offline = offlinePdfFile(entry.id)
+      val cached = cachePdfFile(entry.id)
+      if (offline.exists() && isFileStale(offline, entry)) {
+        onBeforeDelete(entry.id)
+        offline.delete()
+        cached.delete()
+        staleOfflineEntries += entry
+        changed = true
+      } else if (cached.exists() && isFileStale(cached, entry)) {
+        onBeforeDelete(entry.id)
+        cached.delete()
+        changed = true
+      }
+    }
+
+    if (changed) {
+      refreshFileStateFlows()
+    }
+    staleOfflineEntries
+  }
 
   fun getLocalOrCachedPdfFile(mushafId: String): File? {
     val offline = offlinePdfFile(mushafId)
@@ -551,16 +615,19 @@ class PdfMushafRepository(
             progressPercent = 0,
           ),
         )
-        // If already cached from online streaming, copy cleanly to persistent dir first or stream if not
+        // If already cached and size matches manifest (within 5%), move/copy cleanly to persistent dir
         val cached = cachePdfFile(entry.id)
-        if (PdfManifestParser.hasPdfMagicHeader(cached)) {
+        if (cached.exists() && isFileStale(cached, entry)) {
+          cached.delete()
+        }
+        if (cached.exists() && !isFileStale(cached, entry)) {
           val part = File(persistentDir, "${entry.id}.pdf.part")
           cached.copyTo(part, overwrite = true)
           if (!part.renameTo(target)) {
             part.copyTo(target, overwrite = true)
             part.delete()
           }
-          _offlineDownloadedIds.value = scanOfflineDownloadedIds()
+          refreshFileStateFlows()
           updateTransferState(PdfMushafTransferState(mushafId = entry.id))
           onCompleted()
           return@launch
@@ -571,7 +638,7 @@ class PdfMushafRepository(
           targetFile = target,
           isOfflineDownload = true,
         )
-        _offlineDownloadedIds.value = scanOfflineDownloadedIds()
+        refreshFileStateFlows()
         updateTransferState(PdfMushafTransferState(mushafId = entry.id))
         onCompleted()
       } catch (e: CancellationException) {
@@ -591,16 +658,54 @@ class PdfMushafRepository(
     transferJobs[entry.id] = job
   }
 
-  suspend fun ensurePdfReadyForReader(entry: PdfMushafEntry): Result<File> = withContext(Dispatchers.IO) {
-    runCatching {
-      getLocalOrCachedPdfFile(entry.id)?.let { return@runCatching it }
+  suspend fun forceRedownloadOffline(
+    entry: PdfMushafEntry,
+    onBeforeDelete: suspend () -> Unit = {},
+    onCompleted: suspend () -> Unit = {},
+  ) {
+    withContext(Dispatchers.IO) {
+      cancelTransfer(entry.id)
+      onBeforeDelete()
+      offlinePdfFile(entry.id).delete()
+      cachePdfFile(entry.id).delete()
+      refreshFileStateFlows()
+    }
+    startOfflineDownload(entry, onCompleted = onCompleted)
+  }
 
-      // Cancel any conflicting job or wait? Start streaming download into cache
-      val target = cachePdfFile(entry.id)
+  suspend fun ensurePdfReadyForReader(
+    entry: PdfMushafEntry,
+    onBeforeDeleteStale: suspend (String) -> Unit = {},
+  ): Result<File> = withContext(Dispatchers.IO) {
+    runCatching {
+      val offline = offlinePdfFile(entry.id)
+      var hadStaleOffline = false
+      if (offline.exists()) {
+        if (!isFileStale(offline, entry)) {
+          return@runCatching offline
+        }
+        onBeforeDeleteStale(entry.id)
+        offline.delete()
+        hadStaleOffline = true
+        refreshFileStateFlows()
+      }
+
+      val cached = cachePdfFile(entry.id)
+      if (cached.exists()) {
+        if (!hadStaleOffline && !isFileStale(cached, entry)) {
+          return@runCatching cached
+        }
+        onBeforeDeleteStale(entry.id)
+        cached.delete()
+        refreshFileStateFlows()
+      }
+
+      val target = if (hadStaleOffline) offline else cached
       updateTransferState(
         PdfMushafTransferState(
           mushafId = entry.id,
-          isStreamingOpen = true,
+          isDownloadingOffline = hadStaleOffline,
+          isStreamingOpen = !hadStaleOffline,
           progressPercent = 0,
         ),
       )
@@ -608,8 +713,9 @@ class PdfMushafRepository(
         downloadPdfToTarget(
           entry = entry,
           targetFile = target,
-          isOfflineDownload = false,
+          isOfflineDownload = hadStaleOffline,
         )
+        refreshFileStateFlows()
         updateTransferState(PdfMushafTransferState(mushafId = entry.id))
         target
       } catch (e: CancellationException) {
@@ -703,7 +809,7 @@ class PdfMushafRepository(
     cancelTransfer(mushafId)
     offlinePdfFile(mushafId).delete()
     cachePdfFile(mushafId).delete()
-    _offlineDownloadedIds.value = scanOfflineDownloadedIds()
+    refreshFileStateFlows()
   }
 
   private fun updateTransferState(state: PdfMushafTransferState) {

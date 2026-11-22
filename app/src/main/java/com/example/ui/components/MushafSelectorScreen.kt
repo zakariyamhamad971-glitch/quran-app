@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.data.quran.MushafDownloadState
+import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafItem
 import com.example.data.quran.MushafRegistry
 import com.example.ui.theme.AmiriFontFamily
@@ -127,7 +128,7 @@ fun MushafSelectorScreen(
           textAlign = TextAlign.Center,
         )
         Text(
-          text = "اختر ونزّل مصحفًا واحدًا على الأقل للبدء بالقراءة والاستماع بدون إنترنت.",
+          text = "نزّل مصحف المدينة للبدء بالقراءة والاستماع بدون إنترنت.",
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           textAlign = TextAlign.Center,
@@ -140,7 +141,8 @@ fun MushafSelectorScreen(
           .weight(1f),
         verticalArrangement = Arrangement.spacedBy(12.dp),
       ) {
-        items(MushafRegistry.allMushafs, key = { it.id }) { item ->
+        val initialMushafs = listOf(MushafRegistry.getByEdition(MushafEdition.MADINAH_1421))
+        items(initialMushafs, key = { it.id }) { item ->
           val state = downloadStates[item.id] ?: MushafDownloadState(mushafId = item.id)
           MushafItemCard(
             item = item,

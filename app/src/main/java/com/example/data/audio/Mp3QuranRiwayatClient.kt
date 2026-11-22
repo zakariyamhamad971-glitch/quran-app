@@ -629,6 +629,62 @@ class Mp3QuranRiwayatClient(
     }
   }
 
+  suspend fun fetchRecitersForAllRiwayasResilient(
+    apiRiwayaIds: List<Int>,
+    forceRefresh: Boolean = false,
+  ): List<VerifiedReciter> = withContext(Dispatchers.IO) {
+    if (apiRiwayaIds.isEmpty()) return@withContext emptyList()
+    coroutineScope {
+      val riwayatNamesDeferred = async { runCatching { getRiwayatMap(forceRefresh) }.getOrDefault(emptyMap()) }
+      val timingIdsDeferred = async { runCatching { getTimingReadIds(forceRefresh) }.getOrDefault(emptySet()) }
+
+      val distinctIds = apiRiwayaIds.distinct()
+      val perRiwayaDeferred = distinctIds.map { rId ->
+        async {
+          val file = File(cacheRoot, "reciters_rewaya_$rId.json")
+          val freshCached = if (!forceRefresh && isCacheFresh(file, RECITERS_CACHE_TTL_MS)) {
+            readFileOrNull(file)
+          } else {
+            null
+          }
+          val raw = freshCached ?: runCatching {
+            val fetched = executeGetString("$RECITERS_URL_PREFIX$rId", "جلب قراء الرواية")
+            writeAtomic(file, fetched)
+            fetched
+          }.getOrElse { readFileOrNull(file) }
+          rId to raw
+        }
+      }
+
+      val riwayatNames = riwayatNamesDeferred.await()
+      val timingReadIds = timingIdsDeferred.await()
+      val rawByRiwaya = perRiwayaDeferred.awaitAll().toMap()
+
+      val parsedByRiwaya = HashMap<Int, List<Mp3QuranRiwayaReciterEntry>>(rawByRiwaya.size)
+      for ((rId, rawJson) in rawByRiwaya) {
+        if (rawJson.isNullOrBlank()) continue
+        val rName = riwayatNames[rId].orEmpty()
+        runCatching {
+          Mp3QuranRiwayatParser.parseRecitersForRiwayaJson(
+            rawJson = rawJson,
+            riwayaId = rId,
+            riwayaName = rName,
+          )
+        }.onSuccess { parsed ->
+          if (parsed.isNotEmpty()) {
+            parsedByRiwaya[rId] = parsed
+          }
+        }
+      }
+
+      Mp3QuranRiwayatParser.buildGroupedVerifiedReciters(
+        orderedRiwayaIds = distinctIds,
+        entriesByRiwayaId = parsedByRiwaya,
+        timingReadIds = timingReadIds,
+      )
+    }
+  }
+
   suspend fun fetchAyahTimings(
     readId: Int,
     surahId: Int,

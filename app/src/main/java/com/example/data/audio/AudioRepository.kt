@@ -403,6 +403,41 @@ class AudioRepository(
   ): Result<List<VerifiedReciter>> =
     riwayatClient.fetchRecitersForRiwayas(apiRiwayaIds, forceRefresh)
 
+  suspend fun getAllDownloadableRecitersCatalog(
+    manifestRiwayaIds: List<Int>,
+  ): Result<List<VerifiedReciter>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val hafsPair = getVerifiedRecitersCatalog().getOrThrow()
+      val hafsList = (hafsPair.first + hafsPair.second).filter { it.isPlayable }
+
+      val allRiwayatMap = runCatching { riwayatClient.getRiwayatMap(false) }.getOrDefault(emptyMap())
+      val extraRiwayaIds = (manifestRiwayaIds + allRiwayatMap.keys)
+        .distinct()
+        .filter { it > 0 && it != 1 }
+
+      val riwayaReciters = if (extraRiwayaIds.isNotEmpty()) {
+        riwayatClient.fetchRecitersForAllRiwayasResilient(extraRiwayaIds, forceRefresh = false)
+          .filter { it.isPlayable }
+      } else {
+        emptyList()
+      }
+
+      val seenKeys = HashSet<String>(hafsList.size + riwayaReciters.size)
+      val merged = ArrayList<VerifiedReciter>(hafsList.size + riwayaReciters.size)
+      for (r in hafsList) {
+        if (seenKeys.add(r.key)) {
+          merged += if (r.riwayaName.isBlank()) r.copy(riwayaName = "حفص عن عاصم") else r
+        }
+      }
+      for (r in riwayaReciters) {
+        if (seenKeys.add(r.key)) {
+          merged += r
+        }
+      }
+      merged
+    }
+  }
+
   suspend fun resolvePdfLocalTimings(
     reciter: VerifiedReciter,
     surahId: Int,

@@ -85,6 +85,7 @@ fun MushafsManagerScreen(
   pdfManifestError: String?,
   pdfTransferStates: Map<String, PdfMushafTransferState>,
   offlinePdfIds: Set<String>,
+  localOrCachedPdfIds: Set<String> = emptySet(),
   onLoadThumbnail: suspend (PdfMushafEntry) -> Bitmap?,
   onRefreshManifest: () -> Unit,
   onSelectTextMushaf: (String) -> Unit,
@@ -95,6 +96,7 @@ fun MushafsManagerScreen(
   onDownloadPdfMushaf: (PdfMushafEntry) -> Unit,
   onCancelPdfTransfer: (String) -> Unit,
   onDeletePdfMushaf: (PdfMushafEntry) -> Unit,
+  onForceUpdatePdfMushaf: (PdfMushafEntry) -> Unit = {},
   onClose: () -> Unit,
 ) {
   BackHandler(onBack = onClose)
@@ -315,18 +317,21 @@ fun MushafsManagerScreen(
           ) { entry ->
             val isActive = activeMushafIsPdf && activePdfMushafId == entry.id
             val isOffline = offlinePdfIds.contains(entry.id)
+            val hasLocalOrCachedFile = isOffline || localOrCachedPdfIds.contains(entry.id)
             val transferState = pdfTransferStates[entry.id] ?: PdfMushafTransferState(mushafId = entry.id)
 
             PdfMushafWideCard(
               entry = entry,
               isActive = isActive,
               isOfflineDownloaded = isOffline,
+              hasLocalOrCachedFile = hasLocalOrCachedFile,
               transferState = transferState,
               onLoadThumbnail = onLoadThumbnail,
               onSelect = { onSelectPdfMushaf(entry) },
               onDownload = { onDownloadPdfMushaf(entry) },
               onCancel = { onCancelPdfTransfer(entry.id) },
               onDelete = { onDeletePdfMushaf(entry) },
+              onForceUpdate = { onForceUpdatePdfMushaf(entry) },
             )
           }
         }
@@ -472,12 +477,14 @@ private fun PdfMushafWideCard(
   entry: PdfMushafEntry,
   isActive: Boolean,
   isOfflineDownloaded: Boolean,
+  hasLocalOrCachedFile: Boolean,
   transferState: PdfMushafTransferState,
   onLoadThumbnail: suspend (PdfMushafEntry) -> Bitmap?,
   onSelect: () -> Unit,
   onDownload: () -> Unit,
   onCancel: () -> Unit,
   onDelete: () -> Unit,
+  onForceUpdate: () -> Unit,
 ) {
   var thumbBitmap by remember(entry.id, entry.thumb) { mutableStateOf<Bitmap?>(null) }
   LaunchedEffect(entry.id, entry.thumb) {
@@ -569,21 +576,46 @@ private fun PdfMushafWideCard(
         )
 
         Row(
+          modifier = Modifier.fillMaxWidth(),
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(5.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-          Icon(
-            imageVector = if (isOfflineDownloaded) Icons.Filled.OfflinePin else Icons.Filled.Public,
-            contentDescription = null,
-            tint = if (isOfflineDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
-            modifier = Modifier.size(15.dp),
-          )
-          Text(
-            text = if (isOfflineDownloaded) "محمّل - يعمل بدون إنترنت" else "أونلاين",
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-            color = if (isOfflineDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
-          )
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            modifier = Modifier.weight(1f),
+          ) {
+            Icon(
+              imageVector = if (isOfflineDownloaded) Icons.Filled.OfflinePin else Icons.Filled.Public,
+              contentDescription = null,
+              tint = if (isOfflineDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+              modifier = Modifier.size(15.dp),
+            )
+            Text(
+              text = if (isOfflineDownloaded) "محمّل - يعمل بدون إنترنت" else "أونلاين",
+              style = MaterialTheme.typography.labelSmall,
+              fontWeight = FontWeight.Medium,
+              color = if (isOfflineDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+
+          if (hasLocalOrCachedFile && !transferState.isBusy) {
+            TextButton(
+              onClick = onForceUpdate,
+              contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+              modifier = Modifier.testTag("force_update_pdf_${entry.id}"),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Refresh,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+              )
+              Spacer(Modifier.width(3.dp))
+              Text("تحديث الملف", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            }
+          }
         }
 
         if (transferState.errorMessage != null) {
