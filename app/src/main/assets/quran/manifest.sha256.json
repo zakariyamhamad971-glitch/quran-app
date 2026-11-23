@@ -1,7 +1,7 @@
 {
   "algorithm": "SHA-256",
   "files": [
-    { "path": "credits.json", "sha256": "df9ad4a756427f14e8b45a6f4ad658f5ec0efde1a1b6c953a51dc9a6cf293589" },
+    { "path": "credits.json", "sha256": "e768cf45a9b6f13d8545b429e3cde06aa4aa4e01ce710cff68d43b82ad45f09c" },
     { "path": "tajweed_legend.json", "sha256": "4cf0182bef3712b04eea91790a4cb4f192c4915e7c2180222ad32cadc79ce2e9" },
     { "path": "layout_madinah_v2.json", "sha256": "2ad7ab0f1dcf22fc479f0a7823d487292f774beeaf83253c905648c1726ec7f7" },
     { "path": "layout_tajweed_v4.json", "sha256": "f20ae63bce13ef1b05dee90da6db28beef5906dcfad269846ca0afb5aa7e5ac3" },

@@ -10,15 +10,20 @@ import android.os.SystemClock
 import android.util.Log
 import android.util.LruCache
 import com.example.BuildConfig
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 data class PdfPixelRect(
   val left: Int,
@@ -60,6 +65,8 @@ data class PdfPageCacheKey(
   val lastModified: Long,
   val pageIndex: Int,
   val widthPx: Int,
+  val isTwoPageMode: Boolean = false,
+  val scaleMultiplierBits: Int = 1f.toRawBits(),
 )
 
 data class InkRowInfo(
@@ -80,9 +87,13 @@ class PdfRendererBridge {
     private const val TAG = "PdfRendererBridge"
     const val CROPPED_PAGE_WIDTH_PT = 472f
     const val CROPPED_PAGE_HEIGHT_PT = 688f
-    const val MAX_RENDER_WIDTH_PX = 2400
-    const val MAX_RENDER_HEIGHT_PX = 3800
-    const val ANALYSIS_TARGET_WIDTH_PX = 472
+    const val MAX_SINGLE_PAGE_WIDTH_PX = 1600
+    const val MAX_TWO_PAGE_WIDTH_PX = 1100
+    const val MAX_RENDER_WIDTH_PX = MAX_SINGLE_PAGE_WIDTH_PX
+    const val MAX_RENDER_HEIGHT_PX = 2500
+    const val MAX_BITMAP_PIXELS = 2_500_000L
+    const val PREVIEW_SCALE_FACTOR = 0.4f
+    const val ANALYSIS_TARGET_WIDTH_PX = 236
     const val NON_WHITE_GRAY_THRESHOLD = 235
 
     // Useful area inside original 595x842 page: x 62..534, y 74..762 (origin bottom-left)
@@ -94,7 +105,7 @@ class PdfRendererBridge {
     const val FULL_PAGE_WIDTH_PT = 595f
     const val FULL_PAGE_HEIGHT_PT = 842f
 
-    private const val MIN_CACHE_BYTES = 32 * 1024 * 1024
+    private const val MIN_CACHE_BYTES = 16 * 1024 * 1024
     private const val MAX_CACHE_BYTES = 128 * 1024 * 1024
 
     private val totalColdRenders = AtomicInteger(0)
@@ -115,10 +126,12 @@ class PdfRendererBridge {
       onScreenWidthPx: Int,
       cropLeftPt: Float = 0f,
       cropRightPt: Float = 0f,
+      isTwoPageMode: Boolean = false,
+      textBlockZoom: Float = 1f,
+      scaleMultiplier: Float = 1f,
     ): PdfCropScalePlan {
       val pw = pageWidthPt.coerceAtLeast(30).toFloat()
       val ph = pageHeightPt.coerceAtLeast(30).toFloat()
-      val targetCroppedW = (onScreenWidthPx.coerceAtLeast(32) * 2).coerceIn(64, MAX_RENDER_WIDTH_PX)
       val isUncroppedA4 = pageWidthPt >= 560 && pageHeightPt >= 800
 
       val baseLeft = if (isUncroppedA4) UNCROPPED_ORIGIN_LEFT.coerceIn(0f, pw - 30f) else 0f
@@ -126,6 +139,7 @@ class PdfRendererBridge {
       val baseTop = if (isUncroppedA4) UNCROPPED_ORIGIN_TOP.coerceIn(0f, ph - 30f) else 0f
       val baseBottom = if (isUncroppedA4) UNCROPPED_ORIGIN_BOTTOM.coerceIn(baseTop + 30f, ph) else ph
       val baseW = (baseRight - baseLeft).coerceAtLeast(30f)
+      val usefulH = (baseBottom - baseTop).coerceAtLeast(30f)
 
       // Manifest cropLeftPt/cropRightPt may represent X coordinates inside 472pt (e.g. 14.5..456.0)
       // or small margin widths from the edges. Distinguish safely and never shrink usefulW below 50% of baseW.
@@ -143,15 +157,46 @@ class PdfRendererBridge {
       val usefulRight = (baseLeft + relRight).coerceIn(usefulLeft + 30f, pw)
       val usefulW = (usefulRight - usefulLeft).coerceAtLeast(30f)
 
-      val desiredScale = targetCroppedW.toFloat() / usefulW
-      val maxSafeScale = minOf(
-        MAX_RENDER_WIDTH_PX.toFloat() / pw,
-        MAX_RENDER_HEIGHT_PX.toFloat() / ph,
-      )
-      val scale = minOf(desiredScale, maxSafeScale).coerceAtLeast(0.05f)
+      val maxModeWidthPx = if (isTwoPageMode) MAX_TWO_PAGE_WIDTH_PX else MAX_SINGLE_PAGE_WIDTH_PX
+      val clampedZoom = textBlockZoom.coerceIn(1f, 2.4f)
+      val clampedMult = scaleMultiplier.coerceIn(0.15f, 1f)
+      val fullTargetCroppedW = (onScreenWidthPx.coerceAtLeast(32).toFloat() * clampedZoom)
+        .roundToInt()
+        .coerceIn(64, maxModeWidthPx)
+      val targetCroppedW = (fullTargetCroppedW.toFloat() * clampedMult).roundToInt().coerceAtLeast(64)
 
-      val fullW = (pw * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX)
-      val fullH = (ph * scale).roundToInt().coerceIn(64, MAX_RENDER_HEIGHT_PX)
+      var scale = (targetCroppedW.toFloat() / usefulW).coerceAtLeast(0.05f)
+      val maxWidthScale = maxModeWidthPx.toFloat() / usefulW
+      if (scale > maxWidthScale) {
+        scale = maxWidthScale
+      }
+      val maxHeightScale = MAX_RENDER_HEIGHT_PX.toFloat() / usefulH
+      if (scale > maxHeightScale) {
+        scale = maxHeightScale
+      }
+      val projectedPixels = (usefulW * scale) * (usefulH * scale)
+      val safeMaxPixels = MAX_BITMAP_PIXELS.toFloat() * 0.992f
+      if (projectedPixels > safeMaxPixels && projectedPixels > 1f) {
+        scale *= sqrt(safeMaxPixels / projectedPixels)
+      }
+      scale = scale.coerceAtLeast(0.05f)
+
+      var cropX = (scale * usefulLeft).roundToInt().coerceAtLeast(0)
+      var cropY = (scale * baseTop).roundToInt().coerceAtLeast(0)
+      var croppedW = (scale * usefulW).roundToInt().coerceIn(64, maxModeWidthPx)
+      var croppedH = (scale * usefulH).roundToInt().coerceIn(64, MAX_RENDER_HEIGHT_PX)
+
+      if (croppedW.toLong() * croppedH.toLong() > MAX_BITMAP_PIXELS) {
+        val fixFactor = sqrt((MAX_BITMAP_PIXELS.toFloat() * 0.992f) / (croppedW.toFloat() * croppedH.toFloat()))
+        scale = (scale * fixFactor).coerceAtLeast(0.05f)
+        cropX = (scale * usefulLeft).roundToInt().coerceAtLeast(0)
+        cropY = (scale * baseTop).roundToInt().coerceAtLeast(0)
+        croppedW = (scale * usefulW).roundToInt().coerceIn(64, maxModeWidthPx)
+        croppedH = (scale * usefulH).roundToInt().coerceIn(64, MAX_RENDER_HEIGHT_PX)
+      }
+
+      val fullW = (pw * scale).roundToInt().coerceAtLeast(cropX + croppedW)
+      val fullH = (ph * scale).roundToInt().coerceAtLeast(cropY + croppedH)
 
       val hasHorizontalSubCrop = relLeft > 0.25f || relRight < (baseW - 0.25f)
       if (!isUncroppedA4 && !hasHorizontalSubCrop) {
@@ -159,23 +204,16 @@ class PdfRendererBridge {
           pageWidthPt = pageWidthPt,
           pageHeightPt = pageHeightPt,
           isUncroppedA4 = false,
-          fullRenderWidthPx = fullW,
-          fullRenderHeightPx = fullH,
+          fullRenderWidthPx = croppedW,
+          fullRenderHeightPx = croppedH,
           renderScale = scale,
           cropLeftPx = 0,
           cropTopPx = 0,
-          croppedWidthPx = fullW,
-          croppedHeightPx = fullH,
+          croppedWidthPx = croppedW,
+          croppedHeightPx = croppedH,
           needsCrop = false,
         )
       }
-
-      val cropX = (scale * usefulLeft).roundToInt().coerceIn(0, fullW - 2)
-      val cropY = (scale * baseTop).roundToInt().coerceIn(0, fullH - 2)
-      val cropRightPx = (scale * usefulRight).roundToInt().coerceIn(cropX + 1, fullW)
-      val cropBottomPx = (scale * baseBottom).roundToInt().coerceIn(cropY + 1, fullH)
-      val croppedW = (cropRightPx - cropX).coerceAtLeast(1)
-      val croppedH = (cropBottomPx - cropY).coerceAtLeast(1)
 
       return PdfCropScalePlan(
         pageWidthPt = pageWidthPt,
@@ -194,11 +232,8 @@ class PdfRendererBridge {
 
     /**
      * Segments the page by finding genuine blank-row gaps, ensuring cuts NEVER slice through ink.
-     * Guaranteed:
-     * - Label band is only cut in the exact middle of the blank gap below the top label cluster.
-     * - Legend band is only cut in the exact middle of the blank gap above the bottom legend cluster.
-     * - Text block is bounded cleanly between label cut and legend cut.
-     * - Few-lines pages (3..11 lines) are split into individual line strips at blank-row gaps (>=2px).
+     * Supports both native ~688px unit-test canvases and fast ~236px analysis bitmaps (~344px tall)
+     * by scaling row-height/gap thresholds proportionally when height < 550.
      */
     fun computePageSegmentation(
       width: Int,
@@ -208,6 +243,13 @@ class PdfRendererBridge {
       val safeW = width.coerceAtLeast(1)
       val safeH = height.coerceAtLeast(1)
       val rowBuffer = IntArray(safeW)
+
+      val threshScale = if (safeH < 550) (safeH.toFloat() / CROPPED_PAGE_HEIGHT_PT).coerceIn(0.35f, 1f) else 1f
+      val normalMergeGap = if (threshScale < 0.99f) (3f * threshScale).roundToInt().coerceAtLeast(1) else 3
+      val legendMergeGap = if (threshScale < 0.99f) (5f * threshScale).roundToInt().coerceAtLeast(2) else 5
+      val minLegendHeight = if (threshScale < 0.99f) (25f * threshScale).roundToInt().coerceAtLeast(10) else 25
+      val minBandGap = if (threshScale < 0.99f) (3f * threshScale).roundToInt().coerceAtLeast(2) else 3
+      val edgeGuard = if (threshScale < 0.99f) (2f * threshScale).roundToInt().coerceAtLeast(1) else 2
 
       // Step 1: Scan per-row ink info using standard luminance < 235
       val rows = Array(safeH) { y ->
@@ -275,15 +317,16 @@ class PdfRendererBridge {
         )
       }
 
-      // Step 3: Merge clusters separated by <= 3 px (and <= 5 px in legend area > 78% height)
+      // Step 3: Merge closely adjacent ink clusters (tolerance slightly wider in legend area)
       val mergedClusters = ArrayList<InkCluster>()
+      val legendZoneY = (0.78f * safeH).toInt()
       for (c in rawClusters) {
         if (mergedClusters.isEmpty()) {
           mergedClusters += c
         } else {
           val last = mergedClusters.last()
           val gap = c.startY - last.endY - 1
-          val threshold = if (last.startY >= (0.78f * safeH).toInt() || c.startY >= (0.78f * safeH).toInt()) 5 else 3
+          val threshold = if (last.startY >= legendZoneY || c.startY >= legendZoneY) legendMergeGap else normalMergeGap
           if (gap <= threshold) {
             mergedClusters[mergedClusters.lastIndex] = InkCluster(
               startY = last.startY,
@@ -297,7 +340,7 @@ class PdfRendererBridge {
         }
       }
 
-      // Step 4: Legend band detection (last cluster below 80% height, height >= 25px, gap above >= 3px)
+      // Step 4: Legend band detection (last cluster below 80% height)
       var hasLegendBand = false
       var legendCutRow = safeH
       var activeClusters = mergedClusters
@@ -307,21 +350,21 @@ class PdfRendererBridge {
         val prev = mergedClusters[mergedClusters.size - 2]
         val clusterH = last.endY - last.startY + 1
         val gapAbove = last.startY - prev.endY - 1
-        if (last.startY >= (0.80f * safeH).toInt() && clusterH >= 25 && gapAbove >= 3) {
+        if (last.startY >= (0.80f * safeH).toInt() && clusterH >= minLegendHeight && gapAbove >= minBandGap) {
           hasLegendBand = true
           legendCutRow = (prev.endY + last.startY) / 2
           activeClusters = ArrayList(mergedClusters.dropLast(1))
         }
       }
 
-      // Step 5: Label band detection (first cluster ending <= 6% height, gap below >= 3px)
+      // Step 5: Label band detection (first cluster ending <= 6% height)
       var hasLabelBand = false
       var labelCutRow = 0
       if (activeClusters.size >= 2) {
         val first = activeClusters.first()
         val next = activeClusters[1]
         val gapBelow = next.startY - first.endY - 1
-        if (first.endY <= (0.06f * safeH).toInt() && gapBelow >= 3) {
+        if (first.endY <= (0.06f * safeH).toInt() && gapBelow >= minBandGap) {
           hasLabelBand = true
           labelCutRow = (first.endY + next.startY) / 2
           activeClusters = ArrayList(activeClusters.drop(1))
@@ -355,7 +398,7 @@ class PdfRendererBridge {
         maxLineWidth = safeW
       }
 
-      // Step 7: Detect individual text lines (splitting at blank gaps >= 2px)
+      // Step 7: Detect individual text lines
       val lineRuns = ArrayList<Pair<Int, Int>>()
       var lineStart = -1
       for (y in labelCutRow until legendCutRow) {
@@ -372,7 +415,6 @@ class PdfRendererBridge {
         lineRuns += (lineStart to (legendCutRow - 1).coerceAtLeast(lineStart))
       }
 
-      // Merge runs with gap <= 1 blank px, keeping genuine blank gaps >= 2px as line dividers
       val linesList = ArrayList<Pair<Int, Int>>()
       for (run in lineRuns) {
         if (linesList.isEmpty()) {
@@ -390,7 +432,6 @@ class PdfRendererBridge {
 
       val isFewLines = linesList.size in 3..11
       val lineStrips = if (isFewLines) {
-        val edgeGuard = 2
         linesList.mapIndexed { idx, lineRange ->
           val topCut = if (idx == 0) {
             (lineRange.first - edgeGuard).coerceAtLeast(labelCutRow)
@@ -442,9 +483,8 @@ class PdfRendererBridge {
     }
 
     /**
-     * Analyzes ink rows from a high-res rendered bitmap by aggregating pixels into
-     * ~472px-wide pt-equivalent coordinate buckets so pixel gap thresholds (2px, 3px, 5px, 25px)
-     * remain exact across all screen widths without losing 1px diacritics or dots.
+     * Analyzes ink rows from a bitmap. When fed a fast ~236px analysis bitmap directly,
+     * reads rows in O(width * height) without intermediate bucketing overhead.
      */
     fun computePageSegmentationFromBitmap(bmp: Bitmap): PdfPageSegmentation {
       val bmpW = bmp.width.coerceAtLeast(1)
@@ -511,10 +551,15 @@ class PdfRendererBridge {
   }
 
   private val mutex = Mutex()
+  private val visibleWaitingCount = AtomicInteger(0)
+  private val renderExecutor = Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "QabasatPdfRenderer").apply { isDaemon = true }
+  }
+  private val renderDispatcher = renderExecutor.asCoroutineDispatcher()
   private val loggedFirstPages = HashSet<String>()
   private val segmentationCache = ConcurrentHashMap<String, PdfPageSegmentation>()
 
-  // High-res bitmap cache sized to ~1/8 of max memory (32MB - 128MB)
+  // High-res bitmap cache sized to ~1/8 of max heap
   private val cacheLimitBytes = (Runtime.getRuntime().maxMemory() / 8L)
     .coerceIn(MIN_CACHE_BYTES.toLong(), MAX_CACHE_BYTES.toLong())
     .toInt()
@@ -534,21 +579,35 @@ class PdfRendererBridge {
     pdfFile: File,
     pageNumber: Int,
     onScreenWidthPx: Int,
+    isTwoPageMode: Boolean = false,
+    scaleMultiplier: Float = 1f,
   ): PdfPageCacheKey = PdfPageCacheKey(
     filePath = pdfFile.absolutePath,
     fileLength = pdfFile.length(),
     lastModified = pdfFile.lastModified(),
     pageIndex = pageNumber - 1,
     widthPx = onScreenWidthPx,
+    isTwoPageMode = isTwoPageMode,
+    scaleMultiplierBits = scaleMultiplier.toRawBits(),
   )
 
   fun getCached(
     pdfFile: File,
     pageNumber: Int,
     onScreenWidthPx: Int,
+    isTwoPageMode: Boolean = false,
+    scaleMultiplier: Float = 1f,
   ): PdfRenderedPageBitmap? {
     if (onScreenWidthPx <= 0 || pageNumber < 1) return null
-    val hit = pageBitmapCache.get(makeCacheKey(pdfFile, pageNumber, onScreenWidthPx))
+    val hit = pageBitmapCache.get(
+      makeCacheKey(
+        pdfFile = pdfFile,
+        pageNumber = pageNumber,
+        onScreenWidthPx = onScreenWidthPx,
+        isTwoPageMode = isTwoPageMode,
+        scaleMultiplier = scaleMultiplier,
+      ),
+    )
     if (hit != null) {
       totalCachedHits.incrementAndGet()
     }
@@ -578,7 +637,7 @@ class PdfRendererBridge {
       PdfRenderer(pfd)
     } catch (e: Exception) {
       runCatching { pfd.close() }
-      throw IllegalStateException("تعذر فتح ملف المصحف PDF", e)
+      throw IllegalStateException("تعذر فتح المصحف", e)
     }
     openPfd = pfd
     openRenderer = renderer
@@ -595,137 +654,203 @@ class PdfRendererBridge {
     onScreenWidthPx: Int,
     cropLeftPt: Float = 0f,
     cropRightPt: Float = 0f,
-  ): PdfRenderedPageBitmap = withContext(Dispatchers.Default) {
-    val cacheKey = makeCacheKey(pdfFile, pageNumber, onScreenWidthPx)
-    pageBitmapCache.get(cacheKey)?.let {
+    isTwoPageMode: Boolean = false,
+    scaleMultiplier: Float = 1f,
+    isVisiblePriority: Boolean = true,
+  ): PdfRenderedPageBitmap {
+    val cacheKey = makeCacheKey(
+      pdfFile = pdfFile,
+      pageNumber = pageNumber,
+      onScreenWidthPx = onScreenWidthPx,
+      isTwoPageMode = isTwoPageMode,
+      scaleMultiplier = scaleMultiplier,
+    )
+    pageBitmapCache.get(cacheKey)?.let { cached ->
       totalCachedHits.incrementAndGet()
-      return@withContext it
+      if (BuildConfig.DEBUG) {
+        val mode = if (isTwoPageMode) "two_page" else "single"
+        val stage = if (scaleMultiplier < 0.99f) "preview_${scaleMultiplier}x" else "full"
+        Log.d(
+          "PdfMushaf",
+          "Page $pageNumber ($mode/$stage) cache HIT ${cached.croppedWidthPx}x${cached.croppedHeightPx}",
+        )
+      }
+      return cached
     }
 
-    val t0 = SystemClock.elapsedRealtime()
-
-    val rendered = mutex.withLock {
-      pageBitmapCache.get(cacheKey)?.let {
-        totalCachedHits.incrementAndGet()
-        return@withLock it
+    if (isVisiblePriority) {
+      visibleWaitingCount.incrementAndGet()
+    }
+    var visibleCountReleased = !isVisiblePriority
+    try {
+      if (!isVisiblePriority) {
+        while (visibleWaitingCount.get() > 0) {
+          coroutineContext.ensureActive()
+          delay(12L)
+        }
       }
 
-      val renderer = ensureOpenLocked(mushafId, pdfFile)
-      val pageIndex = pageNumber - 1
-      if (pageIndex !in 0 until renderer.pageCount) {
-        throw IllegalStateException("الصفحة $pageNumber غير متوفرة في هذا المصحف")
-      }
+      val t0 = SystemClock.elapsedRealtime()
+      val rendered = withContext(renderDispatcher) {
+        coroutineContext.ensureActive()
+        mutex.withLock {
+          if (!visibleCountReleased) {
+            visibleWaitingCount.decrementAndGet()
+            visibleCountReleased = true
+          }
 
-      val segKey = "${pdfFile.absolutePath}|${pdfFile.length()}|$pageIndex"
+          pageBitmapCache.get(cacheKey)?.let {
+            totalCachedHits.incrementAndGet()
+            return@withLock it
+          }
 
-      renderer.openPage(pageIndex).use { page ->
-        val logKey = "$mushafId|${pdfFile.absolutePath}|${pdfFile.length()}"
-        if (loggedFirstPages.add(logKey)) {
-          Log.d(
-            TAG,
-            "First opened PDF page: mushaf=$mushafId page=$pageNumber page.width=${page.width} page.height=${page.height} screenW=$onScreenWidthPx",
-          )
-        }
+          val renderer = ensureOpenLocked(mushafId, pdfFile)
+          val pageIndex = pageNumber - 1
+          if (pageIndex !in 0 until renderer.pageCount) {
+            throw IllegalStateException("الصفحة $pageNumber غير متوفرة في هذا المصحف")
+          }
 
-        val plan = computeCropScalePlan(
-          pageWidthPt = page.width,
-          pageHeightPt = page.height,
-          onScreenWidthPx = onScreenWidthPx,
-          cropLeftPt = cropLeftPt,
-          cropRightPt = cropRightPt,
-        )
+          val segKey = "${pdfFile.absolutePath}|${pdfFile.length()}|$pageIndex"
 
-        val fullBmp = Bitmap.createBitmap(
-          plan.fullRenderWidthPx,
-          plan.fullRenderHeightPx,
-          Bitmap.Config.ARGB_8888,
-        )
-        Canvas(fullBmp).drawColor(Color.WHITE)
+          renderer.openPage(pageIndex).use { page ->
+            val logKey = "$mushafId|${pdfFile.absolutePath}|${pdfFile.length()}"
+            if (loggedFirstPages.add(logKey)) {
+              Log.d(
+                TAG,
+                "First opened mushaf page: mushaf=$mushafId page=$pageNumber page.width=${page.width} page.height=${page.height} screenW=$onScreenWidthPx twoPage=$isTwoPageMode",
+              )
+            }
 
-        val matrix = Matrix().apply {
-          setScale(plan.renderScale, plan.renderScale)
-        }
-        page.render(fullBmp, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            // Compute or reuse page ink segmentation on a fast ~236px wide bitmap (~80K px)
+            val segmentation = segmentationCache[segKey] ?: run {
+              val analysisPlan = computeCropScalePlan(
+                pageWidthPt = page.width,
+                pageHeightPt = page.height,
+                onScreenWidthPx = ANALYSIS_TARGET_WIDTH_PX,
+                cropLeftPt = cropLeftPt,
+                cropRightPt = cropRightPt,
+                isTwoPageMode = false,
+                textBlockZoom = 1f,
+                scaleMultiplier = 1f,
+              )
+              val analysisBmp = Bitmap.createBitmap(
+                analysisPlan.croppedWidthPx,
+                analysisPlan.croppedHeightPx,
+                Bitmap.Config.ARGB_8888,
+              )
+              try {
+                Canvas(analysisBmp).drawColor(Color.WHITE)
+                val analysisMatrix = Matrix().apply {
+                  setScale(analysisPlan.renderScale, analysisPlan.renderScale)
+                  postTranslate(-analysisPlan.cropLeftPx.toFloat(), -analysisPlan.cropTopPx.toFloat())
+                }
+                page.render(analysisBmp, null, analysisMatrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                computePageSegmentationFromBitmap(analysisBmp).also { seg ->
+                  segmentationCache[segKey] = seg
+                }
+              } finally {
+                analysisBmp.recycle()
+              }
+            }
 
-        val croppedBmp = if (!plan.needsCrop) {
-          fullBmp
-        } else {
-          try {
-            Bitmap.createBitmap(
-              fullBmp,
-              plan.cropLeftPx,
-              plan.cropTopPx,
+            val textBlockZoom = (0.97f / segmentation.widestLineWidthFraction.coerceAtLeast(0.1f))
+              .coerceIn(1f, 2.4f)
+            val plan = computeCropScalePlan(
+              pageWidthPt = page.width,
+              pageHeightPt = page.height,
+              onScreenWidthPx = onScreenWidthPx,
+              cropLeftPt = cropLeftPt,
+              cropRightPt = cropRightPt,
+              isTwoPageMode = isTwoPageMode,
+              textBlockZoom = textBlockZoom,
+              scaleMultiplier = scaleMultiplier,
+            )
+
+            // Render directly into cropped destination dimensions with Matrix translation (1 allocation)
+            val croppedBmp = Bitmap.createBitmap(
               plan.croppedWidthPx,
               plan.croppedHeightPx,
+              Bitmap.Config.ARGB_8888,
             )
-          } finally {
-            fullBmp.recycle()
+            Canvas(croppedBmp).drawColor(Color.WHITE)
+
+            val matrix = Matrix().apply {
+              setScale(plan.renderScale, plan.renderScale)
+              postTranslate(-plan.cropLeftPx.toFloat(), -plan.cropTopPx.toFloat())
+            }
+            page.render(croppedBmp, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+            val topBandEndY = (segmentation.labelCutFraction * croppedBmp.height).roundToInt()
+            val bottomBandStartY = (segmentation.legendCutFraction * croppedBmp.height).roundToInt()
+            val textBounds = PdfPixelRect(
+              left = (segmentation.textMinXFraction * croppedBmp.width).roundToInt(),
+              top = (segmentation.textMinYFraction * croppedBmp.height).roundToInt(),
+              right = (segmentation.textMaxXFraction * croppedBmp.width).roundToInt(),
+              bottom = (segmentation.textMaxYFraction * croppedBmp.height).roundToInt(),
+            )
+
+            val pageResult = PdfRenderedPageBitmap(
+              bitmap = croppedBmp,
+              croppedWidthPx = croppedBmp.width,
+              croppedHeightPx = croppedBmp.height,
+              topBandEndY = topBandEndY,
+              bottomBandStartY = bottomBandStartY,
+              textBounds = textBounds,
+              segmentation = segmentation,
+            )
+            pageBitmapCache.put(cacheKey, pageResult)
+            pageResult
           }
         }
+      }
 
-        // Retrieve or compute segmentation for this page
-        val segmentation = segmentationCache.getOrPut(segKey) {
-          computePageSegmentationFromBitmap(croppedBmp)
-        }
-
-        val topBandEndY = (segmentation.labelCutFraction * croppedBmp.height).roundToInt()
-        val bottomBandStartY = (segmentation.legendCutFraction * croppedBmp.height).roundToInt()
-        val textBounds = PdfPixelRect(
-          left = (segmentation.textMinXFraction * croppedBmp.width).roundToInt(),
-          top = (segmentation.textMinYFraction * croppedBmp.height).roundToInt(),
-          right = (segmentation.textMaxXFraction * croppedBmp.width).roundToInt(),
-          bottom = (segmentation.textMaxYFraction * croppedBmp.height).roundToInt(),
+      val elapsed = SystemClock.elapsedRealtime() - t0
+      totalColdRenders.incrementAndGet()
+      totalColdTimeMs.addAndGet(elapsed)
+      if (BuildConfig.DEBUG) {
+        val mode = if (isTwoPageMode) "two_page" else "single"
+        val stage = if (scaleMultiplier < 0.99f) "preview_${scaleMultiplier}x" else "full"
+        val pxCount = rendered.croppedWidthPx.toLong() * rendered.croppedHeightPx.toLong()
+        Log.d(
+          "PdfMushaf",
+          "Page $pageNumber ($mode/$stage) COLD rendered in ${elapsed}ms -> ${rendered.croppedWidthPx}x${rendered.croppedHeightPx} (${pxCount}px) | ${getPerformanceStats()}",
         )
+      }
 
-        val pageResult = PdfRenderedPageBitmap(
-          bitmap = croppedBmp,
-          croppedWidthPx = croppedBmp.width,
-          croppedHeightPx = croppedBmp.height,
-          topBandEndY = topBandEndY,
-          bottomBandStartY = bottomBandStartY,
-          textBounds = textBounds,
-          segmentation = segmentation,
-        )
-        pageBitmapCache.put(cacheKey, pageResult)
-        pageResult
+      return rendered
+    } finally {
+      if (!visibleCountReleased) {
+        visibleWaitingCount.decrementAndGet()
       }
     }
-
-    val elapsed = SystemClock.elapsedRealtime() - t0
-    totalColdRenders.incrementAndGet()
-    totalColdTimeMs.addAndGet(elapsed)
-    if (BuildConfig.DEBUG) {
-      Log.d("PdfMushaf", "Page $pageNumber rendered in ${elapsed}ms (cold=true, stats: ${getPerformanceStats()})")
-    }
-
-    rendered
   }
 
   suspend fun closeIfMatches(mushafId: String) {
-    mutex.withLock {
-      val prevPath = if (openMushafId == mushafId) openFilePath else null
-      if (openMushafId == mushafId) {
-        closeCurrentLocked()
-      }
-      val snapshot = pageBitmapCache.snapshot()
-      for (key in snapshot.keys) {
-        if ((prevPath != null && key.filePath == prevPath) || key.filePath.contains("/$mushafId.pdf")) {
-          pageBitmapCache.remove(key)
+    withContext(renderDispatcher) {
+      mutex.withLock {
+        val prevPath = if (openMushafId == mushafId) openFilePath else null
+        if (openMushafId == mushafId) {
+          closeCurrentLocked()
         }
+        val snapshot = pageBitmapCache.snapshot()
+        for (key in snapshot.keys) {
+          if ((prevPath != null && key.filePath == prevPath) || key.filePath.contains("/$mushafId.pdf")) {
+            pageBitmapCache.remove(key)
+          }
+        }
+        segmentationCache.keys.removeIf { it.contains("/$mushafId.pdf") }
       }
-      segmentationCache.keys.removeIf { it.contains("/$mushafId.pdf") }
     }
   }
 
   fun closeBlocking() {
-    runCatching { openRenderer?.close() }
-    runCatching { openPfd?.close() }
-    openRenderer = null
-    openPfd = null
-    openMushafId = null
-    openFilePath = null
-    openFileLength = -1L
     pageBitmapCache.evictAll()
     segmentationCache.clear()
+    runCatching {
+      renderExecutor.execute {
+        closeCurrentLocked()
+      }
+      renderExecutor.shutdown()
+    }
   }
 }

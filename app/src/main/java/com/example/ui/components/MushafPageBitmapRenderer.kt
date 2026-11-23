@@ -71,6 +71,7 @@ data class PageBitmapKey(
   val pdfMushafId: String? = null,
   val pdfFileKey: String? = null,
   val layoutVersion: Int = com.example.data.quran.QuranRepository.LAYOUT_CACHE_VERSION,
+  val isPreview: Boolean = false,
 )
 
 @Immutable
@@ -357,6 +358,7 @@ data class RenderedMushafPage(
   val rosetteSlotsByVerse: Map<String, FloatArray>,
   val wordHitBoxes: WordHitBoxes,
   val pdfContent: PdfPageOverlayData? = null,
+  val isPreview: Boolean = false,
 )
 
 class MushafPageBitmapRenderer(
@@ -436,7 +438,11 @@ class MushafPageBitmapRenderer(
     }
   }
 
-  private fun makeKey(pageNumber: Int, spec: PageRenderSpec): PageBitmapKey =
+  private fun makeKey(
+    pageNumber: Int,
+    spec: PageRenderSpec,
+    isPreview: Boolean = false,
+  ): PageBitmapKey =
     PageBitmapKey(
       pageNumber = pageNumber,
       widthPx = spec.widthPx,
@@ -448,12 +454,13 @@ class MushafPageBitmapRenderer(
       isTwoPageMode = spec.isTwoPageMode,
       pdfMushafId = spec.pdfMushafId,
       pdfFileKey = if (spec.isPdfMode) spec.pdfFileKey else null,
+      isPreview = isPreview,
     )
 
   private fun ensureCacheCapacityFor(spec: PageRenderSpec) {
     val pageBytes = spec.widthPx.toLong() * spec.heightPx.toLong() * 4L
-    val quarterHeap = (Runtime.getRuntime().maxMemory() / 4L).coerceAtMost(MAX_CACHE_BYTES.toLong())
-    val desired = (pageBytes * 8L).coerceIn(MIN_CACHE_BYTES.toLong(), quarterHeap.coerceAtLeast(MIN_CACHE_BYTES.toLong())).toInt()
+    val eighthHeap = (Runtime.getRuntime().maxMemory() / 8L).coerceAtMost(MAX_CACHE_BYTES.toLong())
+    val desired = (pageBytes * 8L).coerceIn(MIN_CACHE_BYTES.toLong(), eighthHeap.coerceAtLeast(MIN_CACHE_BYTES.toLong())).toInt()
     if (desired != lastConfiguredCacheBytes) {
       synchronized(this) {
         if (desired != lastConfiguredCacheBytes) {
@@ -464,9 +471,9 @@ class MushafPageBitmapRenderer(
     }
   }
 
-  fun getCached(pageNumber: Int, spec: PageRenderSpec): RenderedMushafPage? {
+  fun getCached(pageNumber: Int, spec: PageRenderSpec, isPreview: Boolean = false): RenderedMushafPage? {
     if (!spec.isValid) return null
-    return bitmapCache.get(makeKey(pageNumber, spec))
+    return bitmapCache.get(makeKey(pageNumber, spec, isPreview = isPreview))
   }
 
   fun clearAll() {
@@ -540,8 +547,9 @@ class MushafPageBitmapRenderer(
     topSurah: SurahMeta?,
     spec: PageRenderSpec,
     surahsById: Map<Int, SurahMeta>,
+    isPreview: Boolean = false,
   ): RenderedMushafPage {
-    val key = makeKey(pageNumber, spec)
+    val key = makeKey(pageNumber, spec, isPreview = isPreview)
     bitmapCache.get(key)?.let { cached ->
       if (cached.pdfContent?.topSurah?.id == topSurah?.id) {
         return cached
@@ -564,6 +572,7 @@ class MushafPageBitmapRenderer(
         topSurah = topSurah,
         spec = spec,
         surahsById = surahsById,
+        isPreview = isPreview,
       )
       bitmapCache.put(key, rendered)
       rendered
@@ -921,6 +930,7 @@ class MushafPageBitmapRenderer(
     topSurah: SurahMeta?,
     spec: PageRenderSpec,
     surahsById: Map<Int, SurahMeta>,
+    isPreview: Boolean = false,
   ): RenderedMushafPage {
     val w = spec.widthPx.coerceAtLeast(1)
     val h = spec.heightPx.coerceAtLeast(1)
@@ -977,6 +987,7 @@ class MushafPageBitmapRenderer(
         topSurah = topSurah,
         segmentation = renderedPdf.segmentation,
       ),
+      isPreview = isPreview,
     )
   }
 

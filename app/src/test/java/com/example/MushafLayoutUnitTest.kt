@@ -1121,41 +1121,79 @@ class MushafLayoutUnitTest {
   }
 
   @Test
-  fun `pdf renderer computeCropScalePlan renders at 2x screen width capped at 2400 and crops 595x842 by exact fractions`() {
-    // 1) Cropped 472x688 for 1000px screen body -> 2000px wide
-    val plan2x = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
+  fun `pdf renderer computeCropScalePlan caps single at 1600 two-page at 1100 and pixels under 2_5M`() {
+    // 1) Cropped 472x688 for 1000px screen body in single-page mode -> bounded by 2.5M pixel cap (~1304x1900)
+    val singlePlan = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
       pageWidthPt = 472,
       pageHeightPt = 688,
       onScreenWidthPx = 1000,
+      isTwoPageMode = false,
     )
-    assertFalse(plan2x.isUncroppedA4)
-    assertEquals(2000, plan2x.croppedWidthPx)
-    assertEquals(2000, plan2x.fullRenderWidthPx)
-    assertTrue(plan2x.croppedHeightPx > 2900)
+    assertFalse(singlePlan.isUncroppedA4)
+    assertTrue(singlePlan.croppedWidthPx <= com.example.data.pdf.PdfRendererBridge.MAX_SINGLE_PAGE_WIDTH_PX)
+    assertTrue(
+      singlePlan.croppedWidthPx.toLong() * singlePlan.croppedHeightPx.toLong() <=
+        com.example.data.pdf.PdfRendererBridge.MAX_BITMAP_PIXELS,
+    )
+    assertEquals(1000, singlePlan.croppedWidthPx)
 
-    // 2) Tablet width 1400px -> 2x would be 2800px, capped at 2400px
-    val planCapped = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
+    // 2) Tablet width 1400px with 1.5x text zoom -> width <= 1600 and total pixels <= 2,500,000
+    val tabletPlan = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
       pageWidthPt = 472,
       pageHeightPt = 688,
       onScreenWidthPx = 1400,
+      isTwoPageMode = false,
+      textBlockZoom = 1.5f,
     )
-    assertEquals(2400, planCapped.croppedWidthPx)
+    assertTrue(tabletPlan.croppedWidthPx <= com.example.data.pdf.PdfRendererBridge.MAX_SINGLE_PAGE_WIDTH_PX)
+    assertTrue(
+      tabletPlan.croppedWidthPx.toLong() * tabletPlan.croppedHeightPx.toLong() <=
+        com.example.data.pdf.PdfRendererBridge.MAX_BITMAP_PIXELS,
+    )
 
-    // 3) Uncropped 595x842 crops to [62..534, 80..768] fractions while keeping cropped width >= 2x screen width
+    // 3) Two-page mode width 1200px with zoom -> capped at 1100px width and <= 2,500,000 px
+    val twoPagePlan = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
+      pageWidthPt = 472,
+      pageHeightPt = 688,
+      onScreenWidthPx = 1200,
+      isTwoPageMode = true,
+      textBlockZoom = 1.4f,
+    )
+    assertTrue(twoPagePlan.croppedWidthPx <= com.example.data.pdf.PdfRendererBridge.MAX_TWO_PAGE_WIDTH_PX)
+    assertTrue(
+      twoPagePlan.croppedWidthPx.toLong() * twoPagePlan.croppedHeightPx.toLong() <=
+        com.example.data.pdf.PdfRendererBridge.MAX_BITMAP_PIXELS,
+    )
+
+    // 4) Uncropped 595x842 crops to [62..534, 80..768] fractions and obeys 2.5M pixel cap
     val uncroppedPlan = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
       pageWidthPt = 595,
       pageHeightPt = 842,
       onScreenWidthPx = 900,
+      isTwoPageMode = false,
     )
     assertTrue(uncroppedPlan.isUncroppedA4)
-    assertEquals(1800, uncroppedPlan.croppedWidthPx)
-    assertTrue(uncroppedPlan.fullRenderWidthPx > 2200)
+    assertEquals(900, uncroppedPlan.croppedWidthPx)
+    assertTrue(
+      uncroppedPlan.croppedWidthPx.toLong() * uncroppedPlan.croppedHeightPx.toLong() <=
+        com.example.data.pdf.PdfRendererBridge.MAX_BITMAP_PIXELS,
+    )
     assertEquals(
       com.example.data.pdf.PdfRendererBridge.CROPPED_PAGE_WIDTH_PT /
         com.example.data.pdf.PdfRendererBridge.CROPPED_PAGE_HEIGHT_PT,
       uncroppedPlan.croppedWidthPx.toFloat() / uncroppedPlan.croppedHeightPx.toFloat(),
       0.01f,
     )
+
+    // 5) Progressive 0.4x preview yields ~40% of target width for instant render
+    val previewPlan = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
+      pageWidthPt = 472,
+      pageHeightPt = 688,
+      onScreenWidthPx = 1000,
+      isTwoPageMode = false,
+      scaleMultiplier = com.example.data.pdf.PdfRendererBridge.PREVIEW_SCALE_FACTOR,
+    )
+    assertEquals(400, previewPlan.croppedWidthPx)
   }
 
   @Test
@@ -1229,22 +1267,17 @@ class MushafLayoutUnitTest {
   }
 
   @Test
-  fun `pdf manifest stale file size detector flags differences over 5 percent`() {
-    val oneHundredMbBytes = (100.0 * 1024.0 * 1024.0).toLong()
-    assertFalse(com.example.data.pdf.PdfManifestParser.isStaleFileSize(oneHundredMbBytes, 100.0))
-    assertFalse(
-      com.example.data.pdf.PdfManifestParser.isStaleFileSize((oneHundredMbBytes * 0.96).toLong(), 100.0),
-    )
-    assertFalse(
-      com.example.data.pdf.PdfManifestParser.isStaleFileSize((oneHundredMbBytes * 1.04).toLong(), 100.0),
-    )
-    assertTrue(
-      com.example.data.pdf.PdfManifestParser.isStaleFileSize((oneHundredMbBytes * 0.94).toLong(), 100.0),
-    )
-    assertTrue(
-      com.example.data.pdf.PdfManifestParser.isStaleFileSize((oneHundredMbBytes * 1.06).toLong(), 100.0),
-    )
-    assertTrue(com.example.data.pdf.PdfManifestParser.isStaleFileSize(0L, 100.0))
+  fun `pdf stale file check uses remote content length only and never compares against rounded sizeMB`() {
+    val warshBytes = 5_482_170L
+    // Offline (remoteContentLength = null): valid file is NEVER stale regardless of manifest sizeMB
+    assertFalse(com.example.data.pdf.PdfManifestParser.isStaleByRemoteContentLength(warshBytes, null))
+    // Online matching Content-Length: NOT stale
+    assertFalse(com.example.data.pdf.PdfManifestParser.isStaleByRemoteContentLength(warshBytes, warshBytes))
+    // Online differing Content-Length: IS stale
+    assertTrue(com.example.data.pdf.PdfManifestParser.isStaleByRemoteContentLength(warshBytes, 5_500_000L))
+    // Empty local file: ALWAYS stale even offline
+    assertTrue(com.example.data.pdf.PdfManifestParser.isStaleByRemoteContentLength(0L, null))
+    assertTrue(com.example.data.pdf.PdfManifestParser.isStaleByRemoteContentLength(0L, warshBytes))
   }
 
   @Test
@@ -1414,20 +1447,25 @@ class MushafLayoutUnitTest {
   }
 
   @Test
-  fun `computeCropScalePlan handles cropLeftPt and cropRightPt as x-bounds without OOM on 472x688 and 595x842`() {
+  fun `computeCropScalePlan handles cropLeftPt and cropRightPt within 2_5M pixel cap on 472x688 and 595x842`() {
     val plan472 = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
       pageWidthPt = 472,
       pageHeightPt = 688,
       onScreenWidthPx = 1080,
       cropLeftPt = 14.5f,
       cropRightPt = 456.0f,
+      isTwoPageMode = false,
+      textBlockZoom = 1.3f,
     )
     assertTrue(plan472.needsCrop)
-    assertTrue(plan472.fullRenderWidthPx <= com.example.data.pdf.PdfRendererBridge.MAX_RENDER_WIDTH_PX)
-    assertTrue(plan472.fullRenderHeightPx <= com.example.data.pdf.PdfRendererBridge.MAX_RENDER_HEIGHT_PX)
-    assertTrue("Expected high-res cropped width >= 1800, got ${plan472.croppedWidthPx}", plan472.croppedWidthPx >= 1800)
+    assertTrue(plan472.croppedWidthPx <= com.example.data.pdf.PdfRendererBridge.MAX_SINGLE_PAGE_WIDTH_PX)
+    assertTrue(plan472.croppedHeightPx <= com.example.data.pdf.PdfRendererBridge.MAX_RENDER_HEIGHT_PX)
+    assertTrue(
+      plan472.croppedWidthPx.toLong() * plan472.croppedHeightPx.toLong() <=
+        com.example.data.pdf.PdfRendererBridge.MAX_BITMAP_PIXELS,
+    )
+    assertTrue("Expected cropped width >= 1150, got ${plan472.croppedWidthPx}", plan472.croppedWidthPx >= 1150)
     assertTrue(plan472.cropLeftPx > 0)
-    assertTrue(plan472.cropLeftPx + plan472.croppedWidthPx <= plan472.fullRenderWidthPx)
 
     val plan595 = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
       pageWidthPt = 595,
@@ -1435,12 +1473,18 @@ class MushafLayoutUnitTest {
       onScreenWidthPx = 1080,
       cropLeftPt = 14.5f,
       cropRightPt = 456.0f,
+      isTwoPageMode = true,
+      textBlockZoom = 1.3f,
     )
     assertTrue(plan595.isUncroppedA4)
     assertTrue(plan595.needsCrop)
-    assertTrue(plan595.fullRenderWidthPx <= com.example.data.pdf.PdfRendererBridge.MAX_RENDER_WIDTH_PX)
-    assertTrue(plan595.fullRenderHeightPx <= com.example.data.pdf.PdfRendererBridge.MAX_RENDER_HEIGHT_PX)
-    assertTrue("Expected high-res cropped width >= 1700, got ${plan595.croppedWidthPx}", plan595.croppedWidthPx >= 1700)
+    assertTrue(plan595.croppedWidthPx <= com.example.data.pdf.PdfRendererBridge.MAX_TWO_PAGE_WIDTH_PX)
+    assertTrue(
+      plan595.croppedWidthPx.toLong() * plan595.croppedHeightPx.toLong() <=
+        com.example.data.pdf.PdfRendererBridge.MAX_BITMAP_PIXELS,
+    )
+    assertTrue(plan595.cropLeftPx > 0)
+    assertTrue(plan595.cropTopPx > 0)
   }
 
   @Test
@@ -1613,5 +1657,76 @@ class MushafLayoutUnitTest {
     assertEquals(listOf(warshAzraqR), byGroup["pdf_warsh_id"])
     assertTrue(byGroup["pdf_empty_id"].orEmpty().isEmpty())
     assertEquals(listOf(unmappedR), byGroup["other"])
+  }
+
+  @Test
+  fun `pdf segmentation works accurately at fast 236px analysis width without cutting ink`() {
+    assertEquals(236, com.example.data.pdf.PdfRendererBridge.ANALYSIS_TARGET_WIDTH_PX)
+    val bmpW = 236
+    val bmpH = 344
+    val darkPx = 0xFF111111.toInt()
+    val seg = com.example.data.pdf.PdfRendererBridge.computePageSegmentation(bmpW, bmpH) { y, buf ->
+      java.util.Arrays.fill(buf, 0xFFFFFFFF.toInt())
+      if (y in 4..8) for (x in 75..160) buf[x] = darkPx
+      val lineStarts = listOf(50, 75, 100, 125)
+      for (s in lineStarts) {
+        if (y in s..(s + 9)) for (x in 25..210) buf[x] = darkPx
+      }
+      if (y in 315..325 || y in 328..338) for (x in 15..220) buf[x] = darkPx
+    }
+
+    assertTrue(seg.hasLabelBand)
+    assertTrue(seg.hasLegendBand)
+    assertTrue("Legend cut must sit in blank gap above row 315, got ${seg.legendCutFraction * bmpH}", seg.legendCutFraction * bmpH < 315f)
+    assertTrue("Label cut must sit in blank gap below row 8, got ${seg.labelCutFraction * bmpH}", seg.labelCutFraction * bmpH in 9f..49f)
+    assertTrue(seg.isFewLines)
+    assertEquals(4, seg.lines.size)
+  }
+
+  @Test
+  fun `no user visible strings contain PDF or بي دي اف`() {
+    val rootCandidates = listOf(File("src/main"), File("app/src/main"))
+    val mainDir = rootCandidates.firstOrNull { it.exists() }
+      ?: error("Cannot locate src/main from ${File(".").absolutePath}")
+
+    val stringsXml = File(mainDir, "res/values/strings.xml")
+    assertTrue(stringsXml.exists())
+    val xmlText = stringsXml.readText()
+    assertFalse("strings.xml must not contain PDF", Regex("pdf", RegexOption.IGNORE_CASE).containsMatchIn(xmlText))
+    assertFalse("strings.xml must not contain بي دي", xmlText.contains("بي دي"))
+
+    val creditsJson = File(mainDir, "assets/quran/credits.json")
+    assertTrue(creditsJson.exists())
+    val creditsText = creditsJson.readText()
+    assertFalse("credits.json must not contain PDF", Regex("\\bpdf\\b", RegexOption.IGNORE_CASE).containsMatchIn(creditsText))
+    assertFalse("credits.json must not contain بي دي", creditsText.contains("بي دي"))
+
+    val violations = mutableListOf<String>()
+    val stringLiteralRegex = Regex("\"([^\"\\\\]|\\\\.)*\"")
+    val arabicRegex = Regex("[\\u0600-\\u06FF]")
+    val pdfWordRegex = Regex("\\bpdf\\b|بي\\s*دي", RegexOption.IGNORE_CASE)
+
+    File(mainDir, "java").walkTopDown()
+      .filter { it.isFile && it.extension == "kt" }
+      .forEach { file ->
+        file.readLines().forEachIndexed { idx, line ->
+          val trimmed = line.trim()
+          if (trimmed.startsWith("Log.")) return@forEachIndexed
+          stringLiteralRegex.findAll(line).forEach { match ->
+            val literal = match.value
+            val hasArabic = arabicRegex.containsMatchIn(literal)
+            val isTechnicalPath = literal.contains(".pdf") ||
+              literal.contains("pdf_") ||
+              literal.contains("_pdf") ||
+              literal.contains("application/pdf") ||
+              literal.contains("PdfMushaf")
+            if (hasArabic && !isTechnicalPath && pdfWordRegex.containsMatchIn(literal)) {
+              violations += "${file.name}:${idx + 1}: $literal"
+            }
+          }
+        }
+      }
+
+    assertTrue("Found forbidden user-visible PDF text:\n${violations.joinToString("\n")}", violations.isEmpty())
   }
 }

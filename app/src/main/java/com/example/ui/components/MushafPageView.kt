@@ -548,6 +548,58 @@ fun MushafPageFrame(
   }
 }
 
+private object PdfBannerFontCache {
+  @Volatile var amiriBold: Typeface? = null
+  @Volatile var ibmMedium: Typeface? = null
+  @Volatile var surahNameV4: Typeface? = null
+  @Volatile var surahNameV4Loaded: Boolean = false
+  @Volatile var quranCommon: Typeface? = null
+  @Volatile var quranCommonLoaded: Boolean = false
+
+  fun getAmiriBold(context: android.content.Context): Typeface {
+    amiriBold?.let { return it }
+    return synchronized(this) {
+      amiriBold ?: run {
+        val base = runCatching { ResourcesCompat.getFont(context, R.font.amiri) }.getOrNull() ?: Typeface.SERIF
+        Typeface.create(base, Typeface.BOLD).also { amiriBold = it }
+      }
+    }
+  }
+
+  fun getIbmMedium(context: android.content.Context): Typeface {
+    ibmMedium?.let { return it }
+    return synchronized(this) {
+      ibmMedium ?: run {
+        val base = runCatching { ResourcesCompat.getFont(context, R.font.ibm_plex_sans_arabic) }.getOrNull()
+          ?: Typeface.SANS_SERIF
+        Typeface.create(base, Typeface.BOLD).also { ibmMedium = it }
+      }
+    }
+  }
+
+  fun getSurahNameV4(context: android.content.Context): Typeface? {
+    if (surahNameV4Loaded) return surahNameV4
+    return synchronized(this) {
+      if (!surahNameV4Loaded) {
+        surahNameV4 = runCatching { ResourcesCompat.getFont(context, R.font.surah_name_v4) }.getOrNull()
+        surahNameV4Loaded = true
+      }
+      surahNameV4
+    }
+  }
+
+  fun getQuranCommon(context: android.content.Context): Typeface? {
+    if (quranCommonLoaded) return quranCommon
+    return synchronized(this) {
+      if (!quranCommonLoaded) {
+        quranCommon = runCatching { ResourcesCompat.getFont(context, R.font.quran_common) }.getOrNull()
+        quranCommonLoaded = true
+      }
+      quranCommon
+    }
+  }
+}
+
 @Composable
 private fun PdfTopSurahBanner(
   surah: SurahMeta,
@@ -555,21 +607,10 @@ private fun PdfTopSurahBanner(
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
-  val amiriBold = remember(context) {
-    val base = runCatching { ResourcesCompat.getFont(context, R.font.amiri) }.getOrNull() ?: Typeface.SERIF
-    Typeface.create(base, Typeface.BOLD)
-  }
-  val ibmMedium = remember(context) {
-    val base = runCatching { ResourcesCompat.getFont(context, R.font.ibm_plex_sans_arabic) }.getOrNull()
-      ?: Typeface.SANS_SERIF
-    Typeface.create(base, Typeface.BOLD)
-  }
-  val surahNameV4 = remember(context) {
-    runCatching { ResourcesCompat.getFont(context, R.font.surah_name_v4) }.getOrNull()
-  }
-  val quranCommon = remember(context) {
-    runCatching { ResourcesCompat.getFont(context, R.font.quran_common) }.getOrNull()
-  }
+  val amiriBold = remember(context) { PdfBannerFontCache.getAmiriBold(context) }
+  val ibmMedium = remember(context) { PdfBannerFontCache.getIbmMedium(context) }
+  val surahNameV4 = remember(context) { PdfBannerFontCache.getSurahNameV4(context) }
+  val quranCommon = remember(context) { PdfBannerFontCache.getQuranCommon(context) }
 
   Canvas(modifier = modifier) {
     drawIntoCanvas { canvas ->

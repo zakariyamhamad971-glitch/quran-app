@@ -257,7 +257,7 @@ fun MushafsManagerScreen(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
             Spacer(Modifier.height(10.dp))
             Text(
-              text = "مصاحف القراءات والروايات (PDF)",
+              text = "مصاحف القراءات والروايات",
               style = MaterialTheme.typography.titleMedium,
               color = MaterialTheme.colorScheme.primary,
             )

@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -26,6 +28,7 @@ import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
+import javax.net.ssl.SSLException
 
 object PdfManifestParser {
   private fun JsonReader.nextStringOrNull(): String? {
@@ -163,16 +166,18 @@ object PdfManifestParser {
     }.getOrDefault(false)
   }
 
-  fun isStaleFileSize(
-    actualBytes: Long,
-    expectedSizeMB: Double,
-    toleranceRatio: Double = 0.05,
+  /**
+   * A local file is stale only if it is empty/missing or if the server's HTTP HEAD Content-Length
+   * (checked when online) is known (> 0) and differs from the local file byte length.
+   * Never compares against rounded manifest sizeMB, and never rejects a valid file offline.
+   */
+  fun isStaleByRemoteContentLength(
+    localBytes: Long,
+    remoteContentLength: Long?,
   ): Boolean {
-    if (actualBytes <= 0L) return true
-    if (expectedSizeMB <= 0.0) return false
-    val expectedBytes = expectedSizeMB * 1024.0 * 1024.0
-    val diffRatio = kotlin.math.abs(actualBytes.toDouble() - expectedBytes) / expectedBytes
-    return diffRatio > toleranceRatio
+    if (localBytes <= 0L) return true
+    if (remoteContentLength == null || remoteContentLength <= 0L) return false
+    return remoteContentLength != localBytes
   }
 }
 
@@ -355,7 +360,12 @@ class PdfMushafRepository(
   private val colorsGuideCacheFile = File(persistentDir, "colors_guide.json")
 
   private val transferJobs = ConcurrentHashMap<String, Job>()
+  private val mushafMutexes = ConcurrentHashMap<String, Mutex>()
+  private val remoteContentLengthCache = ConcurrentHashMap<String, Long>()
   private val thumbMemoryCache = ConcurrentHashMap<String, Bitmap>()
+
+  private fun mutexFor(mushafId: String): Mutex =
+    mushafMutexes.getOrPut(mushafId) { Mutex() }
 
   private val _transferStates = MutableStateFlow<Map<String, PdfMushafTransferState>>(emptyMap())
   val transferStates: StateFlow<Map<String, PdfMushafTransferState>> = _transferStates.asStateFlow()
@@ -401,14 +411,45 @@ class PdfMushafRepository(
   }
 
   fun isOfflineDownloaded(mushafId: String): Boolean =
-    PdfManifestParser.hasPdfMagicHeader(offlinePdfFile(mushafId))
+    !isLocalFileInvalid(offlinePdfFile(mushafId))
 
-  fun isFileStale(file: File, entry: PdfMushafEntry): Boolean =
-    !PdfManifestParser.hasPdfMagicHeader(file) ||
-      PdfManifestParser.isStaleFileSize(file.length(), entry.sizeMB)
+  fun isLocalFileInvalid(file: File): Boolean =
+    !file.exists() || file.length() <= 0L || !PdfManifestParser.hasPdfMagicHeader(file)
+
+  private fun fetchRemoteContentLengthOrNull(
+    entry: PdfMushafEntry,
+    useCached: Boolean = true,
+  ): Long? {
+    if (useCached) {
+      remoteContentLengthCache[entry.id]?.let { return it }
+    }
+    val url = "$MUSHAF_BASE_URL${entry.file}"
+    val req = Request.Builder().url(url).head().build()
+    val len = runCatching {
+      httpClient.newCall(req).execute().use { resp ->
+        if (!resp.isSuccessful) return@use null
+        resp.header("Content-Length")?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+      }
+    }.getOrNull()
+    if (len != null && len > 0L) {
+      remoteContentLengthCache[entry.id] = len
+    }
+    return len
+  }
+
+  suspend fun isFileStaleOnline(
+    file: File,
+    entry: PdfMushafEntry,
+    forceHeadCheck: Boolean = false,
+  ): Boolean = withContext(Dispatchers.IO) {
+    if (isLocalFileInvalid(file)) return@withContext true
+    val remoteLen = fetchRemoteContentLengthOrNull(entry, useCached = !forceHeadCheck)
+    PdfManifestParser.isStaleByRemoteContentLength(file.length(), remoteLen)
+  }
 
   suspend fun pruneStaleFilesAndCollectRedownloadEntries(
     entries: List<PdfMushafEntry>,
+    forceHeadCheck: Boolean = false,
     onBeforeDelete: suspend (String) -> Unit = {},
   ): List<PdfMushafEntry> = withContext(Dispatchers.IO) {
     if (entries.isEmpty()) return@withContext emptyList()
@@ -416,18 +457,22 @@ class PdfMushafRepository(
     var changed = false
 
     for (entry in entries) {
-      val offline = offlinePdfFile(entry.id)
-      val cached = cachePdfFile(entry.id)
-      if (offline.exists() && isFileStale(offline, entry)) {
-        onBeforeDelete(entry.id)
-        offline.delete()
-        cached.delete()
-        staleOfflineEntries += entry
-        changed = true
-      } else if (cached.exists() && isFileStale(cached, entry)) {
-        onBeforeDelete(entry.id)
-        cached.delete()
-        changed = true
+      if (transferJobs[entry.id]?.isActive == true) continue
+      mutexFor(entry.id).withLock {
+        if (transferJobs[entry.id]?.isActive == true) return@withLock
+        val offline = offlinePdfFile(entry.id)
+        val cached = cachePdfFile(entry.id)
+        if (offline.exists() && isFileStaleOnline(offline, entry, forceHeadCheck = forceHeadCheck)) {
+          onBeforeDelete(entry.id)
+          offline.delete()
+          cached.delete()
+          staleOfflineEntries += entry
+          changed = true
+        } else if (cached.exists() && isFileStaleOnline(cached, entry, forceHeadCheck = forceHeadCheck)) {
+          onBeforeDelete(entry.id)
+          cached.delete()
+          changed = true
+        }
       }
     }
 
@@ -439,9 +484,9 @@ class PdfMushafRepository(
 
   fun getLocalOrCachedPdfFile(mushafId: String): File? {
     val offline = offlinePdfFile(mushafId)
-    if (PdfManifestParser.hasPdfMagicHeader(offline)) return offline
+    if (!isLocalFileInvalid(offline)) return offline
     val cached = cachePdfFile(mushafId)
-    if (PdfManifestParser.hasPdfMagicHeader(cached)) return cached
+    if (!isLocalFileInvalid(cached)) return cached
     return null
   }
 
@@ -451,8 +496,9 @@ class PdfMushafRepository(
         "لا يوجد اتصال بالإنترنت أثناء $contextLabel"
       is SocketTimeoutException ->
         "انتهت مهلة الاتصال بالخادم أثناء $contextLabel"
-      else ->
-        error.localizedMessage ?: "تعذر $contextLabel"
+      is SSLException ->
+        "تعذر تأمين الاتصال بالخادم أثناء $contextLabel"
+      else -> "تعذر $contextLabel"
     }
   }
 
@@ -614,38 +660,48 @@ class PdfMushafRepository(
     val job = scope.launch(Dispatchers.IO) {
       val target = offlinePdfFile(entry.id)
       try {
-        updateTransferState(
-          PdfMushafTransferState(
-            mushafId = entry.id,
-            isDownloadingOffline = true,
-            progressPercent = 0,
-          ),
-        )
-        // If already cached and size matches manifest (within 5%), move/copy cleanly to persistent dir
-        val cached = cachePdfFile(entry.id)
-        if (cached.exists() && isFileStale(cached, entry)) {
-          cached.delete()
-        }
-        if (cached.exists() && !isFileStale(cached, entry)) {
-          val part = File(persistentDir, "${entry.id}.pdf.part")
-          cached.copyTo(part, overwrite = true)
-          if (!part.renameTo(target)) {
-            part.copyTo(target, overwrite = true)
-            part.delete()
+        var copiedFromValidCache = false
+        mutexFor(entry.id).withLock {
+          updateTransferState(
+            PdfMushafTransferState(
+              mushafId = entry.id,
+              isDownloadingOffline = true,
+              progressPercent = 0,
+            ),
+          )
+          val cached = cachePdfFile(entry.id)
+          if (cached.exists() && isLocalFileInvalid(cached)) {
+            cached.delete()
           }
-          refreshFileStateFlows()
-          updateTransferState(PdfMushafTransferState(mushafId = entry.id))
-          onCompleted()
-          return@launch
+          if (cached.exists() && !isLocalFileInvalid(cached)) {
+            val part = File(persistentDir, "${entry.id}.pdf.part")
+            cached.copyTo(part, overwrite = true)
+            if (part.length() == cached.length() && PdfManifestParser.hasPdfMagicHeader(part)) {
+              if (!part.renameTo(target)) {
+                part.copyTo(target, overwrite = true)
+                part.delete()
+              }
+              if (!isLocalFileInvalid(target)) {
+                refreshFileStateFlows()
+                updateTransferState(PdfMushafTransferState(mushafId = entry.id))
+                copiedFromValidCache = true
+              } else {
+                target.delete()
+              }
+            } else {
+              part.delete()
+            }
+          }
+          if (!copiedFromValidCache) {
+            downloadPdfToTarget(
+              entry = entry,
+              targetFile = target,
+              isOfflineDownload = true,
+            )
+            refreshFileStateFlows()
+            updateTransferState(PdfMushafTransferState(mushafId = entry.id))
+          }
         }
-
-        downloadPdfToTarget(
-          entry = entry,
-          targetFile = target,
-          isOfflineDownload = true,
-        )
-        refreshFileStateFlows()
-        updateTransferState(PdfMushafTransferState(mushafId = entry.id))
         onCompleted()
       } catch (e: CancellationException) {
         updateTransferState(PdfMushafTransferState(mushafId = entry.id))
@@ -670,11 +726,16 @@ class PdfMushafRepository(
     onCompleted: suspend () -> Unit = {},
   ) {
     withContext(Dispatchers.IO) {
+      val prev = transferJobs[entry.id]
       cancelTransfer(entry.id)
-      onBeforeDelete()
-      offlinePdfFile(entry.id).delete()
-      cachePdfFile(entry.id).delete()
-      refreshFileStateFlows()
+      runCatching { prev?.join() }
+      mutexFor(entry.id).withLock {
+        onBeforeDelete()
+        offlinePdfFile(entry.id).delete()
+        cachePdfFile(entry.id).delete()
+        remoteContentLengthCache.remove(entry.id)
+        refreshFileStateFlows()
+      }
     }
     startOfflineDownload(entry, onCompleted = onCompleted)
   }
@@ -684,58 +745,129 @@ class PdfMushafRepository(
     onBeforeDeleteStale: suspend (String) -> Unit = {},
   ): Result<File> = withContext(Dispatchers.IO) {
     runCatching {
-      val offline = offlinePdfFile(entry.id)
-      var hadStaleOffline = false
-      if (offline.exists()) {
-        if (!isFileStale(offline, entry)) {
-          return@runCatching offline
+      // Wait for any in-flight download for this mushaf to finish atomically before checking/opening
+      transferJobs[entry.id]?.let { inFlight ->
+        if (inFlight.isActive) {
+          inFlight.join()
         }
-        onBeforeDeleteStale(entry.id)
-        offline.delete()
-        hadStaleOffline = true
-        refreshFileStateFlows()
       }
 
-      val cached = cachePdfFile(entry.id)
-      if (cached.exists()) {
-        if (!hadStaleOffline && !isFileStale(cached, entry)) {
-          return@runCatching cached
+      mutexFor(entry.id).withLock {
+        transferJobs[entry.id]?.let { inFlight ->
+          if (inFlight.isActive) {
+            inFlight.join()
+          }
         }
-        onBeforeDeleteStale(entry.id)
-        cached.delete()
-        refreshFileStateFlows()
-      }
 
-      val target = if (hadStaleOffline) offline else cached
-      updateTransferState(
-        PdfMushafTransferState(
-          mushafId = entry.id,
-          isDownloadingOffline = hadStaleOffline,
-          isStreamingOpen = !hadStaleOffline,
-          progressPercent = 0,
-        ),
-      )
-      try {
-        downloadPdfToTarget(
-          entry = entry,
-          targetFile = target,
-          isOfflineDownload = hadStaleOffline,
-        )
-        refreshFileStateFlows()
-        updateTransferState(PdfMushafTransferState(mushafId = entry.id))
-        target
-      } catch (e: CancellationException) {
-        updateTransferState(PdfMushafTransferState(mushafId = entry.id))
-        throw e
-      } catch (e: Exception) {
-        val msg = mapErrorToArabic(e, "فتح المصحف أونلاين")
+        val offline = offlinePdfFile(entry.id)
+        var hadInvalidOffline = false
+        if (offline.exists()) {
+          if (!isLocalFileInvalid(offline)) {
+            return@withLock offline
+          }
+          onBeforeDeleteStale(entry.id)
+          offline.delete()
+          hadInvalidOffline = true
+          refreshFileStateFlows()
+        }
+
+        val cached = cachePdfFile(entry.id)
+        if (cached.exists()) {
+          if (!hadInvalidOffline && !isLocalFileInvalid(cached)) {
+            return@withLock cached
+          }
+          onBeforeDeleteStale(entry.id)
+          cached.delete()
+          refreshFileStateFlows()
+        }
+
+        val target = if (hadInvalidOffline) offline else cached
         updateTransferState(
           PdfMushafTransferState(
             mushafId = entry.id,
-            errorMessage = msg,
+            isDownloadingOffline = hadInvalidOffline,
+            isStreamingOpen = !hadInvalidOffline,
+            progressPercent = 0,
           ),
         )
-        throw IllegalStateException(msg, e)
+        try {
+          downloadPdfToTarget(
+            entry = entry,
+            targetFile = target,
+            isOfflineDownload = hadInvalidOffline,
+          )
+          refreshFileStateFlows()
+          updateTransferState(PdfMushafTransferState(mushafId = entry.id))
+          target
+        } catch (e: CancellationException) {
+          updateTransferState(PdfMushafTransferState(mushafId = entry.id))
+          throw e
+        } catch (e: Exception) {
+          val msg = mapErrorToArabic(e, "فتح المصحف")
+          updateTransferState(
+            PdfMushafTransferState(
+              mushafId = entry.id,
+              errorMessage = msg,
+            ),
+          )
+          throw IllegalStateException(msg, e)
+        }
+      }
+    }
+  }
+
+  suspend fun invalidateAndRedownloadForReader(
+    entry: PdfMushafEntry,
+    onBeforeDelete: suspend () -> Unit = {},
+  ): Result<File> = withContext(Dispatchers.IO) {
+    runCatching {
+      val prev = transferJobs[entry.id]
+      cancelTransfer(entry.id)
+      runCatching { prev?.join() }
+
+      mutexFor(entry.id).withLock {
+        val offline = offlinePdfFile(entry.id)
+        val cached = cachePdfFile(entry.id)
+        val preferOfflineTarget = offline.exists()
+        onBeforeDelete()
+        offline.delete()
+        cached.delete()
+        File(persistentDir, "${entry.id}.pdf.part").delete()
+        File(cachePdfDir, "${entry.id}.pdf.part").delete()
+        remoteContentLengthCache.remove(entry.id)
+        refreshFileStateFlows()
+
+        val target = if (preferOfflineTarget) offline else cached
+        updateTransferState(
+          PdfMushafTransferState(
+            mushafId = entry.id,
+            isDownloadingOffline = preferOfflineTarget,
+            isStreamingOpen = !preferOfflineTarget,
+            progressPercent = 0,
+          ),
+        )
+        try {
+          downloadPdfToTarget(
+            entry = entry,
+            targetFile = target,
+            isOfflineDownload = preferOfflineTarget,
+          )
+          refreshFileStateFlows()
+          updateTransferState(PdfMushafTransferState(mushafId = entry.id))
+          target
+        } catch (e: CancellationException) {
+          updateTransferState(PdfMushafTransferState(mushafId = entry.id))
+          throw e
+        } catch (e: Exception) {
+          val msg = mapErrorToArabic(e, "فتح المصحف")
+          updateTransferState(
+            PdfMushafTransferState(
+              mushafId = entry.id,
+              errorMessage = msg,
+            ),
+          )
+          throw IllegalStateException(msg, e)
+        }
       }
     }
   }
@@ -753,7 +885,7 @@ class PdfMushafRepository(
     val req = Request.Builder().url(url).build()
     httpClient.newCall(req).execute().use { resp ->
       if (!resp.isSuccessful) {
-        throw IllegalStateException("تعذر تنزيل المصحف (HTTP ${resp.code})")
+        throw IllegalStateException("تعذر تنزيل المصحف")
       }
       val body = resp.body ?: throw IllegalStateException("ملف المصحف فارغ")
       val headerTotal = body.contentLength()
@@ -790,17 +922,27 @@ class PdfMushafRepository(
             }
           }
           output.flush()
+          runCatching { output.fd.sync() }
         }
       }
 
+      if (headerTotal > 0L && downloaded != headerTotal) {
+        partFile.delete()
+        throw IllegalStateException("اكتمل تنزيل الملف بشكل غير مكتمل")
+      }
       if (!PdfManifestParser.hasPdfMagicHeader(partFile)) {
         partFile.delete()
-        throw IllegalStateException("الملف الذي تم تنزيله ليس PDF صالحًا")
+        throw IllegalStateException("تعذر التحقق من سلامة الملف المُنزّل")
       }
       if (!partFile.renameTo(targetFile)) {
         partFile.copyTo(targetFile, overwrite = true)
         partFile.delete()
       }
+      if (isLocalFileInvalid(targetFile) || (headerTotal > 0L && targetFile.length() != headerTotal)) {
+        targetFile.delete()
+        throw IllegalStateException("تعذر التحقق من سلامة الملف المُنزّل")
+      }
+      remoteContentLengthCache[entry.id] = targetFile.length()
     }
   }
 

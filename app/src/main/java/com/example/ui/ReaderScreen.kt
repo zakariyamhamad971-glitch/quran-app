@@ -797,7 +797,7 @@ private fun ReaderSettingsHost(
   }
 
   val activeLabel = if (activeMushafIsPdf) {
-    activePdfMushafLabel?.takeIf { it.isNotBlank() } ?: "مصحف PDF"
+    activePdfMushafLabel?.takeIf { it.isNotBlank() } ?: "مصحف الروايات"
   } else {
     MushafRegistry.getById(activeId).title
   }

@@ -153,7 +153,8 @@ data class DownloadableRecitersUiState(
 
 class QabasatViewModel(application: Application) : AndroidViewModel(application) {
   companion object {
-    private const val PAGE_CACHE_LIMIT = 8
+    private const val SINGLE_PAGE_CACHE_LIMIT = 8
+    private const val TWO_PAGE_CACHE_LIMIT = 12
   }
 
   private val diskCache = VerifiedDiskCache(application)
@@ -299,7 +300,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private var downloadableRecitersJob: Job? = null
 
   private val pageJobs = mutableMapOf<Int, Job>()
+  private val pageJobVisiblePriority = mutableMapOf<Int, Boolean>()
   private val pageLruOrder = ArrayDeque<Int>()
+  private var prefetchJob: Job? = null
   @Volatile
   private var activeRenderSpec = PageRenderSpec()
   @Volatile
@@ -497,7 +500,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     _uiState.update {
       it.copy(
         surahs = surahs,
-        metadataError = surahsRes.exceptionOrNull()?.localizedMessage,
+        metadataError = if (surahsRes.isFailure) "تعذر تحميل بيانات السور" else null,
       )
     }
 
@@ -510,30 +513,11 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     ensurePlaybackConnected()
     viewModelScope.launch { audioCacheManager.refreshDownloadedKeys() }
 
-    if (saved.activeMushafIsPdf) {
-      val currentList = _uiState.value.pdfMushafs
-      if (currentList.isNotEmpty()) {
-        pruneAndRedownloadStalePdfFiles(currentList)
-      }
-      if (currentList.none { it.id == saved.activePdfMushafId }) {
-        val fetchedManifest = pdfMushafRepository.fetchManifest(forceRefresh = false)
-        fetchedManifest.onSuccess { list ->
-          _uiState.update { it.copy(pdfMushafs = list, pdfManifestError = null) }
-          pruneAndRedownloadStalePdfFiles(list)
-        }
-      } else {
-        viewModelScope.launch {
-          pdfMushafRepository.fetchManifest(forceRefresh = false).onSuccess { list ->
-            _uiState.update { it.copy(pdfMushafs = list, pdfManifestError = null) }
-            pruneAndRedownloadStalePdfFiles(list)
-          }
-        }
-      }
-    } else if (localOrCachedPdfIds.value.isNotEmpty() || _uiState.value.pdfMushafs.isNotEmpty()) {
+    if (saved.activeMushafIsPdf || localOrCachedPdfIds.value.isNotEmpty() || _uiState.value.pdfMushafs.isNotEmpty()) {
       viewModelScope.launch {
-        val localManifest = _uiState.value.pdfMushafs
-        if (localManifest.isNotEmpty()) {
-          pruneAndRedownloadStalePdfFiles(localManifest)
+        val currentList = _uiState.value.pdfMushafs
+        if (currentList.isNotEmpty()) {
+          pruneAndRedownloadStalePdfFiles(currentList)
         }
         pdfMushafRepository.fetchManifest(forceRefresh = false).onSuccess { list ->
           _uiState.update { it.copy(pdfMushafs = list, pdfManifestError = null) }
@@ -646,11 +630,11 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           )
         }
         pruneAndRedownloadStalePdfFiles(list)
-      }.onFailure { err ->
+      }.onFailure {
         _uiState.update {
           it.copy(
             pdfManifestLoading = false,
-            pdfManifestError = err.localizedMessage ?: "تعذر تحميل قائمة المصاحف",
+            pdfManifestError = "تعذر تحميل قائمة المصاحف",
           )
         }
       }
@@ -992,13 +976,13 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           } else if (current != null) {
             playbackController.clearReciterSelection()
           }
-        }.onFailure { err ->
+        }.onFailure {
           _uiState.update {
             it.copy(
               primaryReciters = emptyList(),
               additionalReciters = emptyList(),
               recitersLoading = false,
-              recitersError = err.localizedMessage ?: "تعذر تحميل قائمة القراء",
+              recitersError = "تعذر تحميل قائمة القراء",
             )
           }
         }
@@ -1030,11 +1014,11 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
               )
             }
           }
-        }.onFailure { err ->
+        }.onFailure {
           _uiState.update {
             it.copy(
               recitersLoading = false,
-              recitersError = err.localizedMessage ?: "تعذر تحميل قائمة القراء",
+              recitersError = "تعذر تحميل قائمة القراء",
             )
           }
         }
@@ -1057,7 +1041,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     val clamped = page.coerceIn(1, 604)
     hasReaderActivated = true
     val spec = activeRenderSpec
-    if (clamped == _uiState.value.currentPage && _pagesState.value[clamped] is PageLoadState.Ready) {
+    val currentState = _pagesState.value[clamped]
+    val isFullReady = currentState is PageLoadState.Ready && !currentState.renderedPage.isPreview
+    if (!spec.isTwoPageMode && clamped == _uiState.value.currentPage && isFullReady) {
       return
     }
     _uiState.update { it.copy(currentPage = clamped) }
@@ -1153,7 +1139,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     hasReaderActivated = true
     val spec = activeRenderSpec
     if (spec.isValid) {
-      loadSinglePage(page, spec, forceReload = true)
+      loadSinglePage(page, spec, forceReload = true, isVisiblePriority = true)
     }
   }
 
@@ -1330,7 +1316,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         } else {
           st.copy(
             isLoading = false,
-            errorMessage = err.localizedMessage ?: "تعذر البحث في القرآن الكريم",
+            errorMessage = "تعذر البحث في القرآن الكريم",
             result = null,
           )
         }
@@ -1339,19 +1325,26 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   private fun clearCachedPages() {
+    prefetchJob?.cancel()
+    prefetchJob = null
     pageJobs.values.forEach { it.cancel() }
     pageJobs.clear()
+    pageJobVisiblePriority.clear()
     pageLruOrder.clear()
   }
 
-  private fun retainPageWindowLru(orderedTargets: List<Int>): Set<Int> {
+  private fun retainPageWindowLru(
+    orderedTargets: List<Int>,
+    maxRetained: Int,
+  ): Set<Int> {
     for (p in orderedTargets.asReversed()) {
       pageLruOrder.remove(p)
       pageLruOrder.addLast(p)
     }
-    while (pageLruOrder.size > PAGE_CACHE_LIMIT) {
+    while (pageLruOrder.size > maxRetained) {
       val evicted = pageLruOrder.removeFirst()
       pageJobs.remove(evicted)?.cancel()
+      pageJobVisiblePriority.remove(evicted)
     }
     return pageLruOrder.toSet()
   }
@@ -1361,22 +1354,142 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     spec: PageRenderSpec,
   ) {
     if (!spec.isValid) return
-    // Current page plus 2 pages on each side (+3 for right-spread partner prefetch)
-    val activeTargets = listOfNotNull(
-      centerPage.takeIf { it in 1..604 },
-      (centerPage + 1).takeIf { it in 1..604 },
-      (centerPage - 1).takeIf { it in 1..604 },
-      (centerPage + 2).takeIf { it in 1..604 },
-      (centerPage - 2).takeIf { it in 1..604 },
-      if (centerPage % 2 == 1 && (centerPage + 3) in 1..604) centerPage + 3 else null,
-    )
-    val retainedKeys = retainPageWindowLru(activeTargets)
+    prefetchJob?.cancel()
+
+    val visiblePages = if (spec.isTwoPageMode) {
+      val rightPage = (((centerPage - 1) / 2) * 2 + 1).coerceIn(1, 604)
+      val leftPage = (rightPage + 1).coerceAtMost(604)
+      listOf(rightPage, leftPage).distinct()
+    } else {
+      listOf(centerPage.coerceIn(1, 604))
+    }
+
+    val prefetchPages = if (spec.isTwoPageMode) {
+      val rightPage = visiblePages.first()
+      listOf(
+        rightPage + 2,
+        rightPage + 3,
+        rightPage + 4,
+        rightPage + 5,
+        rightPage - 1,
+        rightPage - 2,
+        rightPage - 3,
+        rightPage - 4,
+      ).filter { it in 1..604 && it !in visiblePages }
+    } else {
+      listOf(
+        centerPage + 1,
+        centerPage + 2,
+        centerPage - 1,
+      ).filter { it in 1..604 && it !in visiblePages }
+    }
+
+    val allTargets = visiblePages + prefetchPages
+    val maxRetained = if (spec.isTwoPageMode) TWO_PAGE_CACHE_LIMIT else SINGLE_PAGE_CACHE_LIMIT
+    val retainedKeys = retainPageWindowLru(allTargets, maxRetained)
+
+    // Cancel any active prefetch jobs for pages not in the new visible/prefetch window
+    val iter = pageJobs.entries.iterator()
+    while (iter.hasNext()) {
+      val entry = iter.next()
+      val p = entry.key
+      if (p !in allTargets) {
+        if (pageJobVisiblePriority[p] != true) {
+          entry.value.cancel()
+          iter.remove()
+          pageJobVisiblePriority.remove(p)
+        }
+      }
+    }
+
     _pagesState.update { currentMap ->
       val pruned = currentMap.filterKeys { it in retainedKeys }
       if (pruned.size == currentMap.size) currentMap else pruned
     }
-    for (p in activeTargets) {
-      loadSinglePage(p, spec, forceReload = false)
+
+    val visibleJobs = visiblePages.mapNotNull { p ->
+      loadSinglePage(p, spec, forceReload = false, isVisiblePriority = true)
+    }
+
+    if (prefetchPages.isNotEmpty()) {
+      prefetchJob = viewModelScope.launch {
+        visibleJobs.forEach { it.join() }
+        for (p in prefetchPages) {
+          if (activeRenderSpec != spec || !pageLruOrder.contains(p)) break
+          val job = loadSinglePage(p, spec, forceReload = false, isVisiblePriority = false)
+          if (spec.isPdfMode) {
+            job?.join()
+          }
+        }
+      }
+    }
+  }
+
+  private suspend fun renderPdfBitmapWithRecovery(
+    entry: PdfMushafEntry,
+    initialFile: java.io.File,
+    page: Int,
+    bodyW: Int,
+    isTwoPageMode: Boolean,
+    scaleMultiplier: Float,
+    isVisiblePriority: Boolean,
+  ): Pair<java.io.File, com.example.data.pdf.PdfRenderedPageBitmap> {
+    var activeFile = initialFile
+    try {
+      val bmp = pdfRendererBridge.renderPage(
+        mushafId = entry.id,
+        pdfFile = activeFile,
+        pageNumber = page,
+        onScreenWidthPx = bodyW,
+        cropLeftPt = entry.cropLeftPt,
+        cropRightPt = entry.cropRightPt,
+        isTwoPageMode = isTwoPageMode,
+        scaleMultiplier = scaleMultiplier,
+        isVisiblePriority = isVisiblePriority,
+      )
+      return activeFile to bmp
+    } catch (e: CancellationException) {
+      throw e
+    } catch (_: Exception) {
+      // Automatic recovery step 1: close open renderer & retry once on the same local file
+      pdfRendererBridge.closeIfMatches(entry.id)
+      try {
+        val retryBmp = pdfRendererBridge.renderPage(
+          mushafId = entry.id,
+          pdfFile = activeFile,
+          pageNumber = page,
+          onScreenWidthPx = bodyW,
+          cropLeftPt = entry.cropLeftPt,
+          cropRightPt = entry.cropRightPt,
+          isTwoPageMode = isTwoPageMode,
+          scaleMultiplier = scaleMultiplier,
+          isVisiblePriority = isVisiblePriority,
+        )
+        return activeFile to retryBmp
+      } catch (e2: CancellationException) {
+        throw e2
+      } catch (_: Exception) {
+        // Automatic recovery step 2: delete local file, re-download once, and re-open cleanly
+        activeFile = pdfMushafRepository.invalidateAndRedownloadForReader(
+          entry = entry,
+          onBeforeDelete = {
+            activePdfFileKeys.remove(entry.id)
+            pdfRendererBridge.closeIfMatches(entry.id)
+          },
+        ).getOrThrow()
+        val redownloadedBmp = pdfRendererBridge.renderPage(
+          mushafId = entry.id,
+          pdfFile = activeFile,
+          pageNumber = page,
+          onScreenWidthPx = bodyW,
+          cropLeftPt = entry.cropLeftPt,
+          cropRightPt = entry.cropRightPt,
+          isTwoPageMode = isTwoPageMode,
+          scaleMultiplier = scaleMultiplier,
+          isVisiblePriority = isVisiblePriority,
+        )
+        return activeFile to redownloadedBmp
+      }
     }
   }
 
@@ -1384,11 +1497,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     page: Int,
     spec: PageRenderSpec,
     forceReload: Boolean,
-  ) {
-    if (page !in 1..604 || !spec.isValid) return
+    isVisiblePriority: Boolean = true,
+  ): Job? {
+    if (page !in 1..604 || !spec.isValid) return null
 
     if (!forceReload) {
-      val cached = pageBitmapRenderer.getCached(page, spec)
+      val cached = pageBitmapRenderer.getCached(page, spec, isPreview = false)
       if (cached != null) {
         val currentState = _pagesState.value[page]
         if (currentState !is PageLoadState.Ready || currentState.renderedPage !== cached) {
@@ -1400,14 +1514,20 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
             ))
           }
         }
-        return
+        return null
       }
-      val existing = _pagesState.value[page]
-      if (existing is PageLoadState.Loading && pageJobs[page]?.isActive == true) return
+      val activeJob = pageJobs[page]
+      if (activeJob?.isActive == true) {
+        val existingIsVisible = pageJobVisiblePriority[page] == true
+        if (!isVisiblePriority || existingIsVisible) {
+          return activeJob
+        }
+      }
     }
 
     pageJobs[page]?.cancel()
-    pageJobs[page] = viewModelScope.launch {
+    pageJobVisiblePriority[page] = isVisiblePriority
+    val job = viewModelScope.launch {
       _pagesState.update { current ->
         if (current[page] is PageLoadState.Ready && !forceReload) current
         else current + (page to PageLoadState.Loading)
@@ -1439,20 +1559,20 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
               pdfRendererBridge.closeIfMatches(staleId)
             },
           )
-          val pdfFile = fileRes.getOrElse { err ->
+          var pdfFile = fileRes.getOrElse {
             _pagesState.update {
-              it + (page to PageLoadState.Error(err.localizedMessage ?: "تعذر تحميل صفحة المصحف PDF"))
+              it + (page to PageLoadState.Error("تعذر فتح المصحف"))
             }
             return@launch
           }
 
           if (activeRenderSpec != spec || !pageLruOrder.contains(page)) return@launch
 
-          val pdfFileKey = "${pdfFile.absolutePath}|${pdfFile.length()}|${pdfFile.lastModified()}"
+          var pdfFileKey = "${pdfFile.absolutePath}|${pdfFile.length()}|${pdfFile.lastModified()}"
           activePdfFileKeys[entry.id] = pdfFileKey
-          val fileSpec = spec.copy(pdfFileKey = pdfFileKey)
+          var fileSpec = spec.copy(pdfFileKey = pdfFileKey)
           if (!forceReload) {
-            pageBitmapRenderer.getCached(page, fileSpec)?.let { cached ->
+            pageBitmapRenderer.getCached(page, fileSpec, isPreview = false)?.let { cached ->
               _pagesState.update {
                 it + (page to PageLoadState.Ready(
                   renderedPage = cached,
@@ -1466,19 +1586,6 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
           val headerMeta = quranRepository.getExistingPageHeaderMeta(page)
           val (bodyW, _) = pageBitmapRenderer.computePdfBodySizePx(fileSpec, page)
-          val renderedPdf = pdfRendererBridge.renderPage(
-            mushafId = entry.id,
-            pdfFile = pdfFile,
-            pageNumber = page,
-            onScreenWidthPx = bodyW,
-            cropLeftPt = entry.cropLeftPt,
-            cropRightPt = entry.cropRightPt,
-          )
-
-          if (activeRenderSpec != spec || !pageLruOrder.contains(page)) {
-            return@launch
-          }
-
           val surahsMap = cachedSurahsById.ifEmpty {
             quranRepository.getSurahs().getOrDefault(emptyList()).associateBy { it.id }.also {
               if (it.isNotEmpty()) cachedSurahsById = it
@@ -1491,13 +1598,92 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
             ?.surah
           val topSurah = madaniTopSurahId?.let { surahsMap[it] }
 
+          val hasFullPdfCached = !forceReload && pdfRendererBridge.getCached(
+            pdfFile = pdfFile,
+            pageNumber = page,
+            onScreenWidthPx = bodyW,
+            isTwoPageMode = fileSpec.isTwoPageMode,
+            scaleMultiplier = 1f,
+          ) != null
+
+          // Progressive stage 1: fast 0.4x preview for visible pages so swipes never stall on spinners
+          if (isVisiblePriority && !hasFullPdfCached) {
+            val (previewFile, previewPdf) = renderPdfBitmapWithRecovery(
+              entry = entry,
+              initialFile = pdfFile,
+              page = page,
+              bodyW = bodyW,
+              isTwoPageMode = fileSpec.isTwoPageMode,
+              scaleMultiplier = PdfRendererBridge.PREVIEW_SCALE_FACTOR,
+              isVisiblePriority = true,
+            )
+            if (previewFile.absolutePath != pdfFile.absolutePath ||
+              previewFile.length() != pdfFile.length() ||
+              previewFile.lastModified() != pdfFile.lastModified()
+            ) {
+              pdfFile = previewFile
+              pdfFileKey = "${pdfFile.absolutePath}|${pdfFile.length()}|${pdfFile.lastModified()}"
+              activePdfFileKeys[entry.id] = pdfFileKey
+              fileSpec = spec.copy(pdfFileKey = pdfFileKey)
+            }
+            if (activeRenderSpec != spec || !pageLruOrder.contains(page)) return@launch
+
+            val previewRendered = pageBitmapRenderer.renderPdfPageOrGet(
+              pageNumber = page,
+              headerMeta = headerMeta,
+              renderedPdf = previewPdf,
+              topSurah = topSurah,
+              spec = fileSpec,
+              surahsById = surahsMap,
+              isPreview = true,
+            )
+            if (activeRenderSpec != spec || !pageLruOrder.contains(page)) return@launch
+            _pagesState.update { cur ->
+              val existingReady = (cur[page] as? PageLoadState.Ready)?.renderedPage
+              if (!forceReload && existingReady != null && !existingReady.isPreview) {
+                cur
+              } else {
+                cur + (page to PageLoadState.Ready(
+                  renderedPage = previewRendered,
+                  effectiveDark = spec.effectiveDark,
+                  edition = spec.edition,
+                ))
+              }
+            }
+          }
+
+          // Progressive stage 2 (or direct full stage for cache hits / background prefetch)
+          val (resolvedFile, fullPdf) = renderPdfBitmapWithRecovery(
+            entry = entry,
+            initialFile = pdfFile,
+            page = page,
+            bodyW = bodyW,
+            isTwoPageMode = fileSpec.isTwoPageMode,
+            scaleMultiplier = 1f,
+            isVisiblePriority = isVisiblePriority,
+          )
+          if (resolvedFile.absolutePath != pdfFile.absolutePath ||
+            resolvedFile.length() != pdfFile.length() ||
+            resolvedFile.lastModified() != pdfFile.lastModified()
+          ) {
+            pdfFile = resolvedFile
+            pdfFileKey = "${pdfFile.absolutePath}|${pdfFile.length()}|${pdfFile.lastModified()}"
+            activePdfFileKeys[entry.id] = pdfFileKey
+            fileSpec = spec.copy(pdfFileKey = pdfFileKey)
+          }
+
+          if (activeRenderSpec != spec || !pageLruOrder.contains(page)) {
+            return@launch
+          }
+
           val rendered = pageBitmapRenderer.renderPdfPageOrGet(
             pageNumber = page,
             headerMeta = headerMeta,
-            renderedPdf = renderedPdf,
+            renderedPdf = fullPdf,
             topSurah = topSurah,
             spec = fileSpec,
             surahsById = surahsMap,
+            isPreview = false,
           )
 
           if (activeRenderSpec != spec || !pageLruOrder.contains(page)) return@launch
@@ -1511,9 +1697,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           }
         } catch (e: CancellationException) {
           throw e
-        } catch (e: Exception) {
+        } catch (_: Exception) {
           _pagesState.update {
-            it + (page to PageLoadState.Error(e.localizedMessage ?: "تعذر عرض الصفحة $page"))
+            it + (page to PageLoadState.Error("تعذر فتح المصحف"))
           }
         }
         return@launch
@@ -1531,9 +1717,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       )
       if (pageRes.isFailure) {
         _pagesState.update {
-          it + (page to PageLoadState.Error(
-            pageRes.exceptionOrNull()?.localizedMessage ?: "تعذر تحميل الصفحة $page",
-          ))
+          it + (page to PageLoadState.Error("تعذر تحميل الصفحة $page"))
         }
         return@launch
       }
@@ -1582,6 +1766,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         ))
       }
     }
+    pageJobs[page] = job
+    return job
   }
 
   fun onVerseTapped(verseKey: String, pageNumber: Int, verseCodeV2Line: String) {
@@ -1610,10 +1796,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           surahName = surahName,
           pageTypeface = pageFont,
         )
-      }.onFailure { err ->
+      }.onFailure {
         _verseInsightsState.value = VerseInsightsUiState.Error(
           verseKey = verseKey,
-          message = err.localizedMessage ?: "تعذر تحميل التفسير والترجمات",
+          message = "تعذر تحميل التفسير والترجمات",
         )
       }
     }
@@ -1707,11 +1893,11 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           isLoading = false,
           errorMessage = null,
         )
-      }.onFailure { err ->
+      }.onFailure {
         _downloadableRecitersState.update {
           it.copy(
             isLoading = false,
-            errorMessage = err.localizedMessage ?: "تعذر تحميل قائمة القراء",
+            errorMessage = "تعذر تحميل قائمة القراء",
           )
         }
       }
