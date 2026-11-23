@@ -41,6 +41,7 @@ data class PdfCropScalePlan(
   val cropTopPx: Int,
   val croppedWidthPx: Int,
   val croppedHeightPx: Int,
+  val needsCrop: Boolean = isUncroppedA4,
 )
 
 data class PdfRenderedPageBitmap(
@@ -80,6 +81,8 @@ class PdfRendererBridge {
     const val CROPPED_PAGE_WIDTH_PT = 472f
     const val CROPPED_PAGE_HEIGHT_PT = 688f
     const val MAX_RENDER_WIDTH_PX = 2400
+    const val MAX_RENDER_HEIGHT_PX = 3800
+    const val ANALYSIS_TARGET_WIDTH_PX = 472
     const val NON_WHITE_GRAY_THRESHOLD = 235
 
     // Useful area inside original 595x842 page: x 62..534, y 74..762 (origin bottom-left)
@@ -113,76 +116,79 @@ class PdfRendererBridge {
       cropLeftPt: Float = 0f,
       cropRightPt: Float = 0f,
     ): PdfCropScalePlan {
-      val pw = pageWidthPt.coerceAtLeast(1).toFloat()
-      val ph = pageHeightPt.coerceAtLeast(1).toFloat()
+      val pw = pageWidthPt.coerceAtLeast(30).toFloat()
+      val ph = pageHeightPt.coerceAtLeast(30).toFloat()
       val targetCroppedW = (onScreenWidthPx.coerceAtLeast(32) * 2).coerceIn(64, MAX_RENDER_WIDTH_PX)
       val isUncroppedA4 = pageWidthPt >= 560 && pageHeightPt >= 800
 
-      if (isUncroppedA4) {
-        val usefulLeft = (UNCROPPED_ORIGIN_LEFT + cropLeftPt).coerceIn(0f, pw - 30f)
-        val usefulRight = (UNCROPPED_ORIGIN_RIGHT - cropRightPt).coerceIn(usefulLeft + 30f, pw)
-        val usefulTop = UNCROPPED_ORIGIN_TOP.coerceIn(0f, ph - 30f)
-        val usefulBottom = UNCROPPED_ORIGIN_BOTTOM.coerceIn(usefulTop + 30f, ph)
+      val baseLeft = if (isUncroppedA4) UNCROPPED_ORIGIN_LEFT.coerceIn(0f, pw - 30f) else 0f
+      val baseRight = if (isUncroppedA4) UNCROPPED_ORIGIN_RIGHT.coerceIn(baseLeft + 30f, pw) else pw
+      val baseTop = if (isUncroppedA4) UNCROPPED_ORIGIN_TOP.coerceIn(0f, ph - 30f) else 0f
+      val baseBottom = if (isUncroppedA4) UNCROPPED_ORIGIN_BOTTOM.coerceIn(baseTop + 30f, ph) else ph
+      val baseW = (baseRight - baseLeft).coerceAtLeast(30f)
 
-        val usefulWidthFrac = ((usefulRight - usefulLeft) / pw).coerceIn(0.15f, 1.0f)
-        val fullW = (targetCroppedW.toFloat() / usefulWidthFrac).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX)
-        val scale = fullW.toFloat() / pw
-        val fullH = (ph * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX * 2)
-
-        val cropX = (scale * usefulLeft).roundToInt().coerceIn(0, fullW - 2)
-        val cropY = (scale * usefulTop).roundToInt().coerceIn(0, fullH - 2)
-        val cropRightPx = (scale * usefulRight).roundToInt().coerceIn(cropX + 1, fullW)
-        val cropBottomPx = (scale * usefulBottom).roundToInt().coerceIn(cropY + 1, fullH)
-
-        return PdfCropScalePlan(
-          pageWidthPt = pageWidthPt,
-          pageHeightPt = pageHeightPt,
-          isUncroppedA4 = true,
-          fullRenderWidthPx = fullW,
-          fullRenderHeightPx = fullH,
-          renderScale = scale,
-          cropLeftPx = cropX,
-          cropTopPx = cropY,
-          croppedWidthPx = (cropRightPx - cropX).coerceAtLeast(1),
-          croppedHeightPx = (cropBottomPx - cropY).coerceAtLeast(1),
-        )
+      // Manifest cropLeftPt/cropRightPt may represent X coordinates inside 472pt (e.g. 14.5..456.0)
+      // or small margin widths from the edges. Distinguish safely and never shrink usefulW below 50% of baseW.
+      val relLeft = if (cropLeftPt > 0f && cropLeftPt < baseW * 0.45f) cropLeftPt else 0f
+      val relRight = when {
+        cropRightPt <= 0f -> baseW
+        cropRightPt > relLeft + baseW * 0.5f && cropRightPt <= baseW + 8f ->
+          cropRightPt.coerceAtMost(baseW)
+        cropRightPt < baseW * 0.45f ->
+          (baseW - cropRightPt).coerceAtLeast(relLeft + baseW * 0.5f)
+        else -> baseW
       }
 
-      // Page is already cropped to text box; apply custom crop margins if requested
-      if (cropLeftPt > 0f || cropRightPt > 0f) {
-        val usefulW = (pw - cropLeftPt - cropRightPt).coerceAtLeast(30f)
-        val scale = targetCroppedW.toFloat() / usefulW
-        val fullW = (pw * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX)
-        val fullH = (ph * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX * 2)
-        val cropX = (scale * cropLeftPt).roundToInt().coerceIn(0, fullW - 2)
-        val cropRightPx = (scale * (pw - cropRightPt)).roundToInt().coerceIn(cropX + 1, fullW)
+      val usefulLeft = (baseLeft + relLeft).coerceIn(0f, pw - 30f)
+      val usefulRight = (baseLeft + relRight).coerceIn(usefulLeft + 30f, pw)
+      val usefulW = (usefulRight - usefulLeft).coerceAtLeast(30f)
+
+      val desiredScale = targetCroppedW.toFloat() / usefulW
+      val maxSafeScale = minOf(
+        MAX_RENDER_WIDTH_PX.toFloat() / pw,
+        MAX_RENDER_HEIGHT_PX.toFloat() / ph,
+      )
+      val scale = minOf(desiredScale, maxSafeScale).coerceAtLeast(0.05f)
+
+      val fullW = (pw * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX)
+      val fullH = (ph * scale).roundToInt().coerceIn(64, MAX_RENDER_HEIGHT_PX)
+
+      val hasHorizontalSubCrop = relLeft > 0.25f || relRight < (baseW - 0.25f)
+      if (!isUncroppedA4 && !hasHorizontalSubCrop) {
         return PdfCropScalePlan(
           pageWidthPt = pageWidthPt,
           pageHeightPt = pageHeightPt,
-          isUncroppedA4 = true,
+          isUncroppedA4 = false,
           fullRenderWidthPx = fullW,
           fullRenderHeightPx = fullH,
           renderScale = scale,
-          cropLeftPx = cropX,
+          cropLeftPx = 0,
           cropTopPx = 0,
-          croppedWidthPx = (cropRightPx - cropX).coerceAtLeast(1),
+          croppedWidthPx = fullW,
           croppedHeightPx = fullH,
+          needsCrop = false,
         )
       }
 
-      val scale = targetCroppedW.toFloat() / pw
-      val fullH = (ph * scale).roundToInt().coerceIn(64, MAX_RENDER_WIDTH_PX * 2)
+      val cropX = (scale * usefulLeft).roundToInt().coerceIn(0, fullW - 2)
+      val cropY = (scale * baseTop).roundToInt().coerceIn(0, fullH - 2)
+      val cropRightPx = (scale * usefulRight).roundToInt().coerceIn(cropX + 1, fullW)
+      val cropBottomPx = (scale * baseBottom).roundToInt().coerceIn(cropY + 1, fullH)
+      val croppedW = (cropRightPx - cropX).coerceAtLeast(1)
+      val croppedH = (cropBottomPx - cropY).coerceAtLeast(1)
+
       return PdfCropScalePlan(
         pageWidthPt = pageWidthPt,
         pageHeightPt = pageHeightPt,
-        isUncroppedA4 = false,
-        fullRenderWidthPx = targetCroppedW.coerceIn(64, MAX_RENDER_WIDTH_PX),
+        isUncroppedA4 = isUncroppedA4,
+        fullRenderWidthPx = fullW,
         fullRenderHeightPx = fullH,
         renderScale = scale,
-        cropLeftPx = 0,
-        cropTopPx = 0,
-        croppedWidthPx = targetCroppedW,
-        croppedHeightPx = fullH,
+        cropLeftPx = cropX,
+        cropTopPx = cropY,
+        croppedWidthPx = croppedW,
+        croppedHeightPx = croppedH,
+        needsCrop = isUncroppedA4 || cropX > 0 || cropY > 0 || croppedW < fullW || croppedH < fullH,
       )
     }
 
@@ -384,9 +390,18 @@ class PdfRendererBridge {
 
       val isFewLines = linesList.size in 3..11
       val lineStrips = if (isFewLines) {
+        val edgeGuard = 2
         linesList.mapIndexed { idx, lineRange ->
-          val topCut = if (idx == 0) labelCutRow else (linesList[idx - 1].second + lineRange.first) / 2
-          val botCut = if (idx == linesList.lastIndex) legendCutRow else (lineRange.second + linesList[idx + 1].first) / 2
+          val topCut = if (idx == 0) {
+            (lineRange.first - edgeGuard).coerceAtLeast(labelCutRow)
+          } else {
+            (linesList[idx - 1].second + lineRange.first) / 2
+          }
+          val botCut = if (idx == linesList.lastIndex) {
+            (lineRange.second + edgeGuard + 1).coerceAtMost(legendCutRow)
+          } else {
+            (lineRange.second + linesList[idx + 1].first) / 2
+          }
           var lMinX = safeW
           var lMaxX = -1
           for (y in lineRange.first..lineRange.second) {
@@ -424,6 +439,74 @@ class PdfRendererBridge {
         isFewLines = isFewLines,
         lines = lineStrips,
       )
+    }
+
+    /**
+     * Analyzes ink rows from a high-res rendered bitmap by aggregating pixels into
+     * ~472px-wide pt-equivalent coordinate buckets so pixel gap thresholds (2px, 3px, 5px, 25px)
+     * remain exact across all screen widths without losing 1px diacritics or dots.
+     */
+    fun computePageSegmentationFromBitmap(bmp: Bitmap): PdfPageSegmentation {
+      val bmpW = bmp.width.coerceAtLeast(1)
+      val bmpH = bmp.height.coerceAtLeast(1)
+      if (bmpW <= 520) {
+        val rowBuf = IntArray(bmpW)
+        return computePageSegmentation(bmpW, bmpH) { y, out ->
+          bmp.getPixels(rowBuf, 0, bmpW, 0, y, bmpW, 1)
+          System.arraycopy(rowBuf, 0, out, 0, bmpW)
+        }
+      }
+
+      val analysisW = ANALYSIS_TARGET_WIDTH_PX
+      val analysisH = ((ANALYSIS_TARGET_WIDTH_PX.toFloat() * bmpH.toFloat()) / bmpW.toFloat())
+        .roundToInt()
+        .coerceIn(100, 1200)
+
+      val bucketHasInk = BooleanArray(analysisH)
+      val bucketMinX = IntArray(analysisH) { analysisW }
+      val bucketMaxX = IntArray(analysisH) { -1 }
+
+      val chunkRows = 64
+      val chunkBuf = IntArray(bmpW * chunkRows)
+      var yStart = 0
+      while (yStart < bmpH) {
+        val rowsThisChunk = minOf(chunkRows, bmpH - yStart)
+        bmp.getPixels(chunkBuf, 0, bmpW, 0, yStart, bmpW, rowsThisChunk)
+        for (dy in 0 until rowsThisChunk) {
+          val y = yStart + dy
+          val ay = ((y.toLong() * analysisH.toLong()) / bmpH.toLong()).toInt().coerceIn(0, analysisH - 1)
+          val rowOffset = dy * bmpW
+          var rowMinSrcX = bmpW
+          var rowMaxSrcX = -1
+          for (x in 0 until bmpW) {
+            val px = chunkBuf[rowOffset + x]
+            val r = (px ushr 16) and 0xFF
+            val g = (px ushr 8) and 0xFF
+            val b = px and 0xFF
+            val lum = (r * 299 + g * 587 + b * 114) / 1000
+            if (lum < NON_WHITE_GRAY_THRESHOLD) {
+              if (x < rowMinSrcX) rowMinSrcX = x
+              if (x > rowMaxSrcX) rowMaxSrcX = x
+            }
+          }
+          if (rowMaxSrcX >= rowMinSrcX) {
+            val axMin = ((rowMinSrcX.toLong() * analysisW.toLong()) / bmpW.toLong()).toInt().coerceIn(0, analysisW - 1)
+            val axMax = ((rowMaxSrcX.toLong() * analysisW.toLong()) / bmpW.toLong()).toInt().coerceIn(axMin, analysisW - 1)
+            bucketHasInk[ay] = true
+            if (axMin < bucketMinX[ay]) bucketMinX[ay] = axMin
+            if (axMax > bucketMaxX[ay]) bucketMaxX[ay] = axMax
+          }
+        }
+        yStart += rowsThisChunk
+      }
+
+      return computePageSegmentation(analysisW, analysisH) { ay, out ->
+        java.util.Arrays.fill(out, Color.WHITE)
+        if (bucketHasInk[ay]) {
+          out[bucketMinX[ay]] = Color.BLACK
+          out[bucketMaxX[ay]] = Color.BLACK
+        }
+      }
     }
   }
 
@@ -564,7 +647,7 @@ class PdfRendererBridge {
         }
         page.render(fullBmp, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
-        val croppedBmp = if (!plan.isUncroppedA4) {
+        val croppedBmp = if (!plan.needsCrop) {
           fullBmp
         } else {
           try {
@@ -582,12 +665,7 @@ class PdfRendererBridge {
 
         // Retrieve or compute segmentation for this page
         val segmentation = segmentationCache.getOrPut(segKey) {
-          computePageSegmentation(
-            width = croppedBmp.width,
-            height = croppedBmp.height,
-          ) { y, rowBuffer ->
-            croppedBmp.getPixels(rowBuffer, 0, croppedBmp.width, 0, y, croppedBmp.width, 1)
-          }
+          computePageSegmentationFromBitmap(croppedBmp)
         }
 
         val topBandEndY = (segmentation.labelCutFraction * croppedBmp.height).roundToInt()

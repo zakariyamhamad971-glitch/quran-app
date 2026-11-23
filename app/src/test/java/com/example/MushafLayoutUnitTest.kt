@@ -1412,4 +1412,206 @@ class MushafLayoutUnitTest {
     val ayyuhaSub = index.search("أيها", isSubstring = true, surahsById = surahsById)
     assertEquals(2, ayyuhaSub.totalOccurrences)
   }
+
+  @Test
+  fun `computeCropScalePlan handles cropLeftPt and cropRightPt as x-bounds without OOM on 472x688 and 595x842`() {
+    val plan472 = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
+      pageWidthPt = 472,
+      pageHeightPt = 688,
+      onScreenWidthPx = 1080,
+      cropLeftPt = 14.5f,
+      cropRightPt = 456.0f,
+    )
+    assertTrue(plan472.needsCrop)
+    assertTrue(plan472.fullRenderWidthPx <= com.example.data.pdf.PdfRendererBridge.MAX_RENDER_WIDTH_PX)
+    assertTrue(plan472.fullRenderHeightPx <= com.example.data.pdf.PdfRendererBridge.MAX_RENDER_HEIGHT_PX)
+    assertTrue("Expected high-res cropped width >= 1800, got ${plan472.croppedWidthPx}", plan472.croppedWidthPx >= 1800)
+    assertTrue(plan472.cropLeftPx > 0)
+    assertTrue(plan472.cropLeftPx + plan472.croppedWidthPx <= plan472.fullRenderWidthPx)
+
+    val plan595 = com.example.data.pdf.PdfRendererBridge.computeCropScalePlan(
+      pageWidthPt = 595,
+      pageHeightPt = 842,
+      onScreenWidthPx = 1080,
+      cropLeftPt = 14.5f,
+      cropRightPt = 456.0f,
+    )
+    assertTrue(plan595.isUncroppedA4)
+    assertTrue(plan595.needsCrop)
+    assertTrue(plan595.fullRenderWidthPx <= com.example.data.pdf.PdfRendererBridge.MAX_RENDER_WIDTH_PX)
+    assertTrue(plan595.fullRenderHeightPx <= com.example.data.pdf.PdfRendererBridge.MAX_RENDER_HEIGHT_PX)
+    assertTrue("Expected high-res cropped width >= 1700, got ${plan595.croppedWidthPx}", plan595.croppedWidthPx >= 1700)
+  }
+
+  @Test
+  fun `computePdfPageLayout enforces 2 percent top margin top-aligned surah banner equal few-line gaps and no vertical centering`() {
+    val frameLeft = 20f
+    val frameTop = 40f
+    val frameRight = 1020f
+    val frameBottom = 1840f
+    val frameH = frameBottom - frameTop // 1800f
+    val bmpW = 1000
+    val bmpH = 1458
+
+    // Case 1: Few-line surah-start page (e.g., Al-Fatiha / 7 lines) with label & legend bands
+    val fewLineStrips = (0 until 7).map { idx ->
+      val topF = 0.25f + idx * 0.055f
+      com.example.data.pdf.PdfLineStripFraction(
+        srcTopFraction = topF,
+        srcBottomFraction = topF + 0.045f,
+        minXFraction = 0.12f,
+        maxXFraction = 0.88f,
+      )
+    }
+    val fewSeg = com.example.data.pdf.PdfPageSegmentation(
+      hasLabelBand = true,
+      labelCutFraction = 0.04f,
+      hasLegendBand = true,
+      legendCutFraction = 0.92f,
+      textMinXFraction = 0.12f,
+      textMaxXFraction = 0.88f,
+      textMinYFraction = 0.25f,
+      textMaxYFraction = 0.63f,
+      widestLineWidthFraction = 0.76f,
+      isFewLines = true,
+      lines = fewLineStrips,
+    )
+
+    val fewLayout = com.example.ui.components.computePdfPageLayout(
+      frameLeft = frameLeft,
+      frameTop = frameTop,
+      frameRight = frameRight,
+      frameBottom = frameBottom,
+      bmpWidthPx = bmpW,
+      bmpHeightPx = bmpH,
+      segmentation = fewSeg,
+      hasTopSurahBanner = true,
+      densityPxPerDp = 3f,
+    )
+
+    val labelBottom = fewLayout.topBandDstTop + fewLayout.topBandDstHeight
+    val expectedTopMargin = frameH * 0.02f
+    // Banner starts right under label band + ~2% margin (never floating mid-page)
+    assertEquals(labelBottom + expectedTopMargin, fewLayout.bannerTop, 2f)
+    assertTrue(fewLayout.isFewLines)
+    assertEquals(7, fewLayout.lineLayouts.size)
+    // First line sits cleanly under banner, no huge blank above; last line ends near legend top
+    val firstLine = fewLayout.lineLayouts.first()
+    val lastLine = fewLayout.lineLayouts.last()
+    assertTrue(firstLine.dstTopPx >= (fewLayout.bannerTop + fewLayout.bannerHeight).toInt())
+    assertTrue(firstLine.dstTopPx <= (fewLayout.bannerTop + fewLayout.bannerHeight + 12f).toInt())
+    val lastLineBottom = lastLine.dstTopPx + lastLine.dstHeightPx
+    assertTrue(
+      "Last line bottom ($lastLineBottom) should absorb bottom whitespace near legend (${fewLayout.bottomBandDstTop})",
+      kotlin.math.abs(fewLayout.bottomBandDstTop - lastLineBottom) <= 8,
+    )
+    // Equal gaps between consecutive lines
+    val gaps = (0 until fewLayout.lineLayouts.size - 1).map { i ->
+      val a = fewLayout.lineLayouts[i]
+      val b = fewLayout.lineLayouts[i + 1]
+      b.dstTopPx - (a.dstTopPx + a.dstHeightPx)
+    }
+    assertTrue(gaps.all { it >= 0 })
+    assertTrue("Expected equal gaps, got $gaps", gaps.max() - gaps.min() <= 2)
+
+    // Case 2: Normal/single-block page without label/legend must start ~2% from frameTop (never centered)
+    val shortBlockSeg = com.example.data.pdf.PdfPageSegmentation(
+      hasLabelBand = false,
+      labelCutFraction = 0f,
+      hasLegendBand = false,
+      legendCutFraction = 1f,
+      textMinXFraction = 0.1f,
+      textMaxXFraction = 0.9f,
+      textMinYFraction = 0.2f,
+      textMaxYFraction = 0.5f,
+      widestLineWidthFraction = 0.8f,
+      isFewLines = false,
+      lines = emptyList(),
+    )
+    val shortLayout = com.example.ui.components.computePdfPageLayout(
+      frameLeft = frameLeft,
+      frameTop = frameTop,
+      frameRight = frameRight,
+      frameBottom = frameBottom,
+      bmpWidthPx = bmpW,
+      bmpHeightPx = bmpH,
+      segmentation = shortBlockSeg,
+      hasTopSurahBanner = false,
+      densityPxPerDp = 3f,
+    )
+    assertEquals((frameTop + frameH * 0.02f).toInt(), shortLayout.textDstTop)
+  }
+
+  @Test
+  fun `pdf segmentation detects few-line gaps cleanly without cutting ink`() {
+    val bmpW = 472
+    val bmpH = 688
+    val darkPx = 0xFF111111.toInt()
+    val seg = com.example.data.pdf.PdfRendererBridge.computePageSegmentation(bmpW, bmpH) { y, buf ->
+      java.util.Arrays.fill(buf, 0xFFFFFFFF.toInt())
+      // Label band: y=8..16
+      if (y in 8..16) for (x in 150..320) buf[x] = darkPx
+      // 4 sparse lines separated by 30px gaps
+      val lineStarts = listOf(100, 150, 200, 250)
+      for (s in lineStarts) {
+        if (y in s..(s + 18)) for (x in 50..420) buf[x] = darkPx
+      }
+      // 2-row tall legend band at y=630..675 with a 4px internal blank gap at 651..654 (must merge via <=5px threshold!)
+      if (y in 630..650 || y in 655..675) for (x in 30..440) buf[x] = darkPx
+    }
+
+    assertTrue(seg.hasLabelBand)
+    assertTrue(seg.hasLegendBand)
+    assertTrue("Legend cut must sit in blank gap above row 630, got ${seg.legendCutFraction * bmpH}", seg.legendCutFraction * bmpH < 630f)
+    assertTrue("Label cut must sit in blank gap below row 16, got ${seg.labelCutFraction * bmpH}", seg.labelCutFraction * bmpH in 17f..99f)
+    assertTrue(seg.isFewLines)
+    assertEquals(4, seg.lines.size)
+  }
+
+  @Test
+  fun `buildRiwayaGroupsAndAssignReciters maps reciters strictly by apiRiwayaIds and puts unmapped in other`() {
+    fun reciter(keyId: Int, name: String, riwayaId: Int?, riwayaName: String, isPdf: Boolean) =
+      com.example.data.audio.VerifiedReciter(
+        orderIndex = keyId,
+        requestedName = name,
+        reciterId = keyId,
+        displayName = name,
+        moshafId = keyId * 10,
+        moshafName = riwayaName,
+        serverUrl = "https://example.invalid/$keyId/",
+        availableSurahs = setOf(1, 2),
+        status = com.example.data.audio.ReciterMatchStatus.VERIFIED,
+        statusNote = "",
+        riwayaId = riwayaId,
+        riwayaName = riwayaName,
+        isPdfModeReciter = isPdf,
+      )
+
+    val manifest = listOf(
+      com.example.data.pdf.PdfMushafEntry("warsh_id", 2, "p2.pdf", "t2.jpg", "ورش", "ورش عن نافع", 604, 80.0, listOf(2, 10)),
+      com.example.data.pdf.PdfMushafEntry("qaloon_id", 1, "p1.pdf", "t1.jpg", "قالون", "قالون عن نافع", 604, 80.0, listOf(3)),
+      com.example.data.pdf.PdfMushafEntry("empty_id", 3, "p3.pdf", "t3.jpg", "البزي", "البزي عن ابن كثير", 604, 80.0, listOf(99)),
+    )
+
+    val hafsR = reciter(1, "العفاسي", null, "", isPdf = false)
+    // Intentionally misleading riwayaName to verify apiRiwayaIds drives assignment rather than keywords
+    val warshAzraqR = reciter(2, "قارئ الأزرق", 10, "بدون وصف مطابق", isPdf = true)
+    val qaloonR = reciter(3, "قارئ قالون", 3, "قالون", isPdf = true)
+    val unmappedR = reciter(4, "قارئ إضافي", 777, "ورش مزيف بالاسم فقط", isPdf = true)
+
+    val (groups, byGroup) = com.example.ui.components.buildRiwayaGroupsAndAssignReciters(
+      allReciters = listOf(hafsR, warshAzraqR, qaloonR, unmappedR),
+      pdfMushafs = manifest,
+    )
+
+    assertEquals(
+      listOf("hafs", "pdf_qaloon_id", "pdf_warsh_id", "pdf_empty_id", "other"),
+      groups.map { it.id },
+    )
+    assertEquals(listOf(hafsR), byGroup["hafs"])
+    assertEquals(listOf(qaloonR), byGroup["pdf_qaloon_id"])
+    assertEquals(listOf(warshAzraqR), byGroup["pdf_warsh_id"])
+    assertTrue(byGroup["pdf_empty_id"].orEmpty().isEmpty())
+    assertEquals(listOf(unmappedR), byGroup["other"])
+  }
 }

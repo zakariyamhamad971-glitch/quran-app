@@ -53,6 +53,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -84,6 +85,7 @@ import com.example.data.audio.ReciterStorageSummary
 import com.example.data.audio.SurahDownloadStatus
 import com.example.data.audio.SurahTransferState
 import com.example.data.audio.VerifiedReciter
+import com.example.data.pdf.PdfMushafEntry
 import com.example.data.quran.SurahMeta
 import com.example.ui.theme.AmiriFontFamily
 
@@ -130,60 +132,88 @@ private fun padSurah(surahId: Int): String = when {
 data class RiwayaUiGroup(
   val id: String,
   val displayName: String,
-  val matchKeywords: List<String>,
+  val apiRiwayaIds: Set<Int> = emptySet(),
 )
 
-// The 20 Riwayat: Hafs first, then the 19 riwayat from "المصاحف" in exact order
-val CANONICAL_RIWAYAT_GROUPS = listOf(
-  RiwayaUiGroup("hafs", "حفص عن عاصم", listOf("حفص")),
-  RiwayaUiGroup("qaloon", "قالون عن نافع", listOf("قالون")),
-  RiwayaUiGroup("warsh", "ورش عن نافع", listOf("ورش")),
-  RiwayaUiGroup("al_bazzi", "البزي عن ابن كثير", listOf("البزي", "بزي")),
-  RiwayaUiGroup("qunbul", "قنبل عن ابن كثير", listOf("قنبل")),
-  RiwayaUiGroup("ad_duri_abu_amr", "الدوري عن أبي عمرو", listOf("الدوري عن أبي عمرو", "الدوري عن ابي عمرو")),
-  RiwayaUiGroup("as_soosi", "السوسي عن أبي عمرو", listOf("السوسي")),
-  RiwayaUiGroup("hisham", "هشام عن ابن عامر", listOf("هشام")),
-  RiwayaUiGroup("ibn_dhakwan", "ابن ذكوان عن ابن عامر", listOf("ابن ذكوان", "ذكوان")),
-  RiwayaUiGroup("shubah", "شعبة عن عاصم", listOf("شعبة")),
-  RiwayaUiGroup("khalaf_hamzah", "خلف عن حمزة", listOf("خلف عن حمزة")),
-  RiwayaUiGroup("khallad", "خلاد عن حمزة", listOf("خلاد")),
-  RiwayaUiGroup("abu_al_harith", "أبو الحارث عن الكسائي", listOf("أبو الحارث", "ابو الحارث")),
-  RiwayaUiGroup("ad_duri_al_kisai", "الدوري عن الكسائي", listOf("الدوري عن الكسائي")),
-  RiwayaUiGroup("ibn_wardan", "ابن وردان عن أبي جعفر", listOf("ابن وردان", "وردان")),
-  RiwayaUiGroup("ibn_jammaz", "ابن جماز عن أبي جعفر", listOf("ابن جماز", "جماز")),
-  RiwayaUiGroup("ruways", "رويس عن يعقوب الحضرمي", listOf("رويس")),
-  RiwayaUiGroup("rawh", "روح عن يعقوب الحضرمي", listOf("روح")),
-  RiwayaUiGroup("idris", "إدريس الحداد عن خلف العاشر", listOf("إدريس", "ادريس")),
-  RiwayaUiGroup("ishaq", "إسحاق الوراق عن خلف العاشر", listOf("إسحاق", "اسحاق")),
+private val HAFS_RIWAYA_GROUP = RiwayaUiGroup(
+  id = "hafs",
+  displayName = "حفص عن عاصم",
+  apiRiwayaIds = setOf(1),
 )
 
-fun matchReciterToRiwayaGroup(reciter: VerifiedReciter): String {
-  val name = reciter.riwayaName.trim()
-  if (name.isEmpty() || reciter.riwayaId == 1 || name.contains("حفص")) {
-    return "hafs"
+// Fallback labels in exact manifest order when manifest entries are not yet cached/fetched offline
+private val FALLBACK_PDF_RIWAYAT_GROUPS = listOf(
+  RiwayaUiGroup("fallback_qaloon", "قالون عن نافع"),
+  RiwayaUiGroup("fallback_warsh", "ورش عن نافع"),
+  RiwayaUiGroup("fallback_bazzi", "البزي عن ابن كثير"),
+  RiwayaUiGroup("fallback_qunbul", "قنبل عن ابن كثير"),
+  RiwayaUiGroup("fallback_duri_abu_amr", "الدوري عن أبي عمرو"),
+  RiwayaUiGroup("fallback_soosi", "السوسي عن أبي عمرو"),
+  RiwayaUiGroup("fallback_hisham", "هشام عن ابن عامر"),
+  RiwayaUiGroup("fallback_ibn_dhakwan", "ابن ذكوان عن ابن عامر"),
+  RiwayaUiGroup("fallback_shubah", "شعبة عن عاصم"),
+  RiwayaUiGroup("fallback_khalaf", "خلف عن حمزة"),
+  RiwayaUiGroup("fallback_khallad", "خلاد عن حمزة"),
+  RiwayaUiGroup("fallback_abu_harith", "أبو الحارث عن الكسائي"),
+  RiwayaUiGroup("fallback_duri_kisai", "الدوري عن الكسائي"),
+  RiwayaUiGroup("fallback_ibn_wardan", "ابن وردان عن أبي جعفر"),
+  RiwayaUiGroup("fallback_ibn_jammaz", "ابن جماز عن أبي جعفر"),
+  RiwayaUiGroup("fallback_ruways", "رويس عن يعقوب الحضرمي"),
+  RiwayaUiGroup("fallback_rawh", "روح عن يعقوب الحضرمي"),
+  RiwayaUiGroup("fallback_idris", "إدريس الحداد عن خلف العاشر"),
+  RiwayaUiGroup("fallback_ishaq", "إسحاق الوراق عن خلف العاشر"),
+)
+
+/**
+ * Builds Page A's ordered riwayat groups (Hafs first, then the 19 PDF mushaf entries in exact manifest order,
+ * plus "تلاوات أخرى" at bottom if any unmapped reciters exist) and assigns reciters strictly via
+ * Hafs default catalog + `PdfMushafEntry.apiRiwayaIds` without keyword guessing.
+ */
+fun buildRiwayaGroupsAndAssignReciters(
+  allReciters: List<VerifiedReciter>,
+  pdfMushafs: List<PdfMushafEntry>,
+): Pair<List<RiwayaUiGroup>, Map<String, List<VerifiedReciter>>> {
+  val pdfGroups = if (pdfMushafs.isNotEmpty()) {
+    pdfMushafs
+      .sortedBy { it.order }
+      .filterNot { it.id == "hafs" || it.apiRiwayaIds == listOf(1) }
+      .map { entry ->
+        RiwayaUiGroup(
+          id = "pdf_${entry.id}",
+          displayName = entry.riwayaAr.ifBlank { entry.titleAr },
+          apiRiwayaIds = entry.apiRiwayaIds.toSet(),
+        )
+      }
+  } else {
+    FALLBACK_PDF_RIWAYAT_GROUPS
   }
-  if (name.contains("الدوري")) {
-    if (name.contains("عمرو") || name.contains("عمر")) return "ad_duri_abu_amr"
-    if (name.contains("كسائي") || name.contains("الكسائي")) return "ad_duri_al_kisai"
-  }
-  for (group in CANONICAL_RIWAYAT_GROUPS) {
-    if (group.id == "hafs") continue
-    for (kw in group.matchKeywords) {
-      if (name.contains(kw)) return group.id
+
+  val byRiwayaId = HashMap<Int, RiwayaUiGroup>()
+  for (group in pdfGroups) {
+    for (rId in group.apiRiwayaIds) {
+      if (rId != 1 && !byRiwayaId.containsKey(rId)) {
+        byRiwayaId[rId] = group
+      }
     }
   }
-  val mName = reciter.moshafName.orEmpty()
-  if (mName.contains("الدوري")) {
-    if (mName.contains("عمرو") || mName.contains("عمر")) return "ad_duri_abu_amr"
-    if (mName.contains("كسائي") || mName.contains("الكسائي")) return "ad_duri_al_kisai"
-  }
-  for (group in CANONICAL_RIWAYAT_GROUPS) {
-    if (group.id == "hafs") continue
-    for (kw in group.matchKeywords) {
-      if (mName.contains(kw)) return group.id
+
+  val recitersByGroup = HashMap<String, MutableList<VerifiedReciter>>()
+  for (r in allReciters) {
+    val targetGroupId = when {
+      (!r.isPdfModeReciter && (r.riwayaId == null || r.riwayaId == 1)) || r.riwayaId == 1 -> HAFS_RIWAYA_GROUP.id
+      r.riwayaId != null -> byRiwayaId[r.riwayaId]?.id ?: "other"
+      else -> "other"
     }
+    recitersByGroup.getOrPut(targetGroupId) { ArrayList() }.add(r)
   }
-  return "other"
+
+  val displayGroups = ArrayList<RiwayaUiGroup>(1 + pdfGroups.size + 1)
+  displayGroups += HAFS_RIWAYA_GROUP
+  displayGroups += pdfGroups
+  if (recitersByGroup["other"].orEmpty().isNotEmpty()) {
+    displayGroups += RiwayaUiGroup(id = "other", displayName = "تلاوات أخرى")
+  }
+  return displayGroups to recitersByGroup
 }
 
 sealed interface ReciterNavDestination {
@@ -194,7 +224,7 @@ sealed interface ReciterNavDestination {
 
 /**
  * Three-screen full-screen reciter manager:
- * Page A: 20 Riwayat list (Hafs first, 19 PDF mushaf riwayat in exact order, then others).
+ * Page A: 20 Riwayat list (Hafs first, 19 PDF mushaf riwayat in exact manifest order, then others).
  * Page B: Searchable, alphabetically sorted reciters of chosen riwaya.
  * Page C: 114 surahs download list for chosen reciter.
  */
@@ -214,19 +244,27 @@ fun FullReciterManagerScreen(
   onDeleteAllForReciter: (VerifiedReciter) -> Unit,
   onDismissLowStorageMessage: () -> Unit,
   onClose: () -> Unit,
+  pdfMushafs: List<PdfMushafEntry> = emptyList(),
+  recitersLoading: Boolean = false,
+  recitersError: String? = null,
+  onRetryLoadReciters: () -> Unit = {},
   initialReciterKey: String? = null,
   modifier: Modifier = Modifier,
 ) {
-  val initialDest = remember(initialReciterKey, allReciters) {
+  val (displayGroups, recitersByGroup) = remember(allReciters, pdfMushafs) {
+    buildRiwayaGroupsAndAssignReciters(allReciters = allReciters, pdfMushafs = pdfMushafs)
+  }
+
+  val initialDest = remember(initialReciterKey, allReciters, displayGroups, recitersByGroup) {
     if (!initialReciterKey.isNullOrBlank()) {
       val r = allReciters.firstOrNull { it.key == initialReciterKey }
       if (r != null) {
-        val rId = matchReciterToRiwayaGroup(r)
-        val rName = CANONICAL_RIWAYAT_GROUPS.firstOrNull { it.id == rId }?.displayName
-          ?: if (rId == "other") "تلاوات أخرى" else r.riwayaName.ifBlank { "حفص عن عاصم" }
+        val matchedGroup = displayGroups.firstOrNull { group ->
+          recitersByGroup[group.id].orEmpty().any { it.key == r.key }
+        }
         ReciterNavDestination.PageCReciterSurahs(
-          riwayaId = rId,
-          riwayaName = rName,
+          riwayaId = matchedGroup?.id ?: "other",
+          riwayaName = matchedGroup?.displayName ?: r.riwayaName.ifBlank { "تلاوات أخرى" },
           reciterKey = r.key,
         )
       } else {
@@ -239,31 +277,16 @@ fun FullReciterManagerScreen(
 
   var currentDest by remember { mutableStateOf<ReciterNavDestination>(initialDest) }
 
-  // Partition reciters by riwaya
-  val recitersByGroup = remember(allReciters) {
-    val map = HashMap<String, MutableList<VerifiedReciter>>()
-    for (r in allReciters) {
-      val gid = matchReciterToRiwayaGroup(r)
-      map.getOrPut(gid) { ArrayList() }.add(r)
-    }
-    map
-  }
-
-  val displayGroups = remember(recitersByGroup) {
-    val list = ArrayList(CANONICAL_RIWAYAT_GROUPS)
-    val otherReciters = recitersByGroup["other"].orEmpty()
-    if (otherReciters.isNotEmpty()) {
-      list += RiwayaUiGroup("other", "تلاوات أخرى", emptyList())
-    }
-    list
-  }
-
   when (val dest = currentDest) {
     is ReciterNavDestination.PageARiwayatList -> {
       PageARiwayatListScreen(
         groups = displayGroups,
         recitersByGroup = recitersByGroup,
         reciterSummaries = reciterSummaries,
+        allRecitersEmpty = allReciters.isEmpty(),
+        recitersLoading = recitersLoading,
+        recitersError = recitersError,
+        onRetryLoadReciters = onRetryLoadReciters,
         onSelectRiwaya = { group ->
           currentDest = ReciterNavDestination.PageBRiwayaReciters(
             riwayaId = group.id,
@@ -335,6 +358,10 @@ private fun PageARiwayatListScreen(
   groups: List<RiwayaUiGroup>,
   recitersByGroup: Map<String, List<VerifiedReciter>>,
   reciterSummaries: Map<String, ReciterStorageSummary>,
+  allRecitersEmpty: Boolean,
+  recitersLoading: Boolean,
+  recitersError: String?,
+  onRetryLoadReciters: () -> Unit,
   onSelectRiwaya: (RiwayaUiGroup) -> Unit,
   onClose: () -> Unit,
   modifier: Modifier = Modifier,
@@ -401,81 +428,131 @@ private fun PageARiwayatListScreen(
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
-        LazyColumn(
-          modifier = Modifier
-            .fillMaxWidth()
-            .weight(1f)
-            .windowInsetsPadding(WindowInsets.navigationBars)
-            .testTag("reciters_riwayat_list"),
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-          verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          items(
-            items = groups,
-            key = { "riwaya_group_${it.id}" },
-          ) { group ->
-            val reciters = recitersByGroup[group.id].orEmpty()
-            val hasReciters = reciters.isNotEmpty()
-
-            val downloadedSurahs = if (hasReciters) {
-              reciters.sumOf { reciterSummaries[it.key]?.downloadedCount ?: 0 }
-            } else 0
-            val totalBytes = if (hasReciters) {
-              reciters.sumOf { reciterSummaries[it.key]?.totalBytes ?: 0L }
-            } else 0L
-
-            val subtitleText = when {
-              !hasReciters -> "لا يوجد قارئ متاح لهذه الرواية حاليًا"
-              downloadedSurahs > 0 ->
-                "${toArabicDigits(reciters.size)} قارئ • ${toArabicDigits(downloadedSurahs)} سورة محملة • ${AudioCacheManager.formatBytesArabic(totalBytes)}"
-              else -> "${toArabicDigits(reciters.size)} قارئ"
+        if (allRecitersEmpty && recitersLoading) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+              .padding(24.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+              CircularProgressIndicator(strokeWidth = 2.5.dp)
+              Spacer(Modifier.height(12.dp))
+              Text(
+                text = "جاري تحميل قائمة القراء...",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
             }
-
-            Surface(
-              onClick = { if (hasReciters) onSelectRiwaya(group) },
-              enabled = hasReciters,
-              shape = RoundedCornerShape(12.dp),
-              color = if (hasReciters) {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-              } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
-              },
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("riwaya_row_${group.id}"),
+          }
+        } else if (allRecitersEmpty && !recitersError.isNullOrBlank()) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+              .padding(24.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Column(
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-              Row(
+              Text(
+                text = recitersError,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+              )
+              Button(
+                onClick = onRetryLoadReciters,
+                modifier = Modifier
+                  .minimumInteractiveComponentSize()
+                  .testTag("reciters_page_a_retry_button"),
+              ) {
+                Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("إعادة المحاولة")
+              }
+            }
+          }
+        } else {
+          LazyColumn(
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+              .windowInsetsPadding(WindowInsets.navigationBars)
+              .testTag("reciters_riwayat_list"),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            items(
+              items = groups,
+              key = { "riwaya_group_${it.id}" },
+            ) { group ->
+              val reciters = recitersByGroup[group.id].orEmpty()
+              val hasReciters = reciters.isNotEmpty()
+
+              val downloadedSurahs = if (hasReciters) {
+                reciters.sumOf { reciterSummaries[it.key]?.downloadedCount ?: 0 }
+              } else 0
+              val totalBytes = if (hasReciters) {
+                reciters.sumOf { reciterSummaries[it.key]?.totalBytes ?: 0L }
+              } else 0L
+
+              val subtitleText = when {
+                !hasReciters -> "لا يوجد قارئ متاح لهذه الرواية حاليًا"
+                downloadedSurahs > 0 ->
+                  "${toArabicDigits(reciters.size)} قارئ • ${toArabicDigits(downloadedSurahs)} سورة محملة • ${AudioCacheManager.formatBytesArabic(totalBytes)}"
+                else -> "${toArabicDigits(reciters.size)} قارئ"
+              }
+
+              Surface(
+                onClick = { if (hasReciters) onSelectRiwaya(group) },
+                enabled = hasReciters,
+                shape = RoundedCornerShape(12.dp),
+                color = if (hasReciters) {
+                  MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                } else {
+                  MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
+                },
                 modifier = Modifier
                   .fillMaxWidth()
-                  .padding(horizontal = 14.dp, vertical = 13.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                  .testTag("riwaya_row_${group.id}"),
               ) {
-                Column(
+                Row(
                   modifier = Modifier
-                    .weight(1f)
-                    .alpha(if (hasReciters) 1f else 0.65f),
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically,
                 ) {
-                  Text(
-                    text = group.displayName,
-                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = AmiriFontFamily),
-                    fontWeight = FontWeight.Bold,
-                    color = if (hasReciters) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                  )
-                  Spacer(Modifier.height(3.dp))
-                  Text(
-                    text = subtitleText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (hasReciters) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.outline,
-                  )
-                }
+                  Column(
+                    modifier = Modifier
+                      .weight(1f)
+                      .alpha(if (hasReciters) 1f else 0.65f),
+                  ) {
+                    Text(
+                      text = group.displayName,
+                      style = MaterialTheme.typography.titleMedium.copy(fontFamily = AmiriFontFamily),
+                      fontWeight = FontWeight.Bold,
+                      color = if (hasReciters) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                      text = subtitleText,
+                      style = MaterialTheme.typography.bodySmall,
+                      color = if (hasReciters) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.outline,
+                    )
+                  }
 
-                if (hasReciters) {
-                  Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                  )
+                  if (hasReciters) {
+                    Icon(
+                      imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.primary,
+                    )
+                  }
                 }
               }
             }
@@ -754,6 +831,29 @@ private fun PageCReciterSurahsScreen(
   val availableCount = reciter.availableSurahs.size
   val downloadedCount = reciterSummary.downloadedCount
   val missingAvailableCount = (availableCount - downloadedCount).coerceAtLeast(0)
+  val overallProgressFraction = remember(reciter.availableSurahs, reciter.key, downloadedKeys, reciterSummary, transferStates) {
+    if (availableCount <= 0) {
+      0f
+    } else {
+      var sum = 0f
+      for (sId in reciter.availableSurahs) {
+        val key = "${reciter.key}_${padSurah(sId)}"
+        sum += when {
+          downloadedKeys.contains(key) || reciterSummary.downloadedSurahs.contains(sId) -> 1f
+          else -> {
+            val st = transferStates[key]
+            if (st != null && (st.status == SurahDownloadStatus.DOWNLOADING || st.status == SurahDownloadStatus.PAUSED_OFFLINE)) {
+              st.progress.coerceIn(0f, 1f)
+            } else {
+              0f
+            }
+          }
+        }
+      }
+      (sum / availableCount.toFloat()).coerceIn(0f, 1f)
+    }
+  }
+  val overallProgressPercent = (overallProgressFraction * 100f).toInt().coerceIn(0, 100)
 
   Surface(
     modifier = modifier
@@ -770,7 +870,7 @@ private fun PageCReciterSurahsScreen(
           .widthIn(max = 860.dp)
           .fillMaxSize(),
       ) {
-        // Top Bar
+        // Top Bar (with Download All / Stop action and overflow Delete All inside the top bar row)
         Surface(
           color = MaterialTheme.colorScheme.surface,
           tonalElevation = 2.dp,
@@ -778,14 +878,11 @@ private fun PageCReciterSurahsScreen(
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.statusBars),
         ) {
-          Column(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-          ) {
+          Column(modifier = Modifier.fillMaxWidth()) {
             Row(
-              modifier = Modifier.fillMaxWidth(),
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 10.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
               IconButton(
@@ -804,7 +901,7 @@ private fun PageCReciterSurahsScreen(
               Column(modifier = Modifier.weight(1f)) {
                 Text(
                   text = reciter.displayName,
-                  style = MaterialTheme.typography.titleLarge.copy(fontFamily = AmiriFontFamily),
+                  style = MaterialTheme.typography.titleMedium.copy(fontFamily = AmiriFontFamily),
                   fontWeight = FontWeight.Bold,
                   color = MaterialTheme.colorScheme.onSurface,
                   maxLines = 1,
@@ -812,12 +909,63 @@ private fun PageCReciterSurahsScreen(
                 )
                 val sizeLabel = AudioCacheManager.formatBytesArabic(reciterSummary.totalBytes)
                 Text(
-                  text = "$riwayaName • ${toArabicDigits(downloadedCount)} من ${toArabicDigits(availableCount)} محملة • $sizeLabel",
+                  text = "$riwayaName • ${toArabicDigits(downloadedCount)} من ${toArabicDigits(availableCount)} • $sizeLabel",
                   style = MaterialTheme.typography.bodySmall,
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
                 )
+              }
+
+              Spacer(Modifier.width(4.dp))
+
+              if (hasActiveOrQueued) {
+                FilledTonalButton(
+                  onClick = onCancelAllForReciter,
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  shape = RoundedCornerShape(10.dp),
+                  colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                  ),
+                  modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("reciter_stop_all_button"),
+                ) {
+                  CircularProgressIndicator(
+                    progress = { overallProgressFraction.coerceAtLeast(0.05f) },
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(14.dp),
+                  )
+                  Spacer(Modifier.width(6.dp))
+                  Text(
+                    text = "إيقاف ${toArabicDigits(overallProgressPercent)}%",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                  )
+                }
+              } else {
+                FilledTonalButton(
+                  onClick = {
+                    requestNotifPermissionIfNeeded()
+                    onDownloadAll()
+                  },
+                  enabled = missingAvailableCount > 0,
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  shape = RoundedCornerShape(10.dp),
+                  modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("reciter_download_all_button"),
+                ) {
+                  Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                  Spacer(Modifier.width(4.dp))
+                  Text(
+                    text = "تحميل الكل",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                  )
+                }
               }
 
               // Overflow menu with Delete All
@@ -861,47 +1009,11 @@ private fun PageCReciterSurahsScreen(
               }
             }
 
-            // Top action button row: "تحميل الكل" or "إيقاف"
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              if (hasActiveOrQueued) {
-                Button(
-                  onClick = onCancelAllForReciter,
-                  shape = RoundedCornerShape(10.dp),
-                  colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                  ),
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .minimumInteractiveComponentSize()
-                    .testTag("reciter_stop_all_button"),
-                ) {
-                  Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-                  Spacer(Modifier.width(8.dp))
-                  Text("إيقاف التحميل", fontWeight = FontWeight.Bold)
-                }
-              } else {
-                Button(
-                  onClick = {
-                    requestNotifPermissionIfNeeded()
-                    onDownloadAll()
-                  },
-                  enabled = missingAvailableCount > 0,
-                  shape = RoundedCornerShape(10.dp),
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .minimumInteractiveComponentSize()
-                    .testTag("reciter_download_all_button"),
-                ) {
-                  Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                  Spacer(Modifier.width(8.dp))
-                  Text("تحميل الكل (${toArabicDigits(missingAvailableCount)} سورة متبقية)", fontWeight = FontWeight.Bold)
-                }
-              }
+            if (hasActiveOrQueued) {
+              LinearProgressIndicator(
+                progress = { overallProgressFraction },
+                modifier = Modifier.fillMaxWidth(),
+              )
             }
           }
         }

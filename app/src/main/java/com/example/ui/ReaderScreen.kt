@@ -854,6 +854,7 @@ private fun ReaderReciterManagerHost(
   initialReciterKey: String?,
   onClose: () -> Unit,
 ) {
+  val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val downloadableRecitersState by viewModel.downloadableRecitersState.collectAsStateWithLifecycle()
   val downloadedKeys by viewModel.downloadedAudioKeys.collectAsStateWithLifecycle()
   val transferStates by viewModel.audioTransferStates.collectAsStateWithLifecycle()
@@ -866,11 +867,15 @@ private fun ReaderReciterManagerHost(
 
   FullReciterManagerScreen(
     allReciters = downloadableRecitersState.reciters,
+    pdfMushafs = uiState.pdfMushafs,
     surahs = surahs,
     downloadedKeys = downloadedKeys,
     transferStates = transferStates,
     reciterSummaries = reciterSummaries,
     batchSummary = batchSummary,
+    recitersLoading = downloadableRecitersState.isLoading,
+    recitersError = downloadableRecitersState.errorMessage,
+    onRetryLoadReciters = { viewModel.ensureAllDownloadableRecitersLoaded(forceRefresh = true) },
     onDownloadSurah = { reciter, surahId ->
       viewModel.downloadSingleSurahForReciter(reciter, surahId)
     },

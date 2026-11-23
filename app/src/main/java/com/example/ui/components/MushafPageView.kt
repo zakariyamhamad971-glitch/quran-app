@@ -395,11 +395,17 @@ fun MushafPageFrame(
 
                 // 2. Quran text block: either evenly spread line strips (3..11 lines) or scaled single block
                 if (pdfLayout.isFewLines && pdfLayout.lineLayouts.isNotEmpty()) {
+                  val maxBmpX = (pdfContent.bmpWidthPx - 1).coerceAtLeast(0)
+                  val maxBmpY = (pdfContent.bmpHeightPx - 1).coerceAtLeast(0)
                   for (lineMetrics in pdfLayout.lineLayouts) {
+                    val safeLeft = lineMetrics.srcLeftPx.coerceIn(0, maxBmpX)
+                    val safeTop = lineMetrics.srcTopPx.coerceIn(0, maxBmpY)
+                    val safeW = lineMetrics.srcWidthPx.coerceIn(1, (pdfContent.bmpWidthPx - safeLeft).coerceAtLeast(1))
+                    val safeH = lineMetrics.srcHeightPx.coerceIn(1, (pdfContent.bmpHeightPx - safeTop).coerceAtLeast(1))
                     drawImage(
                       image = pdfContent.pdfBitmap,
-                      srcOffset = IntOffset(lineMetrics.srcLeftPx, lineMetrics.srcTopPx),
-                      srcSize = IntSize(lineMetrics.srcWidthPx, lineMetrics.srcHeightPx),
+                      srcOffset = IntOffset(safeLeft, safeTop),
+                      srcSize = IntSize(safeW, safeH),
                       dstOffset = IntOffset(lineMetrics.dstLeftPx, lineMetrics.dstTopPx),
                       dstSize = IntSize(lineMetrics.dstWidthPx, lineMetrics.dstHeightPx),
                       filterQuality = FilterQuality.High,
@@ -407,16 +413,12 @@ fun MushafPageFrame(
                     )
                   }
                 } else {
-                  val srcLeft = (pdfContent.segmentation.textMinXFraction * pdfContent.bmpWidthPx)
-                    .roundToInt().coerceIn(0, pdfContent.bmpWidthPx - 1)
-                  val srcRight = (pdfContent.segmentation.textMaxXFraction * pdfContent.bmpWidthPx)
-                    .roundToInt().coerceIn(srcLeft + 1, pdfContent.bmpWidthPx)
-                  val srcTop = (pdfContent.segmentation.labelCutFraction * pdfContent.bmpHeightPx)
-                    .roundToInt().coerceIn(0, pdfContent.bmpHeightPx - 1)
-                  val srcBottom = (pdfContent.segmentation.legendCutFraction * pdfContent.bmpHeightPx)
-                    .roundToInt().coerceIn(srcTop + 1, pdfContent.bmpHeightPx)
-                  val textSrcW = (srcRight - srcLeft).coerceAtLeast(1)
-                  val textSrcH = (srcBottom - srcTop).coerceAtLeast(1)
+                  val maxBmpX = (pdfContent.bmpWidthPx - 1).coerceAtLeast(0)
+                  val maxBmpY = (pdfContent.bmpHeightPx - 1).coerceAtLeast(0)
+                  val srcLeft = pdfLayout.textSrcLeftPx.coerceIn(0, maxBmpX)
+                  val srcTop = pdfLayout.textSrcTopPx.coerceIn(0, maxBmpY)
+                  val textSrcW = pdfLayout.textSrcWidthPx.coerceIn(1, (pdfContent.bmpWidthPx - srcLeft).coerceAtLeast(1))
+                  val textSrcH = pdfLayout.textSrcHeightPx.coerceIn(1, (pdfContent.bmpHeightPx - srcTop).coerceAtLeast(1))
                   drawImage(
                     image = pdfContent.pdfBitmap,
                     srcOffset = IntOffset(srcLeft, srcTop),
@@ -430,8 +432,9 @@ fun MushafPageFrame(
 
                 // 3. Pinned bottom legend band (complete in one piece, drawn once)
                 if (pdfLayout.bottomBandDstHeight > 0) {
+                  val maxBmpY = (pdfContent.bmpHeightPx - 1).coerceAtLeast(0)
                   val legendSrcY = (pdfContent.segmentation.legendCutFraction * pdfContent.bmpHeightPx)
-                    .roundToInt().coerceIn(0, pdfContent.bmpHeightPx - 1)
+                    .roundToInt().coerceIn(0, maxBmpY)
                   val botSrcH = (pdfContent.bmpHeightPx - legendSrcY).coerceAtLeast(1)
                   drawImage(
                     image = pdfContent.pdfBitmap,

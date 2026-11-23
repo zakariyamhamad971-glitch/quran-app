@@ -1696,6 +1696,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           pdfMushafRepository.fetchManifest(forceRefresh = false).getOrDefault(emptyList())
         }
       }
+      if (_uiState.value.pdfMushafs.isEmpty() && manifestEntries.isNotEmpty()) {
+        _uiState.update { it.copy(pdfMushafs = manifestEntries) }
+      }
       val manifestRiwayaIds = manifestEntries.flatMap { it.apiRiwayaIds }.distinct()
       val res = audioRepository.getAllDownloadableRecitersCatalog(manifestRiwayaIds)
       res.onSuccess { list ->

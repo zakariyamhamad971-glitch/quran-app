@@ -166,36 +166,12 @@ fun SettingsSheet(
     )
   }
   var showDeleteTajweedConfirm by remember { mutableStateOf(false) }
-  var reciterSearchQuery by rememberSaveable { mutableStateOf("") }
 
   val isMadinahDownloaded = downloadedTextMushafIds.contains("madinah_1421")
   val isTajweedDownloaded = downloadedTextMushafIds.contains("tajweed_v4")
   val isTajweedSelected = !activeMushafIsPdf &&
     (activeTextMushafId == "tajweed_v4" || activeMushafEdition == MushafEdition.TAJWEED_V4)
   val isMadinahSelected = !activeMushafIsPdf && !isTajweedSelected
-
-  val filteredReciters = remember(downloadableReciters, reciterSearchQuery) {
-    val q = AudioRepository.normalizeArabicForSearch(reciterSearchQuery)
-    if (q.isEmpty()) {
-      downloadableReciters
-    } else {
-      downloadableReciters.filter { r ->
-        AudioRepository.normalizeArabicForSearch(r.displayName).contains(q) ||
-          AudioRepository.normalizeArabicForSearch(r.requestedName).contains(q) ||
-          AudioRepository.normalizeArabicForSearch(r.riwayaName).contains(q)
-      }
-    }
-  }
-
-  val activeTransferReciterKeys = remember(audioTransferStates) {
-    audioTransferStates.values
-      .filter {
-        it.status == SurahDownloadStatus.DOWNLOADING ||
-          it.status == SurahDownloadStatus.QUEUED ||
-          it.status == SurahDownloadStatus.PAUSED_OFFLINE
-      }
-      .mapTo(HashSet()) { it.reciterKey }
-  }
 
   ModalBottomSheet(
     onDismissRequest = onDismiss,
