@@ -394,10 +394,15 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     if (spec.isPdfMode || !spec.isValid) return null
     val needsTagFallback =
       spec.edition == MushafEdition.TAJWEED_V4 && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
-    val fontVersion = fontManager.fontVersionFor(spec.edition, needsTagFallback)
+    val sizingEdition = if (spec.edition == MushafEdition.TAJWEED_V4 && !needsTagFallback) {
+      MushafEdition.MADINAH_1421
+    } else {
+      spec.edition
+    }
+    val fontVersion = fontManager.fontVersionFor(sizingEdition, needsTagFallback)
     val metrics = pageBitmapRenderer.computeTextBodyMetrics(spec)
     val key = GlobalMushafFontSizer.buildCacheKey(
-      edition = spec.edition,
+      edition = sizingEdition,
       fontVersion = fontVersion,
       layoutVersion = QuranRepository.LAYOUT_CACHE_VERSION,
       safeWidthPx = metrics.safeWidthPx,
@@ -500,7 +505,13 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     fontSizingJob?.cancel()
     activeFontSizingKey = cacheKey
     val mushafId = MushafRegistry.getByEdition(spec.edition).id
-    val fontVersion = fontManager.fontVersionFor(spec.edition, needsTagFallback)
+    val sizingEdition = if (spec.edition == MushafEdition.TAJWEED_V4 && !needsTagFallback) {
+      MushafEdition.MADINAH_1421
+    } else {
+      spec.edition
+    }
+    val sizingSpec = if (sizingEdition == spec.edition) spec else spec.copy(edition = sizingEdition)
+    val fontVersion = fontManager.fontVersionFor(sizingEdition, needsTagFallback)
     fontSizingJob = viewModelScope.launch {
       _fontSizingProgress.value = GlobalFontSizingProgress(
         mushafId = mushafId,
@@ -509,7 +520,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       )
       try {
         val result = globalFontSizer.computeGlobalFontSizes(
-          spec = spec,
+          spec = sizingSpec,
           usesTagFallbackTajweed = needsTagFallback,
           fontVersion = fontVersion,
           onProgress = { completed, total ->
@@ -1856,10 +1867,23 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
       val pageData = pageRes.getOrThrow()
       val fontEdition = if (needsTagFallbackTajweed) MushafEdition.MADINAH_1421 else edition
-      val (pageTypeface, basmalahTypeface) = coroutineScope {
+      val (pageTypeface, basmalahTypeface, endMarkerTypeface) = coroutineScope {
         val pageFontDeferred = async { fontManager.loadPageFont(page, fontEdition, useWhiteInk = useWhiteInk) }
         val basmalahFontDeferred = async { fontManager.loadBasmalahFont(fontEdition, useWhiteInk = useWhiteInk) }
-        pageFontDeferred.await() to basmalahFontDeferred.await()
+        val endMarkerFontDeferred = if (edition == MushafEdition.TAJWEED_V4) {
+          if (needsTagFallbackTajweed) {
+            pageFontDeferred
+          } else {
+            async { fontManager.loadPageFont(page, MushafEdition.MADINAH_1421, useWhiteInk = false) }
+          }
+        } else {
+          null
+        }
+        Triple(
+          pageFontDeferred.await(),
+          basmalahFontDeferred.await(),
+          endMarkerFontDeferred?.await(),
+        )
       }
 
       if (activeRenderSpec != spec) return@launch
@@ -1885,6 +1909,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         basmalahTypeface = basmalahTypeface,
         usesTagFallbackTajweed = needsTagFallbackTajweed,
         surahsById = surahsMap,
+        endMarkerTypeface = endMarkerTypeface,
       )
 
       if (activeRenderSpec != spec) return@launch

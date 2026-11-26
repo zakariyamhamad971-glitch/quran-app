@@ -375,6 +375,7 @@ data class RenderedMushafPage(
   internal val pageFontIdentity: Int = 0,
   internal val basmalahFontIdentity: Int = 0,
   internal val usesTagFallbackTajweed: Boolean = false,
+  internal val endMarkerFontIdentity: Int = 0,
 )
 
 class MushafPageBitmapRenderer(
@@ -700,15 +701,18 @@ class MushafPageBitmapRenderer(
     basmalahTypeface: Typeface?,
     usesTagFallbackTajweed: Boolean,
     surahsById: Map<Int, SurahMeta>,
+    endMarkerTypeface: Typeface? = null,
   ): RenderedMushafPage {
     val key = makeKey(pageData.pageNumber, spec)
     val pageFontId = System.identityHashCode(pageTypeface)
     val basmalahFontId = System.identityHashCode(basmalahTypeface)
+    val endMarkerFontId = System.identityHashCode(endMarkerTypeface)
     bitmapCache.get(key)?.let { cached ->
       if (
         cached.pageFontIdentity == pageFontId &&
         cached.basmalahFontIdentity == basmalahFontId &&
-        cached.usesTagFallbackTajweed == usesTagFallbackTajweed
+        cached.usesTagFallbackTajweed == usesTagFallbackTajweed &&
+        cached.endMarkerFontIdentity == endMarkerFontId
       ) {
         return cached
       }
@@ -719,7 +723,8 @@ class MushafPageBitmapRenderer(
         if (
           cached.pageFontIdentity == pageFontId &&
           cached.basmalahFontIdentity == basmalahFontId &&
-          cached.usesTagFallbackTajweed == usesTagFallbackTajweed
+          cached.usesTagFallbackTajweed == usesTagFallbackTajweed &&
+          cached.endMarkerFontIdentity == endMarkerFontId
         ) {
           return@withContext cached
         }
@@ -734,6 +739,7 @@ class MushafPageBitmapRenderer(
         basmalahTypeface = basmalahTypeface,
         usesTagFallbackTajweed = usesTagFallbackTajweed,
         surahsById = surahsById,
+        endMarkerTypeface = endMarkerTypeface,
       )
       val hasBasmalahLine = pageData.lines.any { it is MushafLine.BasmalahLine }
       val allRequiredFontsLoaded = usesTagFallbackTajweed ||
@@ -1147,6 +1153,7 @@ class MushafPageBitmapRenderer(
     basmalahTypeface: Typeface?,
     usesTagFallbackTajweed: Boolean,
     surahsById: Map<Int, SurahMeta>,
+    endMarkerTypeface: Typeface? = null,
   ): RenderedMushafPage {
     val w = spec.widthPx.coerceAtLeast(1)
     val h = spec.heightPx.coerceAtLeast(1)
@@ -1214,7 +1221,15 @@ class MushafPageBitmapRenderer(
     val verseRectAccum = HashMap<String, MutableList<Float>>()
     val rosetteAccum = HashMap<String, MutableList<Float>>()
 
-    val renderVectorTajweedMarkers = spec.edition == MushafEdition.TAJWEED_V4
+    val endMarkerPaint = if (spec.edition == MushafEdition.TAJWEED_V4 && endMarkerTypeface != null) {
+      TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = endMarkerTypeface
+        color = inkInt
+      }
+    } else {
+      null
+    }
+    val renderVectorTajweedMarkers = spec.edition == MushafEdition.TAJWEED_V4 && endMarkerPaint == null
     val activeTypeface = when {
       usesTagFallbackTajweed -> amiriNormal
       pageTypeface != null -> pageTypeface
@@ -1254,6 +1269,7 @@ class MushafPageBitmapRenderer(
         slotHeightPx = slotHeight,
         density = d,
         fontScale = fs,
+        endMarkerPaint = endMarkerPaint,
       )
     }
 
@@ -1344,6 +1360,7 @@ class MushafPageBitmapRenderer(
             startCursor = hitCursor,
             verseRectAccum = verseRectAccum,
             rosetteAccum = rosetteAccum,
+            endMarkerPaint = endMarkerPaint,
           )
         }
       }
@@ -1378,6 +1395,7 @@ class MushafPageBitmapRenderer(
       pageFontIdentity = System.identityHashCode(pageTypeface),
       basmalahFontIdentity = System.identityHashCode(basmalahTypeface),
       usesTagFallbackTajweed = usesTagFallbackTajweed,
+      endMarkerFontIdentity = System.identityHashCode(endMarkerTypeface),
     )
   }
 
@@ -1582,10 +1600,12 @@ class MushafPageBitmapRenderer(
     density: Float,
     fontScale: Float,
     tokenBounds: Rect,
+    endMarkerPaint: TextPaint? = null,
   ): Boolean {
     val fontSizePx = candidateSp * density * fontScale
     if (!usesTagFallbackTajweed && fontSizePx > slotHeightPx * 0.66f) return false
     paint.textSize = fontSizePx
+    endMarkerPaint?.textSize = fontSizePx
     val justifiedMinGapPx = (fontSizePx * 0.065f).roundToInt().coerceAtLeast(1)
     val centeredGapPx = (fontSizePx * 0.11f).roundToInt().coerceAtLeast(2)
     val fm = paint.fontMetrics
@@ -1606,10 +1626,16 @@ class MushafPageBitmapRenderer(
 
       for (i in 0 until n) {
         val w = words[i]
-        if (renderVectorTajweedMarkers && w.isEndMarker) {
-          sumW += (fontSizePx * 1.32f).roundToInt().coerceAtLeast(1).toFloat()
-          val mh = (fontSizePx * 1.18f).roundToInt().coerceAtLeast(1).toFloat()
-          if (mh > maxMarkerH) maxMarkerH = mh
+        if (w.isEndMarker && endMarkerPaint != null && w.codeV2.isNotBlank()) {
+          val tok = w.codeV2
+          val box = measureWordBox(endMarkerPaint, tok, tokenBounds)
+          sumW += box.widthPx
+          if (i == 0) rightOverhang = box.rightOverhangPx
+          if (i == n - 1) leftOverhang = box.leftOverhangPx
+        } else if (renderVectorTajweedMarkers && w.isEndMarker) {
+          val mw = (fontSizePx * 1.05f).roundToInt().coerceAtLeast(1).toFloat()
+          sumW += mw
+          if (mw > maxMarkerH) maxMarkerH = mw
         } else {
           val tok = tokens[i]
           val box = measureWordBox(paint, tok, tokenBounds)
@@ -1686,9 +1712,11 @@ class MushafPageBitmapRenderer(
     density: Float,
     fontScale: Float,
     tokenBounds: Rect,
+    endMarkerPaint: TextPaint? = null,
   ): ExactLayoutCheckResult {
     val fontSizePx = candidateSp * density * fontScale
     paint.textSize = fontSizePx
+    endMarkerPaint?.textSize = fontSizePx
     val justifiedMinGapPx = (fontSizePx * 0.065f).roundToInt().coerceAtLeast(1)
     val centeredGapPx = (fontSizePx * 0.11f).roundToInt().coerceAtLeast(2)
     var worstRatio = 1.0f
@@ -1704,8 +1732,13 @@ class MushafPageBitmapRenderer(
       var rightOverhang = 0f
       var leftOverhang = 0f
       for (i in 0 until n) {
-        if (renderVectorTajweedMarkers && words[i].isEndMarker) {
-          estW += (fontSizePx * 1.32f).roundToInt().coerceAtLeast(1).toFloat()
+        if (words[i].isEndMarker && endMarkerPaint != null && words[i].codeV2.isNotBlank()) {
+          val box = measureWordBox(endMarkerPaint, words[i].codeV2, tokenBounds)
+          estW += box.widthPx
+          if (i == 0) rightOverhang = box.rightOverhangPx
+          if (i == n - 1) leftOverhang = box.leftOverhangPx
+        } else if (renderVectorTajweedMarkers && words[i].isEndMarker) {
+          estW += (fontSizePx * 1.05f).roundToInt().coerceAtLeast(1).toFloat()
         } else {
           val box = measureWordBox(paint, tokens[i], tokenBounds)
           estW += box.widthPx
@@ -1767,6 +1800,7 @@ class MushafPageBitmapRenderer(
     density: Float,
     fontScale: Float,
     tokenBounds: Rect = Rect(),
+    endMarkerPaint: TextPaint? = null,
   ): Boolean {
     val ayahLines = displayedLines.filterIsInstance<MushafLine.AyahWordsLine>().filter { it.words.isNotEmpty() }
     val basmalahLines = displayedLines.filterIsInstance<MushafLine.BasmalahLine>()
@@ -1794,6 +1828,7 @@ class MushafPageBitmapRenderer(
         density = density,
         fontScale = fontScale,
         tokenBounds = tokenBounds,
+        endMarkerPaint = endMarkerPaint,
       )
     ) {
       return false
@@ -1817,6 +1852,7 @@ class MushafPageBitmapRenderer(
       density = density,
       fontScale = fontScale,
       tokenBounds = tokenBounds,
+      endMarkerPaint = endMarkerPaint,
     ).fits
   }
 
@@ -1837,6 +1873,7 @@ class MushafPageBitmapRenderer(
     fontScale: Float,
     upperBoundSp: Float? = null,
     tokenBounds: Rect = Rect(),
+    endMarkerPaint: TextPaint? = null,
   ): Float {
     val ayahLines = displayedLines.filterIsInstance<MushafLine.AyahWordsLine>().filter { it.words.isNotEmpty() }
     val basmalahLines = displayedLines.filterIsInstance<MushafLine.BasmalahLine>()
@@ -1870,6 +1907,7 @@ class MushafPageBitmapRenderer(
         density = density,
         fontScale = fontScale,
         tokenBounds = tokenBounds,
+        endMarkerPaint = endMarkerPaint,
       )
     ) {
       maxSp
@@ -1894,6 +1932,7 @@ class MushafPageBitmapRenderer(
             density = density,
             fontScale = fontScale,
             tokenBounds = tokenBounds,
+            endMarkerPaint = endMarkerPaint,
           )
         ) {
           lo = mid
@@ -1925,6 +1964,7 @@ class MushafPageBitmapRenderer(
         density = density,
         fontScale = fontScale,
         tokenBounds = tokenBounds,
+        endMarkerPaint = endMarkerPaint,
       )
       if (exact.fits) {
         return resolvedSp
@@ -1972,6 +2012,7 @@ class MushafPageBitmapRenderer(
     startCursor: Int,
     verseRectAccum: HashMap<String, MutableList<Float>>,
     rosetteAccum: HashMap<String, MutableList<Float>>,
+    endMarkerPaint: TextPaint? = null,
   ): Int {
     val words = line.words
     val n = words.size
@@ -1982,33 +2023,77 @@ class MushafPageBitmapRenderer(
 
     val safeWidthF = safeWidthPx.coerceAtLeast(1).toFloat()
     val fittedSp = uniformPageSp
-    val fontSizePx = fittedSp * density * fontScale
-    paint.textSize = fontSizePx
-    paint.textAlign = Paint.Align.LEFT
+    val baseFontSizePx = fittedSp * density * fontScale
+    val isTajweedEdition = spec.edition == MushafEdition.TAJWEED_V4
 
-    val markerWidthF = (fontSizePx * 1.32f).roundToInt().coerceAtLeast(1).toFloat()
-    val markerHeightF = (fontSizePx * 1.18f).roundToInt().coerceAtLeast(1).toFloat()
     val wordWidths = FloatArray(n)
     val wordDrawOffsets = FloatArray(n)
     val boundsRect = Rect()
+    var markerWidthF = (baseFontSizePx * 1.05f).roundToInt().coerceAtLeast(1).toFloat()
+    var markerHeightF = markerWidthF
     var sumWordWidths = 0f
     var rightOverhang = 0f
     var leftOverhang = 0f
-    for (i in 0 until n) {
-      if (renderVectorTajweedMarkers && words[i].isEndMarker) {
-        wordWidths[i] = markerWidthF
-        wordDrawOffsets[i] = 0f
-      } else {
-        val box = measureWordBox(paint, tokens[i], boundsRect)
-        wordWidths[i] = box.widthPx
-        wordDrawOffsets[i] = box.drawOffsetX
-        if (i == 0) rightOverhang = box.rightOverhangPx
-        if (i == n - 1) leftOverhang = box.leftOverhangPx
+
+    fun measureLineAtFontSize(targetFontSizePx: Float) {
+      paint.textSize = targetFontSizePx
+      paint.textAlign = Paint.Align.LEFT
+      endMarkerPaint?.textSize = targetFontSizePx
+      endMarkerPaint?.textAlign = Paint.Align.LEFT
+      markerWidthF = (targetFontSizePx * 1.05f).roundToInt().coerceAtLeast(1).toFloat()
+      markerHeightF = markerWidthF
+      sumWordWidths = 0f
+      rightOverhang = 0f
+      leftOverhang = 0f
+      for (i in 0 until n) {
+        val w = words[i]
+        val isTajweedEndMarker = isTajweedEdition && w.isEndMarker
+        if (isTajweedEndMarker && endMarkerPaint != null && w.codeV2.isNotBlank()) {
+          val box = measureWordBox(endMarkerPaint, w.codeV2, boundsRect)
+          wordWidths[i] = box.widthPx
+          wordDrawOffsets[i] = box.drawOffsetX
+          if (i == 0) rightOverhang = box.rightOverhangPx
+          if (i == n - 1) leftOverhang = box.leftOverhangPx
+        } else if (renderVectorTajweedMarkers && w.isEndMarker) {
+          wordWidths[i] = markerWidthF
+          wordDrawOffsets[i] = 0f
+        } else {
+          val box = measureWordBox(paint, tokens[i], boundsRect)
+          wordWidths[i] = box.widthPx
+          wordDrawOffsets[i] = box.drawOffsetX
+          if (i == 0) rightOverhang = box.rightOverhangPx
+          if (i == n - 1) leftOverhang = box.leftOverhangPx
+        }
+        sumWordWidths += wordWidths[i]
       }
-      sumWordWidths += wordWidths[i]
     }
 
-    val naturalGapPx = (fontSizePx * 0.11f).roundToInt().coerceAtLeast(2)
+    var lineFontSizePx = baseFontSizePx
+    measureLineAtFontSize(lineFontSizePx)
+
+    // Overflow-only guard: when TAJWEED_V4 shares MADINAH_1421's exact global font size,
+    // a handful of Tajweed lines contain an extra word or slightly wider glyph; scale ONLY
+    // that overflowing line down so no word ever clips past the inner frame.
+    val minRequiredInterWordPx = if (n > 1) (n - 1).toFloat() else 0f
+    if (sumWordWidths + leftOverhang + rightOverhang + minRequiredInterWordPx > safeWidthF && n >= 1) {
+      var lo = (baseFontSizePx * 0.50f).coerceAtLeast(1f)
+      var hi = baseFontSizePx
+      repeat(8) {
+        val mid = (lo + hi) * 0.5f
+        measureLineAtFontSize(mid)
+        val minGapMid = (mid * 0.04f).roundToInt().coerceAtLeast(1) * (n - 1).coerceAtLeast(0)
+        if (sumWordWidths + leftOverhang + rightOverhang + minGapMid <= safeWidthF) {
+          lo = mid
+        } else {
+          hi = mid
+        }
+      }
+      lineFontSizePx = lo
+      measureLineAtFontSize(lineFontSizePx)
+    }
+    val lineFontSp = lineFontSizePx / (density * fontScale).coerceAtLeast(0.01f)
+
+    val naturalGapPx = (lineFontSizePx * 0.11f).roundToInt().coerceAtLeast(2)
     val gaps = IntArray((n - 1).coerceAtLeast(0)) { naturalGapPx }
 
     // Follow the layout's own `centered` flag on all pages:
@@ -2058,7 +2143,7 @@ class MushafPageBitmapRenderer(
       pageNumber = pageNumber,
       lineNumber = line.lineNumber,
       spec = spec,
-      fontSp = fittedSp,
+      fontSp = lineFontSp,
       visualWidthPx = actualVisualW,
       contentWidthPx = contentWidthPx,
       safeWidthPx = safeWidthPx,
@@ -2121,25 +2206,33 @@ class MushafPageBitmapRenderer(
       val wordLeft = wordRight - ww
       rightCursor = wordLeft
 
-      if (renderVectorTajweedMarkers && words[i].isEndMarker) {
+      val w = words[i]
+      val isTajweedEndMarker = isTajweedEdition && w.isEndMarker
+      if (isTajweedEndMarker && endMarkerPaint != null && w.codeV2.isNotBlank()) {
+        canvas.drawText(w.codeV2, wordLeft + wordDrawOffsets[i], baselineY, endMarkerPaint)
         val cx = (wordLeft + wordRight) * 0.5f
-        drawTajweedRosette(
+        val slotDim = minOf(ww, textVisualH)
+        val slotArr = rosetteAccum.getOrPut(w.verseKey) { ArrayList(3) }
+        slotArr.add(cx)
+        slotArr.add(rosetteCy)
+        slotArr.add(slotDim)
+      } else if (renderVectorTajweedMarkers && w.isEndMarker) {
+        val cx = (wordLeft + wordRight) * 0.5f
+        drawMadinahStyleFallbackMarker(
           canvas = canvas,
           cx = cx,
           cy = rosetteCy,
           markerWidthF = markerWidthF,
           markerHeightF = markerHeightF,
-          arabicDigits = toArabicIndicDigits(words[i].ayahNumber),
-          lineFontSp = fittedSp,
-          goldInt = goldInt,
+          arabicDigits = toArabicIndicDigits(w.ayahNumber),
+          lineFontSp = lineFontSp,
           inkInt = inkInt,
-          effectiveDark = effectiveDark,
           numPaint = rosetteNumPaint,
           density = density,
           fontScale = fontScale,
         )
         val minDim = minOf(markerWidthF, markerHeightF)
-        val slotArr = rosetteAccum.getOrPut(words[i].verseKey) { ArrayList(3) }
+        val slotArr = rosetteAccum.getOrPut(w.verseKey) { ArrayList(3) }
         slotArr.add(cx)
         slotArr.add(rosetteCy)
         slotArr.add(minDim)
@@ -2150,7 +2243,7 @@ class MushafPageBitmapRenderer(
         }
       }
 
-      val vk = words[i].verseKey
+      val vk = w.verseKey
       if (cursor < hitLefts.size) {
         hitLefts[cursor] = wordLeft
         hitTops[cursor] = boxTop
@@ -2180,7 +2273,7 @@ class MushafPageBitmapRenderer(
     return cursor
   }
 
-  private fun drawTajweedRosette(
+  private fun drawMadinahStyleFallbackMarker(
     canvas: Canvas,
     cx: Float,
     cy: Float,
@@ -2188,52 +2281,45 @@ class MushafPageBitmapRenderer(
     markerHeightF: Float,
     arabicDigits: String,
     lineFontSp: Float,
-    goldInt: Int,
     inkInt: Int,
-    effectiveDark: Boolean,
     numPaint: Paint,
     density: Float,
     fontScale: Float,
   ) {
-    val rosetteFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-      style = Paint.Style.FILL
-      color = withAlpha(goldInt, if (effectiveDark) 0.22f else 0.16f)
-    }
-    val rosetteStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    val outerStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       style = Paint.Style.STROKE
-      color = goldInt
+      color = inkInt
     }
-    val innerRingStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    val innerStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       style = Paint.Style.STROKE
-      color = withAlpha(goldInt, 0.55f)
+      color = withAlpha(inkInt, 0.78f)
     }
     val minDim = minOf(markerWidthF, markerHeightF)
-    val outerR = minDim * 0.46f
-    val innerR = minDim * 0.37f
-    val points = 16
-    val starPath = Path()
-    for (i in 0 until points) {
-      val angle = (2.0 * PI * i) / points - PI / 2.0
-      val r = if (i % 2 == 0) outerR else innerR
+    val outerR = minDim * 0.45f
+    val innerR = minDim * 0.34f
+    val scallopCount = 16
+    val scallopPath = Path()
+    for (i in 0 until scallopCount) {
+      val angle = (2.0 * PI * i) / scallopCount - PI / 2.0
+      val r = if (i % 2 == 0) outerR else minDim * 0.40f
       val px = cx + (r * cos(angle)).toFloat()
       val py = cy + (r * sin(angle)).toFloat()
-      if (i == 0) starPath.moveTo(px, py) else starPath.lineTo(px, py)
+      if (i == 0) scallopPath.moveTo(px, py) else scallopPath.lineTo(px, py)
     }
-    starPath.close()
+    scallopPath.close()
 
-    rosetteStroke.strokeWidth = (minDim * 0.055f).coerceIn(0.9f, 2.2f)
-    canvas.drawPath(starPath, rosetteFill)
-    canvas.drawPath(starPath, rosetteStroke)
+    outerStroke.strokeWidth = (minDim * 0.048f).coerceIn(0.8f, 1.8f)
+    canvas.drawPath(scallopPath, outerStroke)
 
-    innerRingStroke.strokeWidth = (minDim * 0.032f).coerceIn(0.6f, 1.1f)
-    canvas.drawCircle(cx, cy, minDim * 0.30f, innerRingStroke)
+    innerStroke.strokeWidth = (minDim * 0.036f).coerceIn(0.6f, 1.3f)
+    canvas.drawCircle(cx, cy, innerR, innerStroke)
 
     val digitScale = when (arabicDigits.length) {
       1 -> 0.44f
-      2 -> 0.39f
-      else -> 0.33f
+      2 -> 0.38f
+      else -> 0.32f
     }
-    val numSp = (lineFontSp * digitScale).coerceIn(7.5f, 18f)
+    val numSp = (lineFontSp * digitScale).coerceIn(7.0f, 17f)
     numPaint.textSize = numSp * density * fontScale
     numPaint.color = inkInt
     val fm = numPaint.fontMetrics

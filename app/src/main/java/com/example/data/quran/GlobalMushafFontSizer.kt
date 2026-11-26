@@ -76,7 +76,6 @@ class GlobalMushafFontSizer(
     val metrics = renderer.computeTextBodyMetrics(spec)
     val edition = spec.edition
     val fontEdition = if (usesTagFallbackTajweed) MushafEdition.MADINAH_1421 else edition
-    val renderVectorTajweedMarkers = edition == MushafEdition.TAJWEED_V4
     val goldInt = 0xFFC29038.toInt()
     val inkInt = Color.BLACK
 
@@ -87,6 +86,7 @@ class GlobalMushafFontSizer(
     }
     val hasBasmalahTypeface = basmalahTypeface != null
     val lineTextPaint = renderer.createLineTextPaint(null, usesTagFallbackTajweed, inkInt = inkInt)
+    val endMarkerPaint = renderer.createLineTextPaint(null, usesTagFallbackTajweed = false, inkInt = inkInt)
     val basmalahPaint = renderer.createBasmalahPaint(basmalahTypeface, inkInt = inkInt)
     val rosetteNumPaint = renderer.createRosetteNumPaint(inkInt = inkInt)
     val tokenBounds = Rect()
@@ -111,6 +111,22 @@ class GlobalMushafFontSizer(
       } else {
         fontManager.loadPageFontForMeasurement(page, fontEdition, useWhiteInk = false)
       }
+      val endMarkerTypeface = if (edition == MushafEdition.TAJWEED_V4) {
+        if (!usesTagFallbackTajweed && fontEdition == MushafEdition.MADINAH_1421) {
+          pageTypeface
+        } else {
+          fontManager.loadPageFontForMeasurement(page, MushafEdition.MADINAH_1421, useWhiteInk = false)
+        }
+      } else {
+        null
+      }
+      val activeEndMarkerPaint = if (edition == MushafEdition.TAJWEED_V4 && endMarkerTypeface != null) {
+        endMarkerPaint.typeface = endMarkerTypeface
+        endMarkerPaint
+      } else {
+        null
+      }
+      val renderVectorTajweedMarkers = edition == MushafEdition.TAJWEED_V4 && activeEndMarkerPaint == null
 
       if (pageData != null && (usesTagFallbackTajweed || pageTypeface != null)) {
         measuredCount++
@@ -130,6 +146,7 @@ class GlobalMushafFontSizer(
           density = metrics.density,
           fontScale = metrics.fontScale,
           tokenBounds = tokenBounds,
+          endMarkerPaint = activeEndMarkerPaint,
         )
         if (!fits || introLimitingPage == 0) {
           val nextSp = renderer.computeUniformPageFontSp(
@@ -149,6 +166,7 @@ class GlobalMushafFontSizer(
             fontScale = metrics.fontScale,
             upperBoundSp = introSp,
             tokenBounds = tokenBounds,
+            endMarkerPaint = activeEndMarkerPaint,
           )
           if (introLimitingPage == 0 || nextSp < introSp - 0.0001f) {
             introSp = nextSp
@@ -178,6 +196,22 @@ class GlobalMushafFontSizer(
       } else {
         fontManager.loadPageFontForMeasurement(page, fontEdition, useWhiteInk = false)
       }
+      val endMarkerTypeface = if (edition == MushafEdition.TAJWEED_V4) {
+        if (!usesTagFallbackTajweed && fontEdition == MushafEdition.MADINAH_1421) {
+          pageTypeface
+        } else {
+          fontManager.loadPageFontForMeasurement(page, MushafEdition.MADINAH_1421, useWhiteInk = false)
+        }
+      } else {
+        null
+      }
+      val activeEndMarkerPaint = if (edition == MushafEdition.TAJWEED_V4 && endMarkerTypeface != null) {
+        endMarkerPaint.typeface = endMarkerTypeface
+        endMarkerPaint
+      } else {
+        null
+      }
+      val renderVectorTajweedMarkers = edition == MushafEdition.TAJWEED_V4 && activeEndMarkerPaint == null
 
       if (pageData != null && (usesTagFallbackTajweed || pageTypeface != null)) {
         measuredCount++
@@ -197,6 +231,7 @@ class GlobalMushafFontSizer(
           density = metrics.density,
           fontScale = metrics.fontScale,
           tokenBounds = tokenBounds,
+          endMarkerPaint = activeEndMarkerPaint,
         )
         if (!fits || bodyLimitingPage == 0) {
           val nextSp = renderer.computeUniformPageFontSp(
@@ -216,6 +251,7 @@ class GlobalMushafFontSizer(
             fontScale = metrics.fontScale,
             upperBoundSp = bodySp,
             tokenBounds = tokenBounds,
+            endMarkerPaint = activeEndMarkerPaint,
           )
           if (bodyLimitingPage == 0 || nextSp < bodySp - 0.0001f) {
             bodySp = nextSp
