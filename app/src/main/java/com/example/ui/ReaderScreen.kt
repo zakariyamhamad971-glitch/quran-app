@@ -98,6 +98,7 @@ import com.example.ui.components.MushafPageFrame
 import com.example.ui.components.MushafSelectorScreen
 import com.example.ui.components.MushafsManagerScreen
 import com.example.ui.components.PlaybackControlSheet
+import com.example.ui.components.PrayerHomeScreen
 import com.example.ui.components.ReaderBottomAudioButtons
 import com.example.ui.components.ReciterDownloadsScreen
 import com.example.ui.components.ReciterPickerSheet
@@ -108,8 +109,10 @@ import com.example.ui.components.rememberNotificationPermissionRequester
 import com.example.ui.theme.AmiriFontFamily
 import com.example.update.AppUpdateState
 import com.example.viewmodel.PageLoadState
+import com.example.viewmodel.PrayerTimesViewModel
 import com.example.viewmodel.QabasatViewModel
 import com.example.viewmodel.VerseInsightsUiState
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -149,6 +152,7 @@ fun ReaderScreen(
 @Composable
 private fun ReaderScreenContent(
   viewModel: QabasatViewModel,
+  prayerViewModel: PrayerTimesViewModel = viewModel(),
 ) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val downloadedKeys by viewModel.downloadedAudioKeys.collectAsStateWithLifecycle()
@@ -162,7 +166,8 @@ private fun ReaderScreenContent(
   val surahsById = remember(uiState.surahs) { uiState.surahs.associateBy { it.id } }
   val bookmarkSet = remember(uiState.bookmarks) { uiState.bookmarks.toHashSet() }
 
-  var isIndexOpen by rememberSaveable { mutableStateOf(true) }
+  var isHomeOpen by rememberSaveable { mutableStateOf(true) }
+  var isIndexOpen by rememberSaveable { mutableStateOf(false) }
   var hasSelectedSurah by rememberSaveable { mutableStateOf(false) }
   var isChromeVisible by rememberSaveable { mutableStateOf(true) }
   var isCompactPlayerDocked by rememberSaveable { mutableStateOf(false) }
@@ -182,8 +187,8 @@ private fun ReaderScreenContent(
       isCompactPlayerDocked = true
     }
   }
-  LaunchedEffect(isChromeVisible, isIndexOpen) {
-    if (!isChromeVisible || isIndexOpen) {
+  LaunchedEffect(isChromeVisible, isIndexOpen, isHomeOpen) {
+    if (!isChromeVisible || isIndexOpen || isHomeOpen) {
       showCompactReciterPopup = false
     }
   }
@@ -205,11 +210,11 @@ private fun ReaderScreenContent(
   val onToggleChrome: () -> Unit = remember { { isChromeVisible = !isChromeVisible } }
   val view = LocalView.current
 
-  LaunchedEffect(isChromeVisible, isIndexOpen) {
+  LaunchedEffect(isChromeVisible, isIndexOpen, isHomeOpen) {
     val activity = view.context.findActivity() ?: return@LaunchedEffect
     val controller = WindowCompat.getInsetsController(activity.window, view)
     controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-    if (isChromeVisible || isIndexOpen) {
+    if (isChromeVisible || isIndexOpen || isHomeOpen) {
       controller.show(WindowInsetsCompat.Type.systemBars())
     } else {
       controller.hide(WindowInsetsCompat.Type.systemBars())
@@ -224,9 +229,14 @@ private fun ReaderScreenContent(
     }
   }
 
-  BackHandler(enabled = !isIndexOpen) {
-    isChromeVisible = true
-    isIndexOpen = true
+  BackHandler(enabled = !isHomeOpen) {
+    if (isIndexOpen) {
+      isIndexOpen = false
+      isHomeOpen = true
+    } else {
+      isChromeVisible = true
+      isIndexOpen = true
+    }
   }
 
   BoxWithConstraints(
@@ -242,7 +252,7 @@ private fun ReaderScreenContent(
     }
 
     // Main Mushaf page area stays strictly fixed in size and position; top & bottom bars slide over it as overlays
-    if (!isIndexOpen || hasSelectedSurah) {
+    if ((!isHomeOpen && !isIndexOpen) || hasSelectedSurah) {
       ReaderPagerHost(
         currentPage = uiState.currentPage,
         effectiveTwoPageMode = effectiveTwoPageMode,
@@ -266,7 +276,7 @@ private fun ReaderScreenContent(
 
       // Top overlay bar (slides down from top without shifting the page)
       AnimatedVisibility(
-        visible = isChromeVisible && !isIndexOpen,
+        visible = isChromeVisible && !isIndexOpen && !isHomeOpen,
         enter = slideInVertically(animationSpec = tween(durationMillis = 240)) { -it } +
           fadeIn(animationSpec = tween(durationMillis = 180)),
         exit = slideOutVertically(animationSpec = tween(durationMillis = 220)) { -it } +
@@ -304,7 +314,7 @@ private fun ReaderScreenContent(
 
       // Bottom audio overlay: docked compact player (plus anchored reciters popup) above the two round buttons
       AnimatedVisibility(
-        visible = isChromeVisible && !isIndexOpen,
+        visible = isChromeVisible && !isIndexOpen && !isHomeOpen,
         enter = slideInVertically(animationSpec = tween(durationMillis = 240)) { it } +
           fadeIn(animationSpec = tween(durationMillis = 180)),
         exit = slideOutVertically(animationSpec = tween(durationMillis = 220)) { it } +
@@ -366,6 +376,27 @@ private fun ReaderScreenContent(
       }
     }
 
+    if (isHomeOpen && !isIndexOpen) {
+      PrayerHomeScreen(
+        prayerViewModel = prayerViewModel,
+        surahs = uiState.surahs,
+        currentPage = uiState.currentPage,
+        isDarkTheme = isDarkTheme,
+        onToggleTheme = { viewModel.toggleDarkMode() },
+        onOpenMushafIndex = {
+          isHomeOpen = false
+          isIndexOpen = true
+        },
+        onResumeReader = {
+          hasSelectedSurah = true
+          isHomeOpen = false
+          isIndexOpen = false
+          viewModel.ensureCurrentPageLoaded()
+        },
+        onOpenAppSettings = { showSettingsSheet = true },
+      )
+    }
+
     if (isIndexOpen) {
       FullScreenQuranIndex(
         surahs = uiState.surahs,
@@ -394,17 +425,20 @@ private fun ReaderScreenContent(
         onClearWordSearch = { viewModel.clearWordSearch() },
         onJumpToPage = { page ->
           hasSelectedSurah = true
+          isHomeOpen = false
           isIndexOpen = false
           viewModel.jumpToPage(page)
         },
         onJumpToVerse = { key, page ->
           hasSelectedSurah = true
+          isHomeOpen = false
           isIndexOpen = false
           viewModel.jumpToVerse(key, page)
         },
         onPlaySurah = { surahId ->
           val targetPage = surahsById[surahId]?.startPage ?: uiState.currentPage
           hasSelectedSurah = true
+          isHomeOpen = false
           isIndexOpen = false
           viewModel.jumpToPage(targetPage)
           viewModel.playSurah(surahId)
@@ -417,6 +451,7 @@ private fun ReaderScreenContent(
         onRemoveBookmark = { page -> viewModel.removeBookmark(page) },
         onOpenReader = {
           hasSelectedSurah = true
+          isHomeOpen = false
           isIndexOpen = false
           viewModel.ensureCurrentPageLoaded()
         },
@@ -434,6 +469,10 @@ private fun ReaderScreenContent(
         onPrevSurah = { viewModel.playbackController.prevSurah() },
         onCycleSpeed = onCycleSpeed,
         onOpenReciterPicker = { activeAudioSheet = ReaderAudioSheet.RECITERS },
+        onBackToHome = {
+          isIndexOpen = false
+          isHomeOpen = true
+        },
       )
     }
 

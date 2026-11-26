@@ -42,6 +42,8 @@ credentials = "1.5.0"
 googleid = "1.1.1"
 media3 = "1.11.1"
 profileinstaller = "1.4.1"
+adhan2 = "0.0.6"
+desugarJdkLibs = "2.1.5"
 
 
 [libraries]
@@ -100,6 +102,8 @@ androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplaye
 androidx-media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
 androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
 androidx-profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
+adhan2 = { group = "com.batoulapps.adhan", name = "adhan2", version.ref = "adhan2" }
+desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugarJdkLibs" }
 
 
 [plugins]

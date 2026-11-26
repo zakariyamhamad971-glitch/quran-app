@@ -10,9 +10,18 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.data.prayer.AsrMadhab
+import com.example.data.prayer.CachedPrayerSchedule
+import com.example.data.prayer.DailyPrayerTimesRecord
+import com.example.data.prayer.PrayerCalculationMethod
+import com.example.data.prayer.PrayerHighLatitudeRule
+import com.example.data.prayer.PrayerMinuteAdjustments
+import com.example.data.prayer.PrayerSettingsState
+import com.example.data.prayer.SavedPrayerLocation
 import com.example.data.quran.MushafEdition
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
 import org.json.JSONObject
 
 private val Context.dataStore by preferencesDataStore(name = "qabasat_reader_prefs")
@@ -76,6 +85,56 @@ class ReaderPreferences(private val context: Context) {
     val ACTIVE_PDF_MUSHAF_ID = stringPreferencesKey("active_pdf_mushaf_id")
     val ACTIVE_MUSHAF_IS_PDF = booleanPreferencesKey("active_mushaf_is_pdf")
     val GLOBAL_FONT_SIZES = stringPreferencesKey("global_mushaf_font_sizes")
+    val PRAYER_LOCATION_JSON = stringPreferencesKey("prayer_location_json")
+    val PRAYER_CALCULATION_METHOD = stringPreferencesKey("prayer_calculation_method")
+    val PRAYER_METHOD_USER_SELECTED = booleanPreferencesKey("prayer_method_user_selected")
+    val PRAYER_ASR_MADHAB = stringPreferencesKey("prayer_asr_madhab")
+    val PRAYER_HIGH_LAT_RULE = stringPreferencesKey("prayer_high_lat_rule")
+    val PRAYER_ADJUSTMENTS_JSON = stringPreferencesKey("prayer_adjustments_json")
+    val PRAYER_SCHEDULE_CACHE_JSON = stringPreferencesKey("prayer_schedule_cache_json")
+    val PRAYER_CHECKED_DATE_KEY = stringPreferencesKey("prayer_checked_date_key")
+    val PRAYER_CHECKED_KEYS = stringSetPreferencesKey("prayer_checked_keys")
+  }
+
+  data class PersistedPrayerPreferences(
+    val settings: PrayerSettingsState = PrayerSettingsState(),
+    val cachedSchedule: CachedPrayerSchedule? = null,
+    val checkedDateKey: String = "",
+    val checkedPrayerKeys: Set<String> = emptySet(),
+  )
+
+  val prayerStateFlow: Flow<PersistedPrayerPreferences> = context.dataStore.data.map { prefs ->
+    val location = decodePrayerLocation(prefs[Keys.PRAYER_LOCATION_JSON])
+    val userSelectedMethod = prefs[Keys.PRAYER_METHOD_USER_SELECTED] ?: false
+    val savedMethod = prefs[Keys.PRAYER_CALCULATION_METHOD]?.let { name ->
+      runCatching { PrayerCalculationMethod.valueOf(name) }.getOrNull()
+    }
+    val effectiveMethod = savedMethod ?: if (location?.countryCode.equals("EG", ignoreCase = true)) {
+      PrayerCalculationMethod.EGYPTIAN
+    } else {
+      PrayerCalculationMethod.MUSLIM_WORLD_LEAGUE
+    }
+    val madhab = prefs[Keys.PRAYER_ASR_MADHAB]?.let { name ->
+      runCatching { AsrMadhab.valueOf(name) }.getOrNull()
+    } ?: AsrMadhab.SHAFI
+    val highLat = prefs[Keys.PRAYER_HIGH_LAT_RULE]?.let { name ->
+      runCatching { PrayerHighLatitudeRule.valueOf(name) }.getOrNull()
+    } ?: PrayerHighLatitudeRule.MIDDLE_OF_THE_NIGHT
+    val adjustments = decodePrayerAdjustments(prefs[Keys.PRAYER_ADJUSTMENTS_JSON])
+
+    PersistedPrayerPreferences(
+      settings = PrayerSettingsState(
+        location = location,
+        calculationMethod = effectiveMethod,
+        isMethodUserSelected = userSelectedMethod,
+        asrMadhab = madhab,
+        highLatitudeRule = highLat,
+        adjustments = adjustments,
+      ),
+      cachedSchedule = decodeCachedPrayerSchedule(prefs[Keys.PRAYER_SCHEDULE_CACHE_JSON]),
+      checkedDateKey = prefs[Keys.PRAYER_CHECKED_DATE_KEY].orEmpty(),
+      checkedPrayerKeys = prefs[Keys.PRAYER_CHECKED_KEYS].orEmpty(),
+    )
   }
 
   val stateFlow: Flow<PersistedReaderState> = context.dataStore.data.map { prefs ->
@@ -309,6 +368,165 @@ class ReaderPreferences(private val context: Context) {
 
   suspend fun setBetaChannelUnlocked(unlocked: Boolean) {
     context.dataStore.edit { it[Keys.BETA_CHANNEL_UNLOCKED] = unlocked }
+  }
+
+  suspend fun savePrayerLocation(location: SavedPrayerLocation) {
+    context.dataStore.edit { prefs ->
+      val obj = JSONObject().apply {
+        put("lat", location.latitude)
+        put("lon", location.longitude)
+        put("name", location.displayName)
+        put("cc", location.countryCode.orEmpty())
+        put("tz", location.timeZoneId)
+        put("manual", location.isManual)
+      }
+      prefs[Keys.PRAYER_LOCATION_JSON] = obj.toString()
+      val userSelected = prefs[Keys.PRAYER_METHOD_USER_SELECTED] ?: false
+      if (!userSelected) {
+        val autoMethod = if (location.countryCode.equals("EG", ignoreCase = true)) {
+          PrayerCalculationMethod.EGYPTIAN
+        } else {
+          PrayerCalculationMethod.MUSLIM_WORLD_LEAGUE
+        }
+        prefs[Keys.PRAYER_CALCULATION_METHOD] = autoMethod.name
+      }
+    }
+  }
+
+  suspend fun savePrayerCalculationMethod(method: PrayerCalculationMethod, userSelected: Boolean) {
+    context.dataStore.edit { prefs ->
+      prefs[Keys.PRAYER_CALCULATION_METHOD] = method.name
+      prefs[Keys.PRAYER_METHOD_USER_SELECTED] = userSelected
+    }
+  }
+
+  suspend fun savePrayerAsrMadhab(madhab: AsrMadhab) {
+    context.dataStore.edit { it[Keys.PRAYER_ASR_MADHAB] = madhab.name }
+  }
+
+  suspend fun savePrayerHighLatitudeRule(rule: PrayerHighLatitudeRule) {
+    context.dataStore.edit { it[Keys.PRAYER_HIGH_LAT_RULE] = rule.name }
+  }
+
+  suspend fun savePrayerAdjustments(adjustments: PrayerMinuteAdjustments) {
+    context.dataStore.edit { prefs ->
+      val obj = JSONObject().apply {
+        put("fajr", adjustments.fajr)
+        put("sunrise", adjustments.sunrise)
+        put("dhuhr", adjustments.dhuhr)
+        put("asr", adjustments.asr)
+        put("maghrib", adjustments.maghrib)
+        put("isha", adjustments.isha)
+      }
+      prefs[Keys.PRAYER_ADJUSTMENTS_JSON] = obj.toString()
+    }
+  }
+
+  suspend fun saveCachedPrayerSchedule(schedule: CachedPrayerSchedule) {
+    context.dataStore.edit { prefs ->
+      val daysArr = JSONArray()
+      for (rec in schedule.daysByDateKey.values) {
+        daysArr.put(
+          JSONObject().apply {
+            put("k", rec.dateKey)
+            put("y", rec.year)
+            put("m", rec.month)
+            put("d", rec.day)
+            put("f", rec.fajrEpochMs)
+            put("s", rec.sunriseEpochMs)
+            put("dh", rec.dhuhrEpochMs)
+            put("a", rec.asrEpochMs)
+            put("mg", rec.maghribEpochMs)
+            put("i", rec.ishaEpochMs)
+          },
+        )
+      }
+      val root = JSONObject().apply {
+        put("key", schedule.cacheKey)
+        put("gen", schedule.generatedDateKey)
+        put("days", daysArr)
+      }
+      prefs[Keys.PRAYER_SCHEDULE_CACHE_JSON] = root.toString()
+    }
+  }
+
+  suspend fun togglePrayerCompleted(dateKey: String, prayerKey: String) {
+    context.dataStore.edit { prefs ->
+      val storedDate = prefs[Keys.PRAYER_CHECKED_DATE_KEY].orEmpty()
+      val currentSet = if (storedDate == dateKey) {
+        prefs[Keys.PRAYER_CHECKED_KEYS].orEmpty().toMutableSet()
+      } else {
+        mutableSetOf()
+      }
+      if (!currentSet.add(prayerKey)) {
+        currentSet.remove(prayerKey)
+      }
+      prefs[Keys.PRAYER_CHECKED_DATE_KEY] = dateKey
+      prefs[Keys.PRAYER_CHECKED_KEYS] = currentSet
+    }
+  }
+
+  private fun decodePrayerLocation(raw: String?): SavedPrayerLocation? {
+    if (raw.isNullOrBlank()) return null
+    return runCatching {
+      val obj = JSONObject(raw)
+      val lat = obj.optDouble("lat", Double.NaN)
+      val lon = obj.optDouble("lon", Double.NaN)
+      if (!lat.isFinite() || !lon.isFinite()) return null
+      SavedPrayerLocation(
+        latitude = lat,
+        longitude = lon,
+        displayName = obj.optString("name", ""),
+        countryCode = obj.optString("cc", "").takeIf { it.isNotBlank() },
+        timeZoneId = obj.optString("tz", "").ifBlank { java.util.TimeZone.getDefault().id },
+        isManual = obj.optBoolean("manual", false),
+      )
+    }.getOrNull()
+  }
+
+  private fun decodePrayerAdjustments(raw: String?): PrayerMinuteAdjustments {
+    if (raw.isNullOrBlank()) return PrayerMinuteAdjustments()
+    return runCatching {
+      val obj = JSONObject(raw)
+      PrayerMinuteAdjustments(
+        fajr = obj.optInt("fajr", 0).coerceIn(-60, 60),
+        sunrise = obj.optInt("sunrise", 0).coerceIn(-60, 60),
+        dhuhr = obj.optInt("dhuhr", 0).coerceIn(-60, 60),
+        asr = obj.optInt("asr", 0).coerceIn(-60, 60),
+        maghrib = obj.optInt("maghrib", 0).coerceIn(-60, 60),
+        isha = obj.optInt("isha", 0).coerceIn(-60, 60),
+      )
+    }.getOrDefault(PrayerMinuteAdjustments())
+  }
+
+  private fun decodeCachedPrayerSchedule(raw: String?): CachedPrayerSchedule? {
+    if (raw.isNullOrBlank()) return null
+    return runCatching {
+      val root = JSONObject(raw)
+      val cacheKey = root.optString("key", "")
+      val genKey = root.optString("gen", "")
+      val daysArr = root.optJSONArray("days") ?: return null
+      val map = LinkedHashMap<String, DailyPrayerTimesRecord>(daysArr.length())
+      for (i in 0 until daysArr.length()) {
+        val obj = daysArr.optJSONObject(i) ?: continue
+        val k = obj.optString("k", "")
+        if (k.isBlank()) continue
+        map[k] = DailyPrayerTimesRecord(
+          dateKey = k,
+          year = obj.optInt("y"),
+          month = obj.optInt("m"),
+          day = obj.optInt("d"),
+          fajrEpochMs = obj.optLong("f"),
+          sunriseEpochMs = obj.optLong("s"),
+          dhuhrEpochMs = obj.optLong("dh"),
+          asrEpochMs = obj.optLong("a"),
+          maghribEpochMs = obj.optLong("mg"),
+          ishaEpochMs = obj.optLong("i"),
+        )
+      }
+      if (cacheKey.isBlank() || map.isEmpty()) null
+      else CachedPrayerSchedule(cacheKey = cacheKey, generatedDateKey = genKey, daysByDateKey = map)
+    }.getOrNull()
   }
 
   @androidx.annotation.VisibleForTesting

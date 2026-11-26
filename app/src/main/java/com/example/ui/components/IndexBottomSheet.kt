@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
@@ -186,6 +187,7 @@ fun FullScreenQuranIndex(
   onPrevSurah: () -> Unit,
   onCycleSpeed: (Float) -> Unit,
   onOpenReciterPicker: () -> Unit,
+  onBackToHome: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   var isSearchOpen by rememberSaveable { mutableStateOf(false) }
@@ -316,6 +318,22 @@ fun FullScreenQuranIndex(
               .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
           ) {
+            Box(
+              modifier = Modifier
+                .size(width = 40.dp, height = 44.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onBackToHome)
+                .testTag("index_back_home_button"),
+              contentAlignment = Alignment.Center,
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Home,
+                contentDescription = "الرئيسية والمواقيت",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+              )
+            }
+
             Text(
               text = "قبسات",
               style = MaterialTheme.typography.titleMedium.copy(
