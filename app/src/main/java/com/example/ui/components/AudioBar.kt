@@ -8,26 +8,34 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.Pause
@@ -41,6 +49,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -69,9 +78,12 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.audio.RecitationRange
+import com.example.data.audio.ReciterMatchStatus
+import com.example.data.audio.VerifiedReciter
 import com.example.data.quran.SurahMeta
 import com.example.player.AudioPlaybackUiState
 import com.example.ui.theme.AmiriFontFamily
@@ -181,6 +193,7 @@ fun PlaybackControlSheet(
   onPlayRange: (RecitationRange) -> Unit,
   onClearRange: () -> Unit,
   onDismiss: () -> Unit,
+  onPlaybackStarted: () -> Unit = {},
   isPdfMode: Boolean = false,
   recitersEmptyForRiwaya: Boolean = false,
 ) {
@@ -439,7 +452,13 @@ fun PlaybackControlSheet(
             }
 
             FilledIconButton(
-              onClick = onTogglePlayPause,
+              onClick = {
+                val starting = !audioState.isPlaying && !audioState.isBuffering
+                onTogglePlayPause()
+                if (starting) {
+                  onPlaybackStarted()
+                }
+              },
               enabled = transportEnabled,
               colors = IconButtonDefaults.filledIconButtonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
@@ -605,6 +624,7 @@ fun PlaybackControlSheet(
               onClick = {
                 val sAyah = (startAyahText.toIntOrNull() ?: 1).coerceIn(1, startMaxAyah)
                 onPlayFromAyah(startSurahId, sAyah)
+                onPlaybackStarted()
               },
               enabled = timingSupported,
               modifier = Modifier
@@ -626,6 +646,7 @@ fun PlaybackControlSheet(
                     loop = loopRange,
                   ),
                 )
+                onPlaybackStarted()
               },
               enabled = timingSupported,
               modifier = Modifier
@@ -1078,5 +1099,468 @@ private fun AudioSeekBarSection(
       style = MaterialTheme.typography.labelSmall,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+  }
+}
+
+@Composable
+fun CompactDockedAudioPlayer(
+  audioState: AudioPlaybackUiState,
+  isReciterPopupOpen: Boolean,
+  onToggleReciterPopup: () -> Unit,
+  onExpandFullSheet: () -> Unit,
+  onTogglePlayPause: () -> Unit,
+  onSeekTo: (Long) -> Unit,
+  onSeekDelta: (Long) -> Unit,
+  onNextSurah: () -> Unit,
+  onPrevSurah: () -> Unit,
+  onCycleSpeed: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val reciterName = audioState.currentReciter?.displayName ?: "اختر القارئ"
+  val surahLabel = if (audioState.currentSurahName.isNotBlank()) {
+    "سورة ${audioState.currentSurahName}"
+  } else {
+    "سورة ${audioState.currentSurahId}"
+  }
+  val noopInteraction = remember { MutableInteractionSource() }
+
+  Surface(
+    modifier = modifier
+      .widthIn(max = 560.dp)
+      .fillMaxWidth()
+      .padding(horizontal = 10.dp)
+      .clickable(interactionSource = noopInteraction, indication = null, onClick = {})
+      .testTag("compact_docked_audio_player"),
+    shape = RoundedCornerShape(16.dp),
+    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+    tonalElevation = 6.dp,
+    shadowElevation = 6.dp,
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)),
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+      // Top row: Tappable Reciter Name (opens popup right above), Current Surah, Speed Pill, Up Arrow to reopen full sheet
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Surface(
+          shape = RoundedCornerShape(10.dp),
+          color = if (isReciterPopupOpen) {
+            MaterialTheme.colorScheme.primaryContainer
+          } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
+          },
+          modifier = Modifier
+            .weight(1.1f)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(role = Role.Button, onClick = onToggleReciterPopup)
+            .testTag("compact_reciter_popup_trigger"),
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Person,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(15.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+              text = reciterName,
+              style = MaterialTheme.typography.labelMedium,
+              color = MaterialTheme.colorScheme.primary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.weight(1f),
+            )
+            Icon(
+              imageVector = if (isReciterPopupOpen) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp,
+              contentDescription = "تبديل القارئ",
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(15.dp),
+            )
+          }
+        }
+
+        Row(
+          modifier = Modifier.weight(0.9f),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            text = surahLabel,
+            style = MaterialTheme.typography.labelLarge.copy(fontFamily = AmiriFontFamily),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+          )
+          if (audioState.isOfflineSource) {
+            Spacer(Modifier.width(3.dp))
+            Icon(
+              imageVector = Icons.Filled.OfflinePin,
+              contentDescription = "يعمل دون اتصال",
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(13.dp),
+            )
+          }
+        }
+
+        Surface(
+          shape = RoundedCornerShape(10.dp),
+          color = MaterialTheme.colorScheme.secondaryContainer,
+          modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(role = Role.Button, onClick = onCycleSpeed)
+            .testTag("compact_audio_speed_button"),
+        ) {
+          Text(
+            text = "${audioState.playbackSpeed}x",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+          )
+        }
+
+        IconButton(
+          onClick = onExpandFullSheet,
+          modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .size(34.dp)
+            .testTag("compact_audio_expand_button"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.KeyboardArrowUp,
+            contentDescription = "فتح لوحة التشغيل الكاملة",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp),
+          )
+        }
+      }
+
+      if (audioState.errorMessage != null) {
+        Text(
+          text = audioState.errorMessage,
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.error,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+      }
+
+      // Seek bar
+      AudioSeekBarSection(
+        positionMs = audioState.positionMs,
+        durationMs = audioState.durationMs,
+        onSeekTo = onSeekTo,
+      )
+
+      // Compact transport controls: Previous Surah, -10s, Play/Pause, +10s, Next Surah
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        IconButton(
+          onClick = onPrevSurah,
+          modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .size(38.dp)
+            .testTag("compact_audio_prev_surah"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.SkipNext,
+            contentDescription = "السورة السابقة",
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(20.dp),
+          )
+        }
+
+        IconButton(
+          onClick = { onSeekDelta(-10_000L) },
+          modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .size(38.dp)
+            .testTag("compact_audio_back_10s"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Replay10,
+            contentDescription = "تأخير ١٠ ثوانٍ",
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(20.dp),
+          )
+        }
+
+        FilledIconButton(
+          onClick = onTogglePlayPause,
+          colors = IconButtonDefaults.filledIconButtonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+          ),
+          modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .testTag("compact_audio_play_pause"),
+        ) {
+          if (audioState.isBuffering) {
+            CircularProgressIndicator(
+              color = MaterialTheme.colorScheme.onPrimary,
+              strokeWidth = 2.dp,
+              modifier = Modifier.size(18.dp),
+            )
+          } else {
+            Icon(
+              imageVector = if (audioState.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+              contentDescription = "تشغيل أو إيقاف مؤقت",
+              modifier = Modifier.size(22.dp),
+            )
+          }
+        }
+
+        IconButton(
+          onClick = { onSeekDelta(10_000L) },
+          modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .size(38.dp)
+            .testTag("compact_audio_forward_10s"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Forward10,
+            contentDescription = "تقديم ١٠ ثوانٍ",
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(20.dp),
+          )
+        }
+
+        IconButton(
+          onClick = onNextSurah,
+          modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .size(38.dp)
+            .testTag("compact_audio_next_surah"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.SkipPrevious,
+            contentDescription = "السورة التالية",
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(20.dp),
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+fun CompactRecitersPopup(
+  primaryReciters: List<VerifiedReciter>,
+  additionalReciters: List<VerifiedReciter>,
+  activeReciter: VerifiedReciter?,
+  isLoading: Boolean,
+  errorMessage: String?,
+  isPdfMode: Boolean,
+  onRetryLoad: () -> Unit,
+  onSelectReciter: (VerifiedReciter) -> Unit,
+  onDismiss: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  BackHandler(onBack = onDismiss)
+  var showAllCatalog by remember { mutableStateOf(false) }
+  val displayed = remember(primaryReciters, additionalReciters, showAllCatalog) {
+    if (showAllCatalog) primaryReciters + additionalReciters else primaryReciters
+  }
+  val noopInteraction = remember { MutableInteractionSource() }
+
+  Surface(
+    modifier = modifier
+      .widthIn(max = 520.dp)
+      .fillMaxWidth()
+      .padding(horizontal = 14.dp)
+      .heightIn(max = 260.dp)
+      .clickable(interactionSource = noopInteraction, indication = null, onClick = {})
+      .testTag("compact_reciters_popup"),
+    shape = RoundedCornerShape(16.dp),
+    color = MaterialTheme.colorScheme.surface,
+    tonalElevation = 8.dp,
+    shadowElevation = 10.dp,
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)),
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          text = "اختر القارئ",
+          style = MaterialTheme.typography.titleSmall,
+          color = MaterialTheme.colorScheme.primary,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+          if (!isPdfMode && additionalReciters.isNotEmpty()) {
+            FilterChip(
+              selected = showAllCatalog,
+              onClick = { showAllCatalog = !showAllCatalog },
+              label = {
+                Text(
+                  text = if (showAllCatalog) "المعتمدة" else "الكل (${primaryReciters.size + additionalReciters.size})",
+                  style = MaterialTheme.typography.labelSmall,
+                )
+              },
+            )
+          }
+          IconButton(
+            onClick = onDismiss,
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .size(32.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Close,
+              contentDescription = "إغلاق قائمة القراء",
+              modifier = Modifier.size(18.dp),
+            )
+          }
+        }
+      }
+
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+      when {
+        isLoading -> {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(100.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            CircularProgressIndicator(
+              color = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(24.dp),
+            )
+          }
+        }
+
+        errorMessage != null -> {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            Text(
+              text = errorMessage,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.error,
+              textAlign = TextAlign.Center,
+            )
+            OutlinedButton(onClick = onRetryLoad) {
+              Text("إعادة المحاولة")
+            }
+          }
+        }
+
+        displayed.isEmpty() -> {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(80.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(
+              text = "لا يوجد قارئ متاح لهذه الرواية حاليًا",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              textAlign = TextAlign.Center,
+            )
+          }
+        }
+
+        else -> {
+          LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(vertical = 4.dp),
+          ) {
+            items(displayed, key = { "popup_${it.orderIndex}_${it.key}" }) { reciter ->
+              val isSelected = activeReciter?.key == reciter.key && reciter.isPlayable
+              val enabled = reciter.isPlayable
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .heightIn(min = 48.dp)
+                  .alpha(if (enabled) 1f else 0.52f)
+                  .clickable(enabled = enabled) {
+                    onSelectReciter(reciter)
+                    onDismiss()
+                  }
+                  .padding(horizontal = 6.dp, vertical = 4.dp)
+                  .testTag("compact_popup_reciter_${reciter.orderIndex}"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = reciter.displayName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                  val note = if (reciter.isPdfModeReciter && reciter.riwayaName.isNotBlank()) {
+                    reciter.riwayaName
+                  } else {
+                    reciter.statusNote
+                  }
+                  if (note.isNotBlank()) {
+                    Text(
+                      text = note,
+                      style = MaterialTheme.typography.labelSmall,
+                      color = if (reciter.status == ReciterMatchStatus.VERIFIED || reciter.isPdfModeReciter) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                      } else {
+                        MaterialTheme.colorScheme.error
+                      },
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                    )
+                  }
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                if (isSelected) {
+                  Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = "القارئ المختار",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                  )
+                } else if (!enabled) {
+                  Icon(
+                    imageVector = Icons.Filled.ErrorOutline,
+                    contentDescription = "غير متاح",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(16.dp),
+                  )
+                }
+              }
+              HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+            }
+          }
+        }
+      }
+    }
   }
 }

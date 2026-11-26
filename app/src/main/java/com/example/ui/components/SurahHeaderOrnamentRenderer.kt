@@ -156,7 +156,7 @@ internal object SurahHeaderOrnamentRenderer {
   ) {
     if (width <= 8f || height <= 8f) return
 
-    // Strictly fit inside the surah_name slot bounds while preserving original 'header' aspect ratio (8240 : 1016)
+    // Strictly fit ornamental glyph inside the surah_name slot bounds while preserving original 'header' aspect ratio (8240 : 1016)
     val vertPad = dpFn(1.5f).coerceAtMost(height * 0.08f)
     val box = computeHeaderGlyphBounds(left, top, width, height, vertPadPx = vertPad)
     val glyphRect = RectF(box.left, box.top, box.right, box.bottom)
@@ -173,23 +173,21 @@ internal object SurahHeaderOrnamentRenderer {
       strokeCap = Paint.Cap.ROUND
     }
 
-    val isTajweed = edition == MushafEdition.TAJWEED_V4
-
-    // Rich dark green backing for Tajweed, deep blue backing for Madinah
-    val bgTopBottomColor = if (isTajweed) 0xFF0A4E2F.toInt() else 0xFF0E4F8F.toInt()
-    val bgCenterColor = if (isTajweed) 0xFF05361F.toInt() else 0xFF083566.toInt()
-    val circleTopColor = if (isTajweed) 0xFF0D643C.toInt() else 0xFF1261AD.toInt()
-    val circleBottomColor = if (isTajweed) 0xFF073E24.toInt() else 0xFF093C70.toInt()
+    // Unified shared palette for both Madinah and Tajweed mushafs (identical appearance)
+    val bgTopBottomColor = 0xFF0A4E2F.toInt()
+    val bgCenterColor = 0xFF05361F.toInt()
+    val circleTopColor = 0xFF0D643C.toInt()
+    val circleBottomColor = 0xFF073E24.toInt()
     val glyphGoldColor = if (effectiveDark) 0xFFEDC96D.toInt() else 0xFFE6BF5A.toInt()
     val panelWhiteColor = 0xFFFFFFFF.toInt()
     val panelInkColor = 0xFF111514.toInt()
 
-    // 1. Colored frame background strictly inside the outer bounds of the glyph
+    // 1. Colored frame background spanning edge-to-edge across the entire [left, left + width] between inner gold lines
     val bgInset = (glyphH * 0.015f).coerceAtLeast(0.5f)
     val bgRect = RectF(
-      glyphRect.left + bgInset,
+      left,
       glyphRect.top + bgInset,
-      glyphRect.right - bgInset,
+      left + width,
       glyphRect.bottom - bgInset,
     )
     fillPaint.shader = LinearGradient(
@@ -203,6 +201,41 @@ internal object SurahHeaderOrnamentRenderer {
     )
     canvas.drawRect(bgRect, fillPaint)
     fillPaint.shader = null
+
+    // 1b. When container width exceeds centered glyphRect width (e.g., wide/landscape slots),
+    // extend matching top & bottom ornamental gold rails cleanly out to both inner gold lines with zero gap.
+    if (glyphRect.left > left + 0.5f || glyphRect.right < (left + width) - 0.5f) {
+      val railStroke = (glyphH * 0.042f).coerceIn(dpFn(0.9f), dpFn(2.2f))
+      val innerRailStroke = (railStroke * 0.55f).coerceAtLeast(dpFn(0.5f))
+      val outerRailInset = bgInset + railStroke * 0.5f
+      val innerRailInset = bgInset + glyphH * 0.085f
+      val leftWingEnd = (glyphRect.left + dpFn(1.5f)).coerceAtMost(left + width)
+      val rightWingStart = (glyphRect.right - dpFn(1.5f)).coerceAtLeast(left)
+
+      strokePaint.color = glyphGoldColor
+      strokePaint.strokeCap = Paint.Cap.BUTT
+      strokePaint.strokeWidth = railStroke
+      if (leftWingEnd > left) {
+        canvas.drawLine(left, glyphRect.top + outerRailInset, leftWingEnd, glyphRect.top + outerRailInset, strokePaint)
+        canvas.drawLine(left, glyphRect.bottom - outerRailInset, leftWingEnd, glyphRect.bottom - outerRailInset, strokePaint)
+      }
+      if (rightWingStart < left + width) {
+        canvas.drawLine(rightWingStart, glyphRect.top + outerRailInset, left + width, glyphRect.top + outerRailInset, strokePaint)
+        canvas.drawLine(rightWingStart, glyphRect.bottom - outerRailInset, left + width, glyphRect.bottom - outerRailInset, strokePaint)
+      }
+
+      strokePaint.color = (glyphGoldColor and 0x00FFFFFF) or 0xA8000000.toInt()
+      strokePaint.strokeWidth = innerRailStroke
+      if (leftWingEnd > left) {
+        canvas.drawLine(left, glyphRect.top + innerRailInset, leftWingEnd, glyphRect.top + innerRailInset, strokePaint)
+        canvas.drawLine(left, glyphRect.bottom - innerRailInset, leftWingEnd, glyphRect.bottom - innerRailInset, strokePaint)
+      }
+      if (rightWingStart < left + width) {
+        canvas.drawLine(rightWingStart, glyphRect.top + innerRailInset, left + width, glyphRect.top + innerRailInset, strokePaint)
+        canvas.drawLine(rightWingStart, glyphRect.bottom - innerRailInset, left + width, glyphRect.bottom - innerRailInset, strokePaint)
+      }
+      strokePaint.strokeCap = Paint.Cap.ROUND
+    }
 
     // 2. Circle discs behind the left & right glyph medallions
     val cy = glyphRect.top + glyphH * CIRCLE_NY
@@ -227,7 +260,7 @@ internal object SurahHeaderOrnamentRenderer {
     val cartouchePath = buildCartouchePathFromC35(glyphRect)
     fillPaint.color = panelWhiteColor
     canvas.drawPath(cartouchePath, fillPaint)
-    // Slight bleed stroke underneath the gold cartouche wall so zero green/blue hairlines show
+    // Slight bleed stroke underneath the gold cartouche wall so zero background hairlines show
     strokePaint.color = panelWhiteColor
     strokePaint.strokeWidth = (glyphH * 0.022f).coerceIn(dpFn(0.8f), dpFn(2.0f))
     canvas.drawPath(cartouchePath, strokePaint)

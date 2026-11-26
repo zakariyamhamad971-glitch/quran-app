@@ -91,6 +91,8 @@ import com.example.data.quran.MushafRegistry
 import com.example.data.quran.SurahMeta
 import com.example.player.AudioPlaybackUiState
 import com.example.ui.components.AudioPickerSheetMode
+import com.example.ui.components.CompactDockedAudioPlayer
+import com.example.ui.components.CompactRecitersPopup
 import com.example.ui.components.CreditsAndIntegrityDialog
 import com.example.ui.components.FullScreenQuranIndex
 import com.example.ui.components.MushafPageFrame
@@ -164,6 +166,8 @@ private fun ReaderScreenContent(
   var isIndexOpen by rememberSaveable { mutableStateOf(true) }
   var hasSelectedSurah by rememberSaveable { mutableStateOf(false) }
   var isChromeVisible by rememberSaveable { mutableStateOf(true) }
+  var isCompactPlayerDocked by rememberSaveable { mutableStateOf(false) }
+  var showCompactReciterPopup by remember { mutableStateOf(false) }
   var activeAudioSheet by remember { mutableStateOf<ReaderAudioSheet?>(null) }
   var showSettingsSheet by remember { mutableStateOf(false) }
   var showMushafsManager by rememberSaveable { mutableStateOf(false) }
@@ -172,6 +176,18 @@ private fun ReaderScreenContent(
   var showTajweedLegend by remember { mutableStateOf(false) }
   var showCreditsDialog by remember { mutableStateOf(false) }
   val requestNotifPermissionIfNeeded = rememberNotificationPermissionRequester()
+
+  val isAudioPlaying by viewModel.isAudioPlayingFlow.collectAsStateWithLifecycle()
+  LaunchedEffect(isAudioPlaying) {
+    if (isAudioPlaying) {
+      isCompactPlayerDocked = true
+    }
+  }
+  LaunchedEffect(isChromeVisible, isIndexOpen) {
+    if (!isChromeVisible || isIndexOpen) {
+      showCompactReciterPopup = false
+    }
+  }
 
   val speeds = remember { listOf(0.75f, 1.0f, 1.15f, 1.25f) }
   val onCycleSpeed: (Float) -> Unit = remember(viewModel, speeds) {
@@ -236,7 +252,7 @@ private fun ReaderScreenContent(
         isDarkTheme = isDarkTheme,
         isPdfMode = uiState.activeMushafIsPdf,
         settledAvailWidthDp = maxWidth,
-        settledAvailHeightDp = (maxHeight - 8.dp).coerceAtLeast(1.dp),
+        settledAvailHeightDp = maxHeight.coerceAtLeast(1.dp),
         pagesStateFlow = viewModel.pagesState,
         activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
         selectedVerseKeyProvider = selectedVerseKeyProvider,
@@ -246,9 +262,7 @@ private fun ReaderScreenContent(
         onRetry = onRetryPage,
         onToggleChrome = onToggleChrome,
         onVerseLongPressed = onVerseLongPressed,
-        modifier = Modifier
-          .fillMaxSize()
-          .padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxSize(),
       )
 
       // Top overlay bar (slides down from top without shifting the page)
@@ -266,6 +280,12 @@ private fun ReaderScreenContent(
           isCompactWidth = maxWidth < 560.dp,
           onSelectPageViewMode = remember(viewModel) { { mode -> viewModel.setPageViewMode(mode) } },
           onOpenIndex = remember { { isIndexOpen = true } },
+          onOpenMushafsManager = remember(viewModel) {
+            {
+              viewModel.loadPdfManifest()
+              showMushafsManager = true
+            }
+          },
           onOpenSettings = remember { { showSettingsSheet = true } },
           onOpenTajweedLegend = remember(viewModel) {
             {
@@ -283,7 +303,7 @@ private fun ReaderScreenContent(
         )
       }
 
-      // Bottom circular audio buttons ("القرّاء" & "التشغيل") overlayed cleanly at bottom center
+      // Bottom audio overlay: docked compact player (plus anchored reciters popup) above the two round buttons
       AnimatedVisibility(
         visible = isChromeVisible && !isIndexOpen,
         enter = slideInVertically(animationSpec = tween(durationMillis = 240)) { it } +
@@ -292,11 +312,58 @@ private fun ReaderScreenContent(
           fadeOut(animationSpec = tween(durationMillis = 160)),
         modifier = Modifier.align(Alignment.BottomCenter),
       ) {
-        ReaderBottomAudioButtonsHost(
-          audioStateFlow = viewModel.audioState,
-          onOpenReciters = remember { { activeAudioSheet = ReaderAudioSheet.RECITERS } },
-          onOpenPlayback = remember { { activeAudioSheet = ReaderAudioSheet.PLAYBACK } },
-        )
+        Column(
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          if (isCompactPlayerDocked) {
+            if (showCompactReciterPopup) {
+              CompactRecitersPopupHost(
+                audioStateFlow = viewModel.audioState,
+                primaryReciters = uiState.primaryReciters,
+                additionalReciters = uiState.additionalReciters,
+                isLoading = uiState.recitersLoading,
+                errorMessage = uiState.recitersError,
+                isPdfMode = uiState.activeMushafIsPdf,
+                onRetryLoad = remember(viewModel) { { viewModel.retryLoadReciters() } },
+                onSelectReciter = remember(viewModel) { { reciter -> viewModel.selectReciter(reciter) } },
+                onDismiss = remember { { showCompactReciterPopup = false } },
+              )
+            }
+            CompactDockedAudioPlayerHost(
+              audioStateFlow = viewModel.audioState,
+              isReciterPopupOpen = showCompactReciterPopup,
+              onToggleReciterPopup = remember { { showCompactReciterPopup = !showCompactReciterPopup } },
+              onExpandFullSheet = remember {
+                {
+                  showCompactReciterPopup = false
+                  activeAudioSheet = ReaderAudioSheet.PLAYBACK
+                }
+              },
+              onTogglePlayPause = remember(viewModel) { { viewModel.playbackController.togglePlayPause() } },
+              onSeekTo = remember(viewModel) { { pos -> viewModel.playbackController.seekTo(pos) } },
+              onSeekDelta = remember(viewModel) { { delta -> viewModel.playbackController.seekByDelta(delta) } },
+              onNextSurah = remember(viewModel) { { viewModel.playbackController.nextSurah() } },
+              onPrevSurah = remember(viewModel) { { viewModel.playbackController.prevSurah() } },
+              onCycleSpeed = onCycleSpeed,
+            )
+          }
+          ReaderBottomAudioButtonsHost(
+            audioStateFlow = viewModel.audioState,
+            onOpenReciters = remember {
+              {
+                showCompactReciterPopup = false
+                activeAudioSheet = ReaderAudioSheet.RECITERS
+              }
+            },
+            onOpenPlayback = remember {
+              {
+                showCompactReciterPopup = false
+                activeAudioSheet = ReaderAudioSheet.PLAYBACK
+              }
+            },
+          )
+        }
       }
       // Non-blocking one-time background global font size calculation indicator
       ReaderFontSizingBannerHost(
@@ -436,6 +503,10 @@ private fun ReaderScreenContent(
           },
           onClearRange = { viewModel.clearAyahRange() },
           onDismiss = { activeAudioSheet = null },
+          onPlaybackStarted = {
+            isCompactPlayerDocked = true
+            activeAudioSheet = null
+          },
         )
       }
 
@@ -564,15 +635,15 @@ private fun ReaderPagerHost(
 
   val (settledSlotW, settledSlotH) = remember(effectiveTwoPageMode, settledAvailWidthDp, settledAvailHeightDp) {
     if (effectiveTwoPageMode) {
-      ((settledAvailWidthDp - 8.dp) / 2f).coerceAtLeast(1.dp) to settledAvailHeightDp.coerceAtLeast(1.dp)
+      (settledAvailWidthDp / 2f).coerceAtLeast(1.dp) to settledAvailHeightDp.coerceAtLeast(1.dp)
     } else if (settledAvailHeightDp > 0.dp && (settledAvailWidthDp / settledAvailHeightDp) > MUSHAF_PAGE_ASPECT_RATIO) {
       (settledAvailHeightDp * MUSHAF_PAGE_ASPECT_RATIO) to settledAvailHeightDp
     } else {
       settledAvailWidthDp to (settledAvailWidthDp / MUSHAF_PAGE_ASPECT_RATIO)
     }
   }
-  val bitmapWidthPx = with(density) { (settledSlotW - 6.dp).coerceAtLeast(1.dp).roundToPx() }
-  val bitmapHeightPx = with(density) { (settledSlotH - 4.dp).coerceAtLeast(1.dp).roundToPx() }
+  val bitmapWidthPx = with(density) { settledSlotW.coerceAtLeast(1.dp).roundToPx() }
+  val bitmapHeightPx = with(density) { settledSlotH.coerceAtLeast(1.dp).roundToPx() }
 
   LaunchedEffect(bitmapWidthPx, bitmapHeightPx, density.density, density.fontScale, effectiveTwoPageMode) {
     onUpdateRenderSpec(bitmapWidthPx, bitmapHeightPx, density.density, density.fontScale, effectiveTwoPageMode)
@@ -634,8 +705,7 @@ private fun ReaderPagerHost(
               .fillMaxSize()
               .pointerInput(toggleChromeIfNotSwiping) {
                 detectTapGestures(onTap = { toggleChromeIfNotSwiping() })
-              }
-              .padding(horizontal = 4.dp),
+              },
           ) {
             MushafPageFrame(
               pageNumber = rightPage,
@@ -1172,6 +1242,67 @@ private fun ReaderBottomAudioButtonsHost(
 }
 
 @Composable
+private fun CompactDockedAudioPlayerHost(
+  audioStateFlow: StateFlow<AudioPlaybackUiState>,
+  isReciterPopupOpen: Boolean,
+  onToggleReciterPopup: () -> Unit,
+  onExpandFullSheet: () -> Unit,
+  onTogglePlayPause: () -> Unit,
+  onSeekTo: (Long) -> Unit,
+  onSeekDelta: (Long) -> Unit,
+  onNextSurah: () -> Unit,
+  onPrevSurah: () -> Unit,
+  onCycleSpeed: (Float) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val audioState by audioStateFlow.collectAsStateWithLifecycle()
+  CompactDockedAudioPlayer(
+    audioState = audioState,
+    isReciterPopupOpen = isReciterPopupOpen,
+    onToggleReciterPopup = onToggleReciterPopup,
+    onExpandFullSheet = onExpandFullSheet,
+    onTogglePlayPause = onTogglePlayPause,
+    onSeekTo = onSeekTo,
+    onSeekDelta = onSeekDelta,
+    onNextSurah = onNextSurah,
+    onPrevSurah = onPrevSurah,
+    onCycleSpeed = { onCycleSpeed(audioState.playbackSpeed) },
+    modifier = modifier,
+  )
+}
+
+@Composable
+private fun CompactRecitersPopupHost(
+  audioStateFlow: StateFlow<AudioPlaybackUiState>,
+  primaryReciters: List<VerifiedReciter>,
+  additionalReciters: List<VerifiedReciter>,
+  isLoading: Boolean,
+  errorMessage: String?,
+  isPdfMode: Boolean,
+  onRetryLoad: () -> Unit,
+  onSelectReciter: (VerifiedReciter) -> Unit,
+  onDismiss: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val activeReciter by remember(audioStateFlow) {
+    audioStateFlow.map { it.currentReciter }.distinctUntilChanged()
+  }.collectAsStateWithLifecycle(initialValue = audioStateFlow.value.currentReciter)
+
+  CompactRecitersPopup(
+    primaryReciters = primaryReciters,
+    additionalReciters = additionalReciters,
+    activeReciter = activeReciter,
+    isLoading = isLoading,
+    errorMessage = errorMessage,
+    isPdfMode = isPdfMode,
+    onRetryLoad = onRetryLoad,
+    onSelectReciter = onSelectReciter,
+    onDismiss = onDismiss,
+    modifier = modifier,
+  )
+}
+
+@Composable
 private fun ReaderPlaybackSheetHost(
   audioStateFlow: StateFlow<AudioPlaybackUiState>,
   surahs: List<SurahMeta>,
@@ -1187,6 +1318,7 @@ private fun ReaderPlaybackSheetHost(
   onPlayRange: (RecitationRange) -> Unit,
   onClearRange: () -> Unit,
   onDismiss: () -> Unit,
+  onPlaybackStarted: () -> Unit,
 ) {
   val audioState by audioStateFlow.collectAsStateWithLifecycle()
   PlaybackControlSheet(
@@ -1202,6 +1334,7 @@ private fun ReaderPlaybackSheetHost(
     onPlayRange = onPlayRange,
     onClearRange = onClearRange,
     onDismiss = onDismiss,
+    onPlaybackStarted = onPlaybackStarted,
     isPdfMode = isPdfMode,
     recitersEmptyForRiwaya = recitersEmptyForRiwaya,
   )
@@ -1252,6 +1385,7 @@ private fun QabasatTopBar(
   isCompactWidth: Boolean,
   onSelectPageViewMode: (PageViewMode) -> Unit,
   onOpenIndex: () -> Unit,
+  onOpenMushafsManager: () -> Unit,
   onOpenSettings: () -> Unit,
   onOpenTajweedLegend: () -> Unit,
   onToggleTheme: () -> Unit,
@@ -1270,7 +1404,7 @@ private fun QabasatTopBar(
     Column(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(horizontal = 8.dp, vertical = 4.dp),
+        .padding(horizontal = 6.dp, vertical = 4.dp),
     ) {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1279,24 +1413,47 @@ private fun QabasatTopBar(
       ) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onOpenIndex)
-            .padding(horizontal = 6.dp, vertical = 4.dp)
-            .testTag("app_title_index_button"),
+          horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Filled.MenuBook,
-            contentDescription = "فهرس السور والأجزاء والبحث عن الآيات",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(22.dp),
-          )
-          Spacer(Modifier.width(5.dp))
-          Text(
-            text = "قبسات",
-            style = MaterialTheme.typography.headlineSmall.copy(fontFamily = AmiriFontFamily),
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+              .clip(RoundedCornerShape(12.dp))
+              .clickable(onClick = onOpenIndex)
+              .padding(horizontal = 4.dp, vertical = 4.dp)
+              .testTag("app_title_index_button"),
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.MenuBook,
+              contentDescription = "فهرس السور والأجزاء والبحث عن الآيات",
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(21.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+              text = "قبسات",
+              style = MaterialTheme.typography.headlineSmall.copy(fontFamily = AmiriFontFamily),
+              color = MaterialTheme.colorScheme.primary,
+            )
+          }
+
+          Surface(
+            shape = RoundedCornerShape(8.dp),
             color = MaterialTheme.colorScheme.primary,
-          )
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .clip(RoundedCornerShape(8.dp))
+              .clickable(onClick = onOpenMushafsManager)
+              .testTag("top_bar_mushafs_button"),
+          ) {
+            Text(
+              text = "مصاحف",
+              style = MaterialTheme.typography.labelMedium,
+              color = MaterialTheme.colorScheme.onPrimary,
+              maxLines = 1,
+              modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+            )
+          }
         }
 
         if (!isCompactWidth) {

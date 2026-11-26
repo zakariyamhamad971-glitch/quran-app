@@ -2,6 +2,7 @@ package com.example
 
 import android.content.Context
 import android.graphics.Typeface
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.integrity.VerifiedDiskCache
 import com.example.data.prefs.BackgroundTheme
@@ -333,7 +334,7 @@ class ExampleRobolectricTest {
 
   @Test
   fun `layout cache version is bumped and renderer enforces uniform non-clipping layout in portrait and two-page modes`() = runBlocking {
-    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 5)
+    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 6)
 
     val context = ApplicationProvider.getApplicationContext<Context>()
     val renderer = MushafPageBitmapRenderer(context)
@@ -343,6 +344,9 @@ class ExampleRobolectricTest {
       3 to SurahMeta(3, "آل عمران", 89, 200, false, 50, 76, false),
       97 to SurahMeta(97, "القدر", 25, 5, false, 598, 598, true),
       98 to SurahMeta(98, "البينة", 100, 8, false, 598, 598, false),
+      112 to SurahMeta(112, "الإخلاص", 22, 4, false, 604, 604, true),
+      113 to SurahMeta(113, "الفلق", 20, 5, false, 604, 604, true),
+      114 to SurahMeta(114, "الناس", 21, 6, false, 604, 604, true),
     )
 
     val portraitSpec = PageRenderSpec(
@@ -521,8 +525,8 @@ class ExampleRobolectricTest {
     )
     assertFalse(rerendered === portraitPage2)
 
-    // Verify target debug pages 1, 2, 7, 8, 50, 598 build cleanly from bundled QUL JSON and stay within bounds
-    val targetPages = listOf(1, 2, 7, 8, 50, 598)
+    // Verify target pages 1, 2, 3, 7, 8, 50, 598, 604 build cleanly from bundled QUL JSON and stay within bounds
+    val targetPages = listOf(1, 2, 3, 7, 8, 50, 598, 604)
     for (edition in listOf(MushafEdition.MADINAH_1421, MushafEdition.TAJWEED_V4)) {
       for (pageNum in targetPages) {
         val qulLines = com.example.data.quran.QulPageLayoutLoader.getPageLines(context, edition, pageNum)
@@ -853,5 +857,111 @@ class ExampleRobolectricTest {
       "Tajweed page 2 line 8 center ($line8Center) should be centered in ${tajweedSpec.widthPx}",
       kotlin.math.abs(line8Center - tajweedSpec.widthPx * 0.5f) < tajweedSpec.widthPx * 0.08f,
     )
+  }
+
+  @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+  @Test
+  fun `madinah and tajweed mushafs share identical full-bleed gold frame and edge-to-edge surah banner`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val renderer = MushafPageBitmapRenderer(context)
+    val surahs = mapOf(
+      1 to SurahMeta(1, "الفاتحة", 5, 7, false, 1, 1, false),
+      112 to SurahMeta(112, "الإخلاص", 22, 4, false, 604, 604, true),
+    )
+
+    val emptyPage1 = com.example.data.quran.MushafPageData(
+      pageNumber = 1,
+      surahIds = listOf(1),
+      juzNumber = 1,
+      hizbNumber = 1,
+      lines = listOf(
+        MushafLine.SurahHeaderLine(lineNumber = 1, surah = surahs.getValue(1)),
+      ),
+    )
+
+    val fullPageWithTopBanner = com.example.data.quran.MushafPageData(
+      pageNumber = 3,
+      surahIds = listOf(112),
+      juzNumber = 30,
+      hizbNumber = 60,
+      lines = buildList {
+        add(MushafLine.SurahHeaderLine(lineNumber = 1, surah = surahs.getValue(112)))
+        repeat(14) { idx ->
+          add(MushafLine.EmptyLine(lineNumber = idx + 2))
+        }
+      },
+    )
+
+    val portraitMadinah = PageRenderSpec(
+      widthPx = 620,
+      heightPx = 1000,
+      density = 2.0f,
+      fontScale = 1.0f,
+      edition = MushafEdition.MADINAH_1421,
+      isDarkTheme = false,
+      backgroundTheme = BackgroundTheme.WHITE,
+      isTwoPageMode = false,
+      globalIntroFontSp = 18f,
+      globalBodyFontSp = 15f,
+    )
+    val portraitTajweed = portraitMadinah.copy(edition = MushafEdition.TAJWEED_V4)
+    val landscapeMadinah = portraitMadinah.copy(widthPx = 780, heightPx = 520, isTwoPageMode = true)
+    val landscapeTajweed = landscapeMadinah.copy(edition = MushafEdition.TAJWEED_V4)
+
+    for (testPage in listOf(emptyPage1, fullPageWithTopBanner)) {
+      for ((mSpec, tSpec) in listOf(portraitMadinah to portraitTajweed, landscapeMadinah to landscapeTajweed)) {
+        val mBmp = renderer.renderOrGet(testPage, mSpec, Typeface.SERIF, Typeface.SERIF, true, surahs)
+          .imageBitmap.asAndroidBitmap()
+        val tBmp = renderer.renderOrGet(testPage, tSpec, Typeface.SERIF, Typeface.SERIF, true, surahs)
+          .imageBitmap.asAndroidBitmap()
+
+        assertEquals(mBmp.width, tBmp.width)
+        assertEquals(mBmp.height, tBmp.height)
+
+        // Outer frame and surah-name banner pixels must be 100% identical across Madinah & Tajweed
+        for (y in 0 until mBmp.height step 2) {
+          for (x in 0 until mBmp.width step 2) {
+            assertEquals(
+              "Frame/banner pixel mismatch at ($x,$y) for page=${testPage.pageNumber}, twoPage=${mSpec.isTwoPageMode}",
+              mBmp.getPixel(x, y),
+              tBmp.getPixel(x, y),
+            )
+          }
+        }
+
+        // Gold outer frame must touch the full width & height edges with zero outer paper gap
+        val midX = mBmp.width / 2
+        val midY = mBmp.height / 2
+        val edgeTopPixel = mBmp.getPixel(midX, 0)
+        val edgeBotPixel = mBmp.getPixel(midX, mBmp.height - 1)
+        val edgeLeftPixel = mBmp.getPixel(0, midY)
+        val edgeRightPixel = mBmp.getPixel(mBmp.width - 1, midY)
+        assertFalse("Top edge should contain gold frame, not pure white", edgeTopPixel == android.graphics.Color.WHITE)
+        assertFalse("Bottom edge should contain gold frame, not pure white", edgeBotPixel == android.graphics.Color.WHITE)
+        assertFalse("Left edge should contain gold frame, not pure white", edgeLeftPixel == android.graphics.Color.WHITE)
+        assertFalse("Right edge should contain gold frame, not pure white", edgeRightPixel == android.graphics.Color.WHITE)
+
+        // Banner must touch both inner gold lines edge-to-edge (just inside innerFrameLeft / innerFrameRight)
+        val innerLeftCheckX = (4.0f * mSpec.density + 2f).toInt()
+        val innerRightCheckX = mBmp.width - innerLeftCheckX - 1
+        var foundEdgeToEdgeRow = false
+        for (y in 20 until (mBmp.height - 20)) {
+          val leftPx = mBmp.getPixel(innerLeftCheckX, y)
+          val rightPx = mBmp.getPixel(innerRightCheckX, y)
+          val isLeftBanner = android.graphics.Color.red(leftPx) < 0x50 &&
+            android.graphics.Color.green(leftPx) > android.graphics.Color.red(leftPx)
+          val isRightBanner = android.graphics.Color.red(rightPx) < 0x50 &&
+            android.graphics.Color.green(rightPx) > android.graphics.Color.red(rightPx)
+          if (isLeftBanner && isRightBanner) {
+            foundEdgeToEdgeRow = true
+            break
+          }
+        }
+        assertTrue(
+          "Surah banner must span edge-to-edge between inner gold lines for page=${testPage.pageNumber}, twoPage=${mSpec.isTwoPageMode}",
+          foundEdgeToEdgeRow,
+        )
+      }
+    }
   }
 }

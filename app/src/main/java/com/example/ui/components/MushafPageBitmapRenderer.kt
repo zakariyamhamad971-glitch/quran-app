@@ -512,8 +512,8 @@ class MushafPageBitmapRenderer(
     fun dp(v: Float): Float = v * d
     fun sp(v: Float): Float = v * d * fs
 
-    val padH = dp(9f)
-    val padV = dp(7f)
+    val padH = dp(7.5f)
+    val padV = dp(5.5f)
     val contentTop = padV
     val contentBottom = h - padV
     val contentWidth = (w - padH * 2f).coerceAtLeast(1f)
@@ -568,7 +568,7 @@ class MushafPageBitmapRenderer(
     val bodyHeight = bodyHeightInt.toFloat().coerceAtLeast(1f)
     val d = spec.density
     val w = spec.widthPx.coerceAtLeast(1)
-    val contentWidth = (w - (9f * d) * 2f).coerceAtLeast(1f)
+    val contentWidth = (w - (7.5f * d) * 2f).coerceAtLeast(1f)
     val safetyMarginPx = maxOf(4f * d, contentWidth * 0.015f)
     val safeContentWidth = (contentWidth - safetyMarginPx * 2f).coerceAtLeast(1f)
     val safeWidthPx = safeContentWidth.roundToInt().coerceAtLeast(1)
@@ -751,6 +751,8 @@ class MushafPageBitmapRenderer(
     val effectiveDark: Boolean,
     val goldInt: Int,
     val inkInt: Int,
+    val innerFrameLeft: Float,
+    val innerFrameRight: Float,
     val bodyLeft: Float,
     val bodyTop: Float,
     val bodyRight: Float,
@@ -762,7 +764,10 @@ class MushafPageBitmapRenderer(
     val ibmMedium: Typeface,
     val surahNameV4: Typeface?,
     val quranCommon: Typeface?,
-  )
+  ) {
+    val innerFrameWidth: Float
+      get() = (innerFrameRight - innerFrameLeft).coerceAtLeast(1f)
+  }
 
   private fun drawCardChromeAndComputeBody(
     canvas: Canvas,
@@ -788,7 +793,7 @@ class MushafPageBitmapRenderer(
     val inkInt = if (effectiveDark) android.graphics.Color.WHITE else android.graphics.Color.BLACK
     val headerTintInt = if (effectiveDark) 0xFFE0B45C.toInt() else 0xFF12403C.toInt()
     val mutedInkInt = if (effectiveDark) withAlpha(0xFFFFFFFF.toInt(), 0.78f) else 0xFF424A47.toInt()
-    val frameAccentInt = if (effectiveDark) withAlpha(goldInt, 0.65f) else withAlpha(0xFF12403C.toInt(), 0.55f)
+    val frameAccentInt = if (effectiveDark) withAlpha(goldInt, 0.72f) else withAlpha(goldInt, 0.78f)
     val outlineCornerInt = if (effectiveDark) withAlpha(0xFF28322F.toInt(), 0.65f) else withAlpha(0xFFD9D5C9.toInt(), 0.65f)
 
     val amiriNormal = cachedAmiriNormal ?: Typeface.SERIF
@@ -796,21 +801,23 @@ class MushafPageBitmapRenderer(
     val ibmNormal = cachedIbmNormal ?: Typeface.SANS_SERIF
     val ibmMedium = cachedIbmMedium ?: ibmNormal
 
-    // 1. Paper surface (rounded card corners) + crisp double Mushaf frame
+    // 1. Paper surface + full-bleed double gold Mushaf frame running edge-to-edge with zero outer gap
     val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
 
-    val cardCorner = dp(10f)
+    val outerStrokeW = dp(1.5f)
+    val innerStrokeW = dp(0.75f)
+    val outerMargin = outerStrokeW * 0.5f
+    val innerMargin = dp(4.0f)
+    val cardCorner = dp(4f)
+    val outerCorner = dp(3.5f)
+    val innerCorner = dp(2.0f)
+
     fillPaint.color = paperInt
     canvas.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), cardCorner, cardCorner, fillPaint)
 
-    val outerMargin = dp(3.5f)
-    val innerMargin = dp(6.5f)
-    val outerCorner = dp(7f)
-    val innerCorner = dp(5f)
-
-    strokePaint.color = withAlpha(goldInt, 0.85f)
-    strokePaint.strokeWidth = dp(1.4f)
+    strokePaint.color = withAlpha(goldInt, 0.90f)
+    strokePaint.strokeWidth = outerStrokeW
     canvas.drawRoundRect(
       RectF(outerMargin, outerMargin, w - outerMargin, h - outerMargin),
       outerCorner,
@@ -819,7 +826,7 @@ class MushafPageBitmapRenderer(
     )
 
     strokePaint.color = frameAccentInt
-    strokePaint.strokeWidth = dp(0.75f)
+    strokePaint.strokeWidth = innerStrokeW
     canvas.drawRoundRect(
       RectF(innerMargin, innerMargin, w - innerMargin, h - innerMargin),
       innerCorner,
@@ -827,8 +834,8 @@ class MushafPageBitmapRenderer(
       strokePaint,
     )
 
-    val dotRadius = dp(2.2f)
-    val ringRadius = dp(12f) * 0.24f
+    val dotRadius = dp(2.0f)
+    val ringRadius = dp(10.5f) * 0.24f
     val cornerXs = floatArrayOf(innerMargin, w - innerMargin, innerMargin, w - innerMargin)
     val cornerYs = floatArrayOf(innerMargin, innerMargin, h - innerMargin, h - innerMargin)
     for (c in 0 until 4) {
@@ -839,9 +846,12 @@ class MushafPageBitmapRenderer(
       canvas.drawCircle(cornerXs[c], cornerYs[c], ringRadius, strokePaint)
     }
 
-    // 2. Inner content box matching horizontal = 9.dp, vertical = 7.dp
-    val padH = dp(9f)
-    val padV = dp(7f)
+    val innerFrameLeft = innerMargin + innerStrokeW * 0.5f
+    val innerFrameRight = w - innerMargin - innerStrokeW * 0.5f
+
+    // 2. Inner content box with clean breathing room inside the inner gold frame
+    val padH = dp(7.5f)
+    val padV = dp(5.5f)
     val contentLeft = padH
     val contentTop = padV
     val contentRight = w - padH
@@ -1044,6 +1054,8 @@ class MushafPageBitmapRenderer(
       effectiveDark = effectiveDark,
       goldInt = goldInt,
       inkInt = inkInt,
+      innerFrameLeft = innerFrameLeft,
+      innerFrameRight = innerFrameRight,
       bodyLeft = contentLeft,
       bodyTop = bodyTop,
       bodyRight = contentRight,
@@ -1256,9 +1268,9 @@ class MushafPageBitmapRenderer(
             surah = line.surah,
             edition = spec.edition,
             effectiveDark = effectiveDark,
-            left = safeLeft,
+            left = chrome.innerFrameLeft,
             top = slotTop,
-            width = safeContentWidth,
+            width = chrome.innerFrameWidth,
             height = slotHeight,
             amiriBold = amiriBold,
             ibmMedium = ibmMedium,
@@ -1604,8 +1616,8 @@ class MushafPageBitmapRenderer(
       for (i in 0 until n) {
         val w = words[i]
         if (renderVectorTajweedMarkers && w.isEndMarker) {
-          sumW += fontSizePx * 1.32f
-          val mh = fontSizePx * 1.18f
+          sumW += (fontSizePx * 1.32f).roundToInt().coerceAtLeast(1).toFloat()
+          val mh = (fontSizePx * 1.18f).roundToInt().coerceAtLeast(1).toFloat()
           if (mh > maxMarkerH) maxMarkerH = mh
         } else {
           val tok = tokens[i]
@@ -1700,7 +1712,7 @@ class MushafPageBitmapRenderer(
       var leftOverhang = 0f
       for (i in 0 until n) {
         if (renderVectorTajweedMarkers && words[i].isEndMarker) {
-          estW += fontSizePx * 1.32f
+          estW += (fontSizePx * 1.32f).roundToInt().coerceAtLeast(1).toFloat()
         } else {
           val adv = paint.measureText(tokens[i])
           estW += adv
@@ -2006,8 +2018,8 @@ class MushafPageBitmapRenderer(
     val fontSizePx = fittedSp * density * fontScale
     paint.textSize = fontSizePx
 
-    val markerWidthF = fontSizePx * 1.32f
-    val markerHeightF = fontSizePx * 1.18f
+    val markerWidthF = (fontSizePx * 1.32f).roundToInt().coerceAtLeast(1).toFloat()
+    val markerHeightF = (fontSizePx * 1.18f).roundToInt().coerceAtLeast(1).toFloat()
     val wordWidths = FloatArray(n)
     var sumWordWidths = 0f
     for (i in 0 until n) {

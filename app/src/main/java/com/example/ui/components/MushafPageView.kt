@@ -224,9 +224,7 @@ fun MushafPageFrame(
 
   CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
     Box(
-      modifier = modifier
-        .fillMaxSize()
-        .padding(horizontal = 3.dp, vertical = 2.dp),
+      modifier = modifier.fillMaxSize(),
     ) {
       when (pageState) {
         null, PageLoadState.Loading -> {
@@ -234,8 +232,8 @@ fun MushafPageFrame(
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .background(paperColor, RoundedCornerShape(10.dp))
-              .border(1.dp, goldColor.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+              .background(paperColor, RoundedCornerShape(4.dp))
+              .border(1.dp, goldColor.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
               .pointerInput(onPageTapped) {
                 detectTapGestures(onTap = { onPageTapped() })
               },
@@ -261,8 +259,8 @@ fun MushafPageFrame(
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .background(paperColor, RoundedCornerShape(10.dp))
-              .border(1.dp, goldColor.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+              .background(paperColor, RoundedCornerShape(4.dp))
+              .border(1.dp, goldColor.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
               .pointerInput(onPageTapped) {
                 detectTapGestures(onTap = { onPageTapped() })
               },
