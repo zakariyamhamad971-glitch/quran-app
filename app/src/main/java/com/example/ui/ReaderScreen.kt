@@ -84,7 +84,6 @@ import com.example.data.audio.RecitationRange
 import com.example.data.audio.VerifiedReciter
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.PageViewMode
-import com.example.data.quran.GlobalFontSizingProgress
 import com.example.data.quran.MushafDownloadState
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafRegistry
@@ -365,15 +364,6 @@ private fun ReaderScreenContent(
           )
         }
       }
-      // Non-blocking one-time background global font size calculation indicator
-      ReaderFontSizingBannerHost(
-        progressFlow = viewModel.fontSizingProgress,
-        visibleInReader = !isIndexOpen,
-        modifier = Modifier
-          .align(Alignment.TopCenter)
-          .windowInsetsPadding(WindowInsets.statusBars)
-          .padding(top = if (isChromeVisible) 78.dp else 12.dp, start = 16.dp, end = 16.dp),
-      )
     }
 
     if (isIndexOpen) {
@@ -1597,48 +1587,4 @@ private fun EditionPill(
   }
 }
 
-@Composable
-private fun ReaderFontSizingBannerHost(
-  progressFlow: StateFlow<GlobalFontSizingProgress?>,
-  visibleInReader: Boolean,
-  modifier: Modifier = Modifier,
-) {
-  val progress by progressFlow.collectAsStateWithLifecycle()
-  AnimatedVisibility(
-    visible = visibleInReader && progress != null,
-    enter = fadeIn(animationSpec = tween(durationMillis = 180)),
-    exit = fadeOut(animationSpec = tween(durationMillis = 220)),
-    modifier = modifier,
-  ) {
-    val active = progress ?: return@AnimatedVisibility
-    val ratio = (active.completedPages.toFloat() / active.totalPages.coerceAtLeast(1).toFloat())
-      .coerceIn(0f, 1f)
-    Surface(
-      shape = RoundedCornerShape(18.dp),
-      color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
-      tonalElevation = 4.dp,
-      shadowElevation = 4.dp,
-      modifier = Modifier.testTag("global_font_sizing_progress_banner"),
-    ) {
-      Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-      ) {
-        Text(
-          text = "جاري توحيد حجم الخط (${active.completedPages}/${active.totalPages})",
-          style = MaterialTheme.typography.labelMedium,
-          color = MaterialTheme.colorScheme.onSurface,
-        )
-        Spacer(Modifier.height(5.dp))
-        LinearProgressIndicator(
-          progress = { ratio },
-          modifier = Modifier
-            .width(180.dp)
-            .height(3.dp)
-            .clip(RoundedCornerShape(2.dp)),
-        )
-      }
-    }
-  }
-}
 

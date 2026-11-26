@@ -9,12 +9,9 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.Layout
-import android.text.SpannableStringBuilder
-import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextDirectionHeuristics
 import android.text.TextPaint
-import android.text.style.ReplacementSpan
 import android.util.Log
 import android.util.LruCache
 import androidx.compose.runtime.Immutable
@@ -1391,59 +1388,41 @@ class MushafPageBitmapRenderer(
     return leftOverhang to rightOverhang
   }
 
-  private fun buildAyahLineSpannable(
-    words: List<MushafWord>,
-    tokens: Array<String>,
-    gaps: IntArray,
-    fittedSp: Float,
-    fontSizePx: Float,
-    renderVectorTajweedMarkers: Boolean,
-    goldInt: Int,
-    inkInt: Int,
-    effectiveDark: Boolean,
-    rosetteNumPaint: Paint,
-    density: Float,
-    fontScale: Float,
-  ): SpannableStringBuilder {
-    val n = words.size
-    val markerWidthPx = (fontSizePx * 1.32f).roundToInt().coerceAtLeast(1)
-    val markerHeightPx = (fontSizePx * 1.18f).roundToInt().coerceAtLeast(1)
-    val sb = SpannableStringBuilder()
-    for (i in 0 until n) {
-      val w = words[i]
-      if (i > 0) {
-        val gapStart = sb.length
-        sb.append(' ')
-        sb.setSpan(HorizontalGapSpan(gaps[i - 1]), gapStart, gapStart + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-      }
-      sb.append('\u200F')
-      if (renderVectorTajweedMarkers && w.isEndMarker) {
-        val spanStart = sb.length
-        sb.append('\uFFFC')
-        val arabicNum = toArabicIndicDigits(w.ayahNumber)
-        sb.setSpan(
-          TajweedRosetteReplacementSpan(
-            markerWidthPx = markerWidthPx,
-            markerHeightPx = markerHeightPx,
-            arabicDigits = arabicNum,
-            lineFontSp = fittedSp,
-            goldInt = goldInt,
-            inkInt = inkInt,
-            effectiveDark = effectiveDark,
-            numPaint = rosetteNumPaint,
-            density = density,
-            fontScale = fontScale,
-          ),
-          spanStart,
-          spanStart + 1,
-          Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-        )
-      } else {
-        sb.append(tokens[i])
-      }
-      sb.append('\u200F')
+  private data class MeasuredWordBox(
+    val widthPx: Float,
+    val drawOffsetX: Float,
+    val leftOverhangPx: Float,
+    val rightOverhangPx: Float,
+  )
+
+  private fun measureWordBox(
+    paint: TextPaint,
+    token: String,
+    boundsRect: Rect,
+  ): MeasuredWordBox {
+    if (token.isEmpty()) return MeasuredWordBox(0f, 0f, 0f, 0f)
+    val adv = paint.measureText(token)
+    paint.getTextBounds(token, 0, token.length, boundsRect)
+    val bboxW = (boundsRect.right - boundsRect.left).toFloat().coerceAtLeast(0f)
+    // Guard against any Android shaper returning 0/collapsed advance for Presentation Forms-A ligatures (U+FC5E..U+FC63)
+    return if (adv > 1f && (bboxW <= 1f || adv >= bboxW * 0.25f)) {
+      val leftOver = (-boundsRect.left.toFloat()).coerceAtLeast(0f)
+      val rightOver = (boundsRect.right.toFloat() - adv).coerceAtLeast(0f)
+      MeasuredWordBox(
+        widthPx = adv,
+        drawOffsetX = 0f,
+        leftOverhangPx = leftOver,
+        rightOverhangPx = rightOver,
+      )
+    } else {
+      val safeW = maxOf(adv, bboxW)
+      MeasuredWordBox(
+        widthPx = safeW,
+        drawOffsetX = if (bboxW > 1f) -boundsRect.left.toFloat() else 0f,
+        leftOverhangPx = 0f,
+        rightOverhangPx = 0f,
+      )
     }
-    return sb
   }
 
   private fun measureStaticLayoutLineSpanWidth(layout: StaticLayout): Float {
@@ -1621,18 +1600,17 @@ class MushafPageBitmapRenderer(
           if (mh > maxMarkerH) maxMarkerH = mh
         } else {
           val tok = tokens[i]
-          val adv = paint.measureText(tok)
-          sumW += adv
+          val box = measureWordBox(paint, tok, tokenBounds)
+          sumW += box.widthPx
           if (tok.isNotEmpty()) {
-            paint.getTextBounds(tok, 0, tok.length, tokenBounds)
             if (tokenBounds.top < inkMinTop) inkMinTop = tokenBounds.top
             if (tokenBounds.bottom > inkMaxBottom) inkMaxBottom = tokenBounds.bottom
             hasMeasuredInk = true
             if (i == 0) {
-              rightOverhang = (tokenBounds.right.toFloat() - adv).coerceAtLeast(0f)
+              rightOverhang = box.rightOverhangPx
             }
             if (i == n - 1) {
-              leftOverhang = (-tokenBounds.left.toFloat()).coerceAtLeast(0f)
+              leftOverhang = box.leftOverhangPx
             }
           }
         }
@@ -1706,7 +1684,6 @@ class MushafPageBitmapRenderer(
       val words = ayahLines[lineIdx].words
       val tokens = lineTokens[lineIdx]
       val n = words.size
-      val gaps = IntArray((n - 1).coerceAtLeast(0)) { naturalGapPx }
       var estW = naturalGapPx * (n - 1).coerceAtLeast(0).toFloat()
       var rightOverhang = 0f
       var leftOverhang = 0f
@@ -1714,39 +1691,13 @@ class MushafPageBitmapRenderer(
         if (renderVectorTajweedMarkers && words[i].isEndMarker) {
           estW += (fontSizePx * 1.32f).roundToInt().coerceAtLeast(1).toFloat()
         } else {
-          val adv = paint.measureText(tokens[i])
-          estW += adv
-          if (i == 0 || i == n - 1) {
-            val (lOver, rOver) = measureTokenHorizontalOverhangs(paint, tokens[i], adv, tokenBounds)
-            if (i == 0) rightOverhang = rOver
-            if (i == n - 1) leftOverhang = lOver
-          }
+          val box = measureWordBox(paint, tokens[i], tokenBounds)
+          estW += box.widthPx
+          if (i == 0) rightOverhang = box.rightOverhangPx
+          if (i == n - 1) leftOverhang = box.leftOverhangPx
         }
       }
-      val sb = buildAyahLineSpannable(
-        words = words,
-        tokens = tokens,
-        gaps = gaps,
-        fittedSp = candidateSp,
-        fontSizePx = fontSizePx,
-        renderVectorTajweedMarkers = renderVectorTajweedMarkers,
-        goldInt = goldInt,
-        inkInt = inkInt,
-        effectiveDark = effectiveDark,
-        rosetteNumPaint = rosetteNumPaint,
-        density = density,
-        fontScale = fontScale,
-      )
-      val probeW = maxOf(safeWidthPx * 2, ceil(estW).toInt() + 128)
-      val probeLayout = StaticLayout.Builder
-        .obtain(sb, 0, sb.length, paint, probeW)
-        .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-        .setTextDirection(TextDirectionHeuristics.RTL)
-        .setIncludePad(true)
-        .setMaxLines(2)
-        .build()
-      if (probeLayout.lineCount > 1) anyWrapped = true
-      val actualVisualW = measureStaticLayoutLineSpanWidth(probeLayout) + leftOverhang + rightOverhang
+      val actualVisualW = estW + leftOverhang + rightOverhang
       val ratio = actualVisualW / safeWidthF
       if (ratio > worstRatio) worstRatio = ratio
     }
@@ -2017,69 +1968,39 @@ class MushafPageBitmapRenderer(
     val fittedSp = uniformPageSp
     val fontSizePx = fittedSp * density * fontScale
     paint.textSize = fontSizePx
+    paint.textAlign = Paint.Align.LEFT
 
     val markerWidthF = (fontSizePx * 1.32f).roundToInt().coerceAtLeast(1).toFloat()
     val markerHeightF = (fontSizePx * 1.18f).roundToInt().coerceAtLeast(1).toFloat()
     val wordWidths = FloatArray(n)
-    var sumWordWidths = 0f
-    for (i in 0 until n) {
-      val ww = if (renderVectorTajweedMarkers && words[i].isEndMarker) {
-        markerWidthF
-      } else {
-        paint.measureText(tokens[i])
-      }
-      wordWidths[i] = ww
-      sumWordWidths += ww
-    }
-
+    val wordDrawOffsets = FloatArray(n)
     val boundsRect = Rect()
-    val rightOverhang = if (n > 0 && !(renderVectorTajweedMarkers && words[0].isEndMarker)) {
-      measureTokenHorizontalOverhangs(paint, tokens[0], wordWidths[0], boundsRect).second
-    } else {
-      0f
-    }
-    val leftOverhang = if (n > 0 && !(renderVectorTajweedMarkers && words[n - 1].isEndMarker)) {
-      measureTokenHorizontalOverhangs(paint, tokens[n - 1], wordWidths[n - 1], boundsRect).first
-    } else {
-      0f
+    var sumWordWidths = 0f
+    var rightOverhang = 0f
+    var leftOverhang = 0f
+    for (i in 0 until n) {
+      if (renderVectorTajweedMarkers && words[i].isEndMarker) {
+        wordWidths[i] = markerWidthF
+        wordDrawOffsets[i] = 0f
+      } else {
+        val box = measureWordBox(paint, tokens[i], boundsRect)
+        wordWidths[i] = box.widthPx
+        wordDrawOffsets[i] = box.drawOffsetX
+        if (i == 0) rightOverhang = box.rightOverhangPx
+        if (i == n - 1) leftOverhang = box.leftOverhangPx
+      }
+      sumWordWidths += wordWidths[i]
     }
 
     val naturalGapPx = (fontSizePx * 0.16f).roundToInt().coerceAtLeast(2)
     val gaps = IntArray((n - 1).coerceAtLeast(0)) { naturalGapPx }
-
-    // Probe natural StaticLayout width to account for any shaping/control delta on this font
-    val naturalSb = buildAyahLineSpannable(
-      words = words,
-      tokens = tokens,
-      gaps = gaps,
-      fittedSp = fittedSp,
-      fontSizePx = fontSizePx,
-      renderVectorTajweedMarkers = renderVectorTajweedMarkers,
-      goldInt = goldInt,
-      inkInt = inkInt,
-      effectiveDark = effectiveDark,
-      rosetteNumPaint = rosetteNumPaint,
-      density = density,
-      fontScale = fontScale,
-    )
-    val naturalEstW = sumWordWidths + naturalGapPx * (n - 1).coerceAtLeast(0)
-    val naturalProbeW = maxOf(safeWidthPx * 2, ceil(naturalEstW).toInt() + 128)
-    val naturalProbeLayout = StaticLayout.Builder
-      .obtain(naturalSb, 0, naturalSb.length, paint, naturalProbeW)
-      .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-      .setTextDirection(TextDirectionHeuristics.RTL)
-      .setIncludePad(true)
-      .setMaxLines(2)
-      .build()
-    val naturalSpanW = measureStaticLayoutLineSpanWidth(naturalProbeLayout)
-    val shapingExtra = (naturalSpanW - naturalEstW).coerceAtLeast(0f)
 
     // Follow the layout's own `centered` flag on all pages:
     // centered = 1 stays centered at its natural width with natural word spacing;
     // centered = 0 justifies by widening the gaps between words only.
     val justifyEdgeToEdge = !line.isCentered && n >= 2
     if (justifyEdgeToEdge) {
-      val availableAdvanceW = (safeWidthF - leftOverhang - rightOverhang - shapingExtra)
+      val availableAdvanceW = (safeWidthF - leftOverhang - rightOverhang)
         .coerceAtLeast(sumWordWidths)
       val totalGap = (availableAdvanceW - sumWordWidths).coerceAtLeast(0f).toDouble()
       var prevCum = 0
@@ -2089,7 +2010,7 @@ class MushafPageBitmapRenderer(
         prevCum = cum
       }
     } else if (n > 1) {
-      val availableForNaturalGaps = (safeWidthF - leftOverhang - rightOverhang - shapingExtra - sumWordWidths)
+      val availableForNaturalGaps = (safeWidthF - leftOverhang - rightOverhang - sumWordWidths)
         .coerceAtLeast(0f)
       val maxSafeGap = (availableForNaturalGaps / (n - 1)).toInt().coerceAtLeast(0)
       val clampedGap = naturalGapPx.coerceAtMost(maxSafeGap)
@@ -2100,33 +2021,9 @@ class MushafPageBitmapRenderer(
 
     var sumGaps = 0
     for (g in gaps) sumGaps += g
+    var totalAdvanceW = sumWordWidths + sumGaps.toFloat()
+    var actualVisualW = totalAdvanceW + leftOverhang + rightOverhang
 
-    var sb = buildAyahLineSpannable(
-      words = words,
-      tokens = tokens,
-      gaps = gaps,
-      fittedSp = fittedSp,
-      fontSizePx = fontSizePx,
-      renderVectorTajweedMarkers = renderVectorTajweedMarkers,
-      goldInt = goldInt,
-      inkInt = inkInt,
-      effectiveDark = effectiveDark,
-      rosetteNumPaint = rosetteNumPaint,
-      density = density,
-      fontScale = fontScale,
-    )
-    var layoutWidth = maxOf(safeWidthPx, ceil(sumWordWidths + sumGaps + shapingExtra).toInt() + 64)
-    var layout = StaticLayout.Builder
-      .obtain(sb, 0, sb.length, paint, layoutWidth)
-      .setAlignment(if (justifyEdgeToEdge) Layout.Alignment.ALIGN_NORMAL else Layout.Alignment.ALIGN_CENTER)
-      .setTextDirection(TextDirectionHeuristics.RTL)
-      .setIncludePad(true)
-      .setMaxLines(2)
-      .build()
-
-    // Guard against 1-2px rounding overflow on justified/centered lines by trimming gap pixels only
-    var actualSpanW = measureStaticLayoutLineSpanWidth(layout)
-    var actualVisualW = actualSpanW + leftOverhang + rightOverhang
     if (actualVisualW > safeWidthF + 0.5f && n >= 2 && sumGaps > 0) {
       val trimTotal = ceil((actualVisualW - safeWidthF).toDouble()).toInt().coerceAtMost(sumGaps)
       val newTotalGap = (sumGaps - trimTotal).coerceAtLeast(0)
@@ -2137,30 +2034,8 @@ class MushafPageBitmapRenderer(
         prevCum = cum
       }
       sumGaps = gaps.sum()
-      sb = buildAyahLineSpannable(
-        words = words,
-        tokens = tokens,
-        gaps = gaps,
-        fittedSp = fittedSp,
-        fontSizePx = fontSizePx,
-        renderVectorTajweedMarkers = renderVectorTajweedMarkers,
-        goldInt = goldInt,
-        inkInt = inkInt,
-        effectiveDark = effectiveDark,
-        rosetteNumPaint = rosetteNumPaint,
-        density = density,
-        fontScale = fontScale,
-      )
-      layoutWidth = maxOf(safeWidthPx, ceil(sumWordWidths + sumGaps + shapingExtra).toInt() + 64)
-      layout = StaticLayout.Builder
-        .obtain(sb, 0, sb.length, paint, layoutWidth)
-        .setAlignment(if (justifyEdgeToEdge) Layout.Alignment.ALIGN_NORMAL else Layout.Alignment.ALIGN_CENTER)
-        .setTextDirection(TextDirectionHeuristics.RTL)
-        .setIncludePad(true)
-        .setMaxLines(2)
-        .build()
-      actualSpanW = measureStaticLayoutLineSpanWidth(layout)
-      actualVisualW = actualSpanW + leftOverhang + rightOverhang
+      totalAdvanceW = sumWordWidths + sumGaps.toFloat()
+      actualVisualW = totalAdvanceW + leftOverhang + rightOverhang
     }
 
     logDebugOverflowIfNeeded(
@@ -2171,31 +2046,30 @@ class MushafPageBitmapRenderer(
       visualWidthPx = actualVisualW,
       contentWidthPx = contentWidthPx,
       safeWidthPx = safeWidthPx,
-      lineCount = layout.lineCount,
+      lineCount = 1,
     )
 
-    val lineLeft = if (layout.lineCount > 0) layout.getLineLeft(0) else 0f
-    val lineRight = if (layout.lineCount > 0) layout.getLineRight(0) else actualSpanW
-    val layoutTopY = slotTop + (slotHeightPx - layout.height) * 0.5f
-    val translateX = if (justifyEdgeToEdge) {
-      val targetRightX = safeLeft + safeWidthF - rightOverhang
-      targetRightX - lineRight
+    val startRightX = if (justifyEdgeToEdge) {
+      safeLeft + safeWidthF - rightOverhang
     } else {
-      val lineCenter = (lineLeft + lineRight) * 0.5f
       val targetCenter = safeLeft + safeWidthF * 0.5f
-      val minTx = (safeLeft + leftOverhang) - lineLeft
-      val maxTx = (safeLeft + safeWidthF - rightOverhang) - lineRight
-      if (minTx <= maxTx) {
-        (targetCenter - lineCenter).coerceIn(minTx, maxTx)
+      val visualCenterOffsetFromRight = (rightOverhang - totalAdvanceW - leftOverhang) * 0.5f
+      val idealRightX = targetCenter - visualCenterOffsetFromRight
+      val minRightX = safeLeft + leftOverhang + totalAdvanceW
+      val maxRightX = safeLeft + safeWidthF - rightOverhang
+      if (minRightX <= maxRightX) {
+        idealRightX.coerceIn(minRightX, maxRightX)
       } else {
-        (minTx + maxTx) * 0.5f
+        (minRightX + maxRightX) * 0.5f
       }
     }
 
-    canvas.save()
-    canvas.translate(translateX, layoutTopY)
-    layout.draw(canvas)
-    canvas.restore()
+    val fm = paint.fontMetrics
+    val layoutLineH = fm.bottom - fm.top
+    val baselineY = slotTop + (slotHeightPx - layoutLineH) * 0.5f - fm.top
+    val textVisualH = (fm.descent - fm.ascent).coerceAtLeast(markerHeightF)
+    val boxTop = (slotTop + (slotHeightPx - textVisualH) * 0.5f).coerceAtLeast(slotTop)
+    val boxBottom = (boxTop + textVisualH).coerceAtMost(slotTop + slotHeightPx)
 
     // Record exact word hit boxes and per-line merged verse highlight rects
     val codeV2ByVerse = HashMap<String, String>()
@@ -2205,13 +2079,7 @@ class MushafPageBitmapRenderer(
       codeV2ByVerse[vk] = if (existing == null) words[i].codeV2 else "$existing ${words[i].codeV2}"
     }
 
-    val fm = paint.fontMetrics
-    val textVisualH = (fm.descent - fm.ascent).coerceAtLeast(markerHeightF)
-    val boxTop = (slotTop + (slotHeightPx - textVisualH) * 0.5f).coerceAtLeast(slotTop)
-    val boxBottom = (boxTop + textVisualH).coerceAtMost(slotTop + slotHeightPx)
-
-    var rightCursor = translateX + lineRight
-
+    var rightCursor = startRightX
     var cursor = startCursor
     var currentSegmentVerse: String? = null
     var segMinL = 0f
@@ -2229,12 +2097,42 @@ class MushafPageBitmapRenderer(
       currentSegmentVerse = null
     }
 
+    val rosetteCy = slotTop + slotHeightPx * 0.5f
     for (i in 0 until n) {
       if (i > 0) rightCursor -= gaps[i - 1].toFloat()
       val ww = wordWidths[i]
       val wordRight = rightCursor
       val wordLeft = wordRight - ww
       rightCursor = wordLeft
+
+      if (renderVectorTajweedMarkers && words[i].isEndMarker) {
+        val cx = (wordLeft + wordRight) * 0.5f
+        drawTajweedRosette(
+          canvas = canvas,
+          cx = cx,
+          cy = rosetteCy,
+          markerWidthF = markerWidthF,
+          markerHeightF = markerHeightF,
+          arabicDigits = toArabicIndicDigits(words[i].ayahNumber),
+          lineFontSp = fittedSp,
+          goldInt = goldInt,
+          inkInt = inkInt,
+          effectiveDark = effectiveDark,
+          numPaint = rosetteNumPaint,
+          density = density,
+          fontScale = fontScale,
+        )
+        val minDim = minOf(markerWidthF, markerHeightF)
+        val slotArr = rosetteAccum.getOrPut(words[i].verseKey) { ArrayList(3) }
+        slotArr.add(cx)
+        slotArr.add(rosetteCy)
+        slotArr.add(minDim)
+      } else {
+        val tok = tokens[i]
+        if (tok.isNotEmpty()) {
+          canvas.drawText(tok, wordLeft + wordDrawOffsets[i], baselineY, paint)
+        }
+      }
 
       val vk = words[i].verseKey
       if (cursor < hitLefts.size) {
@@ -2245,16 +2143,6 @@ class MushafPageBitmapRenderer(
         hitVerseKeys[cursor] = vk
         hitCodeV2Lines[cursor] = codeV2ByVerse[vk].orEmpty()
         cursor++
-      }
-
-      if (renderVectorTajweedMarkers && words[i].isEndMarker) {
-        val cx = (wordLeft + wordRight) * 0.5f
-        val cy = slotTop + slotHeightPx * 0.5f
-        val minDim = minOf(markerWidthF, markerHeightF)
-        val slotArr = rosetteAccum.getOrPut(vk) { ArrayList(3) }
-        slotArr.add(cx)
-        slotArr.add(cy)
-        slotArr.add(minDim)
       }
 
       if (currentSegmentVerse == vk) {
@@ -2276,109 +2164,64 @@ class MushafPageBitmapRenderer(
     return cursor
   }
 
-  private class HorizontalGapSpan(
-    private val widthPx: Int,
-  ) : ReplacementSpan() {
-    override fun getSize(
-      paint: Paint,
-      text: CharSequence?,
-      start: Int,
-      end: Int,
-      fm: Paint.FontMetricsInt?,
-    ): Int = widthPx
-
-    override fun draw(
-      canvas: Canvas,
-      text: CharSequence?,
-      start: Int,
-      end: Int,
-      x: Float,
-      top: Int,
-      y: Int,
-      bottom: Int,
-      paint: Paint,
-    ) = Unit
-  }
-
-  private class TajweedRosetteReplacementSpan(
-    private val markerWidthPx: Int,
-    private val markerHeightPx: Int,
-    private val arabicDigits: String,
-    private val lineFontSp: Float,
-    private val goldInt: Int,
-    private val inkInt: Int,
-    private val effectiveDark: Boolean,
-    private val numPaint: Paint,
-    private val density: Float,
-    private val fontScale: Float,
-  ) : ReplacementSpan() {
-    private val rosetteFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+  private fun drawTajweedRosette(
+    canvas: Canvas,
+    cx: Float,
+    cy: Float,
+    markerWidthF: Float,
+    markerHeightF: Float,
+    arabicDigits: String,
+    lineFontSp: Float,
+    goldInt: Int,
+    inkInt: Int,
+    effectiveDark: Boolean,
+    numPaint: Paint,
+    density: Float,
+    fontScale: Float,
+  ) {
+    val rosetteFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       style = Paint.Style.FILL
       color = withAlpha(goldInt, if (effectiveDark) 0.22f else 0.16f)
     }
-    private val rosetteStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    val rosetteStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       style = Paint.Style.STROKE
       color = goldInt
     }
-    private val innerRingStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    val innerRingStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       style = Paint.Style.STROKE
       color = withAlpha(goldInt, 0.55f)
     }
-    private val starPath = Path()
-
-    override fun getSize(
-      paint: Paint,
-      text: CharSequence?,
-      start: Int,
-      end: Int,
-      fm: Paint.FontMetricsInt?,
-    ): Int = markerWidthPx
-
-    override fun draw(
-      canvas: Canvas,
-      text: CharSequence?,
-      start: Int,
-      end: Int,
-      x: Float,
-      top: Int,
-      y: Int,
-      bottom: Int,
-      paint: Paint,
-    ) {
-      val cx = x + markerWidthPx * 0.5f
-      val cy = (top + bottom) * 0.5f
-      val minDim = minOf(markerWidthPx.toFloat(), markerHeightPx.toFloat())
-      val outerR = minDim * 0.46f
-      val innerR = minDim * 0.37f
-      val points = 16
-      starPath.reset()
-      for (i in 0 until points) {
-        val angle = (2.0 * PI * i) / points - PI / 2.0
-        val r = if (i % 2 == 0) outerR else innerR
-        val px = cx + (r * cos(angle)).toFloat()
-        val py = cy + (r * sin(angle)).toFloat()
-        if (i == 0) starPath.moveTo(px, py) else starPath.lineTo(px, py)
-      }
-      starPath.close()
-
-      rosetteStroke.strokeWidth = (minDim * 0.055f).coerceIn(0.9f, 2.2f)
-      canvas.drawPath(starPath, rosetteFill)
-      canvas.drawPath(starPath, rosetteStroke)
-
-      innerRingStroke.strokeWidth = (minDim * 0.032f).coerceIn(0.6f, 1.1f)
-      canvas.drawCircle(cx, cy, minDim * 0.30f, innerRingStroke)
-
-      val digitScale = when (arabicDigits.length) {
-        1 -> 0.44f
-        2 -> 0.39f
-        else -> 0.33f
-      }
-      val numSp = (lineFontSp * digitScale).coerceIn(7.5f, 18f)
-      numPaint.textSize = numSp * density * fontScale
-      numPaint.color = inkInt
-      val fm = numPaint.fontMetrics
-      val textBaseline = cy - (fm.ascent + fm.descent) * 0.5f
-      canvas.drawText(arabicDigits, cx, textBaseline, numPaint)
+    val minDim = minOf(markerWidthF, markerHeightF)
+    val outerR = minDim * 0.46f
+    val innerR = minDim * 0.37f
+    val points = 16
+    val starPath = Path()
+    for (i in 0 until points) {
+      val angle = (2.0 * PI * i) / points - PI / 2.0
+      val r = if (i % 2 == 0) outerR else innerR
+      val px = cx + (r * cos(angle)).toFloat()
+      val py = cy + (r * sin(angle)).toFloat()
+      if (i == 0) starPath.moveTo(px, py) else starPath.lineTo(px, py)
     }
+    starPath.close()
+
+    rosetteStroke.strokeWidth = (minDim * 0.055f).coerceIn(0.9f, 2.2f)
+    canvas.drawPath(starPath, rosetteFill)
+    canvas.drawPath(starPath, rosetteStroke)
+
+    innerRingStroke.strokeWidth = (minDim * 0.032f).coerceIn(0.6f, 1.1f)
+    canvas.drawCircle(cx, cy, minDim * 0.30f, innerRingStroke)
+
+    val digitScale = when (arabicDigits.length) {
+      1 -> 0.44f
+      2 -> 0.39f
+      else -> 0.33f
+    }
+    val numSp = (lineFontSp * digitScale).coerceIn(7.5f, 18f)
+    numPaint.textSize = numSp * density * fontScale
+    numPaint.color = inkInt
+    val fm = numPaint.fontMetrics
+    val textBaseline = cy - (fm.ascent + fm.descent) * 0.5f
+    canvas.drawText(arabicDigits, cx, textBaseline, numPaint)
   }
 }

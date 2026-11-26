@@ -334,7 +334,7 @@ class ExampleRobolectricTest {
 
   @Test
   fun `layout cache version is bumped and renderer enforces uniform non-clipping layout in portrait and two-page modes`() = runBlocking {
-    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 6)
+    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 7)
 
     val context = ApplicationProvider.getApplicationContext<Context>()
     val renderer = MushafPageBitmapRenderer(context)
@@ -963,5 +963,135 @@ class ExampleRobolectricTest {
         )
       }
     }
+  }
+
+  @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+  @Test
+  fun `surah al fatiha page 1 ayah 7 lines render without word overlap and stay centered`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val renderer = MushafPageBitmapRenderer(context)
+    val qulLines = com.example.data.quran.QulPageLayoutLoader.getPageLines(context, MushafEdition.MADINAH_1421, 1)
+    val surahs = mapOf(1 to SurahMeta(1, "الفاتحة", 5, 7, false, 1, 1, false))
+
+    val page1Glyphs = listOf(
+      "\uFC41", "\uFC42", "\uFC43", "\uFC44", "\uFC45",
+      "\uFC46", "\uFC47", "\uFC48", "\uFC49", "\uFC4A",
+      "\uFC4B", "\uFC4C", "\uFC4D",
+      "\uFC4E", "\uFC4F", "\uFC50", "\uFC51",
+      "\uFC52", "\uFC53", "\uFC54", "\uFC55", "\uFC56",
+      "\uFC57", "\uFC58", "\uFC59", "\uFC5A",
+      "\uFC5B", "\uFC5C", "\uFC5D", "\uFC5E", "\uFC5F", "\uFC60", "\uFC61", "\uFC62", "\uFC63", "\uFC64",
+    )
+    val page1Uthmani = listOf(
+      "بِسْمِ", "ٱللَّهِ", "ٱلرَّحْمَٰنِ", "ٱلرَّحِيمِ", "١",
+      "ٱلْحَمْدُ", "لِلَّهِ", "رَبِّ", "ٱلْعَٰلَمِينَ", "٢",
+      "ٱلرَّحْمَٰنِ", "ٱلرَّحِيمِ", "٣",
+      "مَٰلِكِ", "يَوْمِ", "ٱلدِّينِ", "٤",
+      "إِيَّاكَ", "نَعْبُدُ", "وَإِيَّاكَ", "نَسْتَعِينُ", "٥",
+      "ٱهْدِنَا",
+      "ٱلصِّرَٰطَ", "ٱلْمُسْتَقِيمَ", "٦",
+      "صِرَٰطَ", "ٱلَّذِينَ", "أَنْعَمْتَ",
+      "عَلَيْهِمْ", "غَيْرِ", "ٱلْمَغْضُوبِ", "عَلَيْهِمْ",
+      "وَلَا", "ٱلضَّآلِّينَ", "٧",
+    )
+    val ayahLines = qulLines.filter { it.type == "ayah" }.map { ql ->
+      val words = (ql.first!!..ql.last!!).map { qid ->
+        WordDto(
+          id = qid,
+          position = qid,
+          char_type_name = if (qid in listOf(5, 10, 13, 17, 22, 26, 36)) "end" else "word",
+          line_number = ql.line,
+          page_number = 1,
+          code_v2 = page1Glyphs[qid - 1],
+          text_uthmani = page1Uthmani[qid - 1],
+        )
+      }
+      VerseDto(
+        id = ql.line,
+        verse_key = "1:${ql.line}",
+        page_number = 1,
+        juz_number = 1,
+        hizb_number = 1,
+        words = words,
+      )
+    }
+    val page1Data = MushafPageBuilder.buildPageFromQulLayout(
+      pageNumber = 1,
+      qulLines = qulLines,
+      versesResponses = listOf(VersesByPageResponse(ayahLines)),
+      chaptersById = surahs,
+      basmalahTokens = emptyList(),
+    )
+    val spec = PageRenderSpec(
+      widthPx = 620,
+      heightPx = 1000,
+      density = 2.0f,
+      fontScale = 1.0f,
+      edition = MushafEdition.MADINAH_1421,
+      isDarkTheme = false,
+      backgroundTheme = BackgroundTheme.WHITE,
+      isTwoPageMode = false,
+      globalIntroFontSp = null,
+    )
+
+    val p1File = java.io.File("/tmp/p1.ttf")
+    val useTagFallback = !p1File.exists()
+    val pageTypeface = if (useTagFallback) Typeface.SERIF else Typeface.createFromFile(p1File)
+
+    val rendered = renderer.renderOrGet(page1Data, spec, pageTypeface, pageTypeface, useTagFallback, surahs)
+    val hitBoxes = rendered.wordHitBoxes
+    assertEquals(36, hitBoxes.count)
+
+    // Verify per-line RTL ordering and strictly positive gaps (no overlapping words on any line, especially lines 7 & 8)
+    var wordOffset = 0
+    for (line in page1Data.lines.filterIsInstance<MushafLine.AyahWordsLine>()) {
+      val n = line.words.size
+      for (i in 0 until n) {
+        val idx = wordOffset + i
+        val width = hitBoxes.rights[idx] - hitBoxes.lefts[idx]
+        assertTrue("Line ${line.lineNumber} word $i must have positive width ($width)", width > 4f)
+        if (i > 0) {
+          val prevRightIdx = wordOffset + i - 1
+          val gap = hitBoxes.lefts[prevRightIdx] - hitBoxes.rights[idx]
+          assertTrue(
+            "Line ${line.lineNumber} word $i must not overlap word ${i - 1} (gap=$gap)",
+            gap >= 1f,
+          )
+        }
+      }
+      val lineRect = rendered.verseHighlightRects["1:${line.lineNumber}"]!!
+      val lineCenter = (lineRect[0] + lineRect[2]) * 0.5f
+      assertTrue(
+        "Line ${line.lineNumber} center ($lineCenter) must remain centered in ${spec.widthPx}",
+        kotlin.math.abs(lineCenter - spec.widthPx * 0.5f) < spec.widthPx * 0.08f,
+      )
+      wordOffset += n
+    }
+
+    // Verify rendered bitmap ink on line 8 has separated horizontal clusters (no stacked words)
+    val bmp = rendered.imageBitmap.asAndroidBitmap()
+    val line8FirstHitIdx = 33
+    val y0 = hitBoxes.tops[line8FirstHitIdx].toInt().coerceIn(0, bmp.height - 1)
+    val y1 = hitBoxes.bottoms[line8FirstHitIdx].toInt().coerceIn(y0 + 1, bmp.height)
+    val colHasInk = BooleanArray(bmp.width)
+    for (x in 20 until bmp.width - 20) {
+      for (y in y0 until y1) {
+        if (android.graphics.Color.red(bmp.getPixel(x, y)) < 180) {
+          colHasInk[x] = true
+          break
+        }
+      }
+    }
+    var clusters = 0
+    var inCluster = false
+    for (x in 20 until bmp.width - 20) {
+      if (colHasInk[x] && !inCluster) {
+        clusters++
+        inCluster = true
+      } else if (!colHasInk[x]) {
+        inCluster = false
+      }
+    }
+    assertTrue("Line 8 should have at least 2 distinct separated ink clusters, found $clusters", clusters >= 2)
   }
 }
