@@ -2062,10 +2062,10 @@ class MushafPageBitmapRenderer(
     val naturalSpanW = measureStaticLayoutLineSpanWidth(naturalProbeLayout)
     val shapingExtra = (naturalSpanW - naturalEstW).coerceAtLeast(0f)
 
-    // On pages 1 and 2 every multi-word ayah line fills the width like the printed page;
-    // on pages 3-604 lines flagged centered stay centered at their natural width.
-    val isFramedIntroPage = pageNumber in 1..2
-    val justifyEdgeToEdge = (isFramedIntroPage || !line.isCentered) && n >= 2
+    // Follow the layout's own `centered` flag on all pages:
+    // centered = 1 stays centered at its natural width with natural word spacing;
+    // centered = 0 justifies by widening the gaps between words only.
+    val justifyEdgeToEdge = !line.isCentered && n >= 2
     if (justifyEdgeToEdge) {
       val availableAdvanceW = (safeWidthF - leftOverhang - rightOverhang - shapingExtra)
         .coerceAtLeast(sumWordWidths)

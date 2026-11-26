@@ -333,7 +333,7 @@ class ExampleRobolectricTest {
 
   @Test
   fun `layout cache version is bumped and renderer enforces uniform non-clipping layout in portrait and two-page modes`() = runBlocking {
-    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 4)
+    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 5)
 
     val context = ApplicationProvider.getApplicationContext<Context>()
     val renderer = MushafPageBitmapRenderer(context)
@@ -446,11 +446,16 @@ class ExampleRobolectricTest {
       val rectLong = rendered.verseHighlightRects["2:3"]!!
       val rectCenteredShort = rendered.verseHighlightRects["2:6"]!!
       assertEquals(rectLong[3] - rectLong[1], rectCenteredShort[3] - rectCenteredShort[1], 1.5f)
-      // On page 2, every multi-word ayah line (including 2:6 flagged centered=true) fills the width like page 1
+      // On page 2, line 5 (2:3, centered=false) justifies edge-to-edge while line 8 (2:6, centered=true) stays centered at natural width
+      val longJustifiedW = rectLong[2] - rectLong[0]
       val centeredShortW = rectCenteredShort[2] - rectCenteredShort[0]
       assertTrue(
-        "Page 2 multi-word line ($centeredShortW) should fill width (specWidth=${spec.widthPx})",
-        centeredShortW > spec.widthPx * 0.70f,
+        "Page 2 centered=false line ($longJustifiedW) should fill width (specWidth=${spec.widthPx})",
+        longJustifiedW > spec.widthPx * 0.70f,
+      )
+      assertTrue(
+        "Page 2 centered=true line ($centeredShortW) should stay centered at natural width (< justified $longJustifiedW)",
+        centeredShortW < longJustifiedW * 0.85f,
       )
     }
 
@@ -698,13 +703,155 @@ class ExampleRobolectricTest {
     assertEquals(h3Line, h4Line, 1.0f)
     assertTrue(h1Line > h3Line)
 
-    // Multi-word ayah line on Page 1 & Page 2 fills the width edge-to-edge
-    val w1 = r1.verseHighlightRects["1:1"]!!.let { it[2] - it[0] }
-    val w2 = r2.verseHighlightRects["2:1"]!!.let { it[2] - it[0] }
-    assertTrue("Page 1 width $w1 should fill frame", w1 > spec.widthPx * 0.70f)
-    assertTrue("Page 2 width $w2 should fill frame", w2 > spec.widthPx * 0.70f)
+    // In Madinah layout, centered=1 lines on Page 1 & Page 2 stay centered at natural width (not stretched)
+    val r1Line2Rect = r1.verseHighlightRects["1:1"]!!
+    val w1 = r1Line2Rect[2] - r1Line2Rect[0]
+    val c1 = (r1Line2Rect[0] + r1Line2Rect[2]) * 0.5f
+    assertTrue("Page 1 centered short line width $w1 should stay at natural width", w1 < spec.widthPx * 0.60f)
+    assertTrue("Page 1 centered short line center $c1 should align with page center", kotlin.math.abs(c1 - spec.widthPx * 0.5f) < spec.widthPx * 0.08f)
 
     prefs.clearGlobalFontSizes()
     assertTrue(prefs.stateFlow.first().globalFontSizes.isEmpty())
+  }
+
+  @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+  @Test
+  fun `madinah page 1 lines are centered at natural width and tajweed page 2 line 5 is justified`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val renderer = MushafPageBitmapRenderer(context)
+    val surahs = mapOf(
+      1 to SurahMeta(1, "الفاتحة", 5, 7, false, 1, 1, false),
+      2 to SurahMeta(2, "البقرة", 87, 286, false, 2, 49, true),
+    )
+    val basmalahTokens = listOf(
+      WordDto(1, 1, "word", 1, 1, "بِسْمِ", "بِسْمِ"),
+      WordDto(2, 2, "word", 1, 1, "اللَّهِ", "اللَّهِ"),
+      WordDto(3, 3, "word", 1, 1, "الرَّحْمَٰنِ", "الرَّحْمَٰنِ"),
+      WordDto(4, 4, "word", 1, 1, "الرَّحِيمِ", "الرَّحِيمِ"),
+    )
+
+    fun buildSyntheticPage(
+      pageNum: Int,
+      edition: MushafEdition,
+      surahId: Int,
+      tokenText: String,
+    ): com.example.data.quran.MushafPageData {
+      val qulLines = com.example.data.quran.QulPageLayoutLoader.getPageLines(context, edition, pageNum)
+      val verses = qulLines
+        .filter { it.type == "ayah" && it.first != null && it.last != null }
+        .map { ql ->
+          val count = ql.last!! - ql.first!! + 1
+          val words = (0 until count).map { idx ->
+            val wid = ql.first!! + idx
+            WordDto(
+              id = wid,
+              position = idx + 1,
+              char_type_name = if (idx == count - 1) "end" else "word",
+              line_number = ql.line,
+              page_number = pageNum,
+              code_v2 = tokenText,
+              text_uthmani = tokenText,
+            )
+          }
+          VerseDto(
+            id = ql.line,
+            verse_key = "$surahId:${ql.line}",
+            page_number = pageNum,
+            juz_number = 1,
+            hizb_number = 1,
+            words = words,
+          )
+        }
+      return MushafPageBuilder.buildPageFromQulLayout(
+        pageNumber = pageNum,
+        qulLines = qulLines,
+        versesResponses = listOf(VersesByPageResponse(verses)),
+        chaptersById = surahs,
+        basmalahTokens = basmalahTokens,
+      )
+    }
+
+    val spec = PageRenderSpec(
+      widthPx = 620,
+      heightPx = 1000,
+      density = 2.0f,
+      fontScale = 1.0f,
+      edition = MushafEdition.MADINAH_1421,
+      isDarkTheme = false,
+      backgroundTheme = BackgroundTheme.WHITE,
+      globalIntroFontSp = 18f,
+    )
+
+    // 1) Madinah Page 1: every ayah line has centered=1 -> centered at natural width, never stretched
+    val madinahPage1 = buildSyntheticPage(1, MushafEdition.MADINAH_1421, 1, "قُلْ")
+    val madinahAyahLines = madinahPage1.lines.filterIsInstance<MushafLine.AyahWordsLine>()
+    assertEquals(7, madinahAyahLines.size)
+    assertTrue(madinahAyahLines.all { it.isCentered })
+
+    val renderedMadinahP1 = renderer.renderOrGet(
+      pageData = madinahPage1,
+      spec = spec,
+      pageTypeface = Typeface.SERIF,
+      basmalahTypeface = Typeface.SERIF,
+      usesTagFallbackTajweed = true,
+      surahsById = surahs,
+    )
+    for (line in madinahAyahLines) {
+      val rect = renderedMadinahP1.verseHighlightRects["1:${line.lineNumber}"]!!
+      val lineWidth = rect[2] - rect[0]
+      val lineCenter = (rect[0] + rect[2]) * 0.5f
+      assertTrue(
+        "Madinah page 1 line ${line.lineNumber} width ($lineWidth) should stay at natural width (< 70% of ${spec.widthPx})",
+        lineWidth < spec.widthPx * 0.70f,
+      )
+      assertTrue(
+        "Madinah page 1 line ${line.lineNumber} center ($lineCenter) should be centered in ${spec.widthPx}",
+        kotlin.math.abs(lineCenter - spec.widthPx * 0.5f) < spec.widthPx * 0.08f,
+      )
+    }
+
+    // 2) Tajweed Page 2: line 5 has centered=0 -> justified edge-to-edge; centered lines stay centered at natural width
+    val tajweedPage2 = buildSyntheticPage(2, MushafEdition.TAJWEED_V4, 2, "قُلْ")
+    val tajweedLine5 = tajweedPage2.lines.filterIsInstance<MushafLine.AyahWordsLine>().first { it.lineNumber == 5 }
+    val tajweedLine3 = tajweedPage2.lines.filterIsInstance<MushafLine.AyahWordsLine>().first { it.lineNumber == 3 }
+    val tajweedLine8 = tajweedPage2.lines.filterIsInstance<MushafLine.AyahWordsLine>().first { it.lineNumber == 8 }
+    assertFalse("Tajweed page 2 line 5 must have centered=false", tajweedLine5.isCentered)
+    assertTrue("Tajweed page 2 line 3 must have centered=true", tajweedLine3.isCentered)
+    assertTrue("Tajweed page 2 line 8 must have centered=true", tajweedLine8.isCentered)
+
+    val tajweedSpec = spec.copy(edition = MushafEdition.TAJWEED_V4)
+    val renderedTajweedP2 = renderer.renderOrGet(
+      pageData = tajweedPage2,
+      spec = tajweedSpec,
+      pageTypeface = Typeface.SERIF,
+      basmalahTypeface = Typeface.SERIF,
+      usesTagFallbackTajweed = true,
+      surahsById = surahs,
+    )
+    val line5Rect = renderedTajweedP2.verseHighlightRects["2:5"]!!
+    val line3Rect = renderedTajweedP2.verseHighlightRects["2:3"]!!
+    val line8Rect = renderedTajweedP2.verseHighlightRects["2:8"]!!
+    val line5Width = line5Rect[2] - line5Rect[0]
+    val line3Width = line3Rect[2] - line3Rect[0]
+    val line8Width = line8Rect[2] - line8Rect[0]
+
+    assertTrue(
+      "Tajweed page 2 line 5 ($line5Width) must justify across content width (specWidth=${tajweedSpec.widthPx})",
+      line5Width > tajweedSpec.widthPx * 0.78f,
+    )
+    // Line 3 has the same 8-word count as line 5, so natural centered width must be substantially narrower than justified line 5
+    assertTrue(
+      "Tajweed page 2 centered line 3 ($line3Width) should stay narrower than justified line 5 ($line5Width)",
+      line3Width < line5Width * 0.80f,
+    )
+    assertTrue(
+      "Tajweed page 2 centered line 8 ($line8Width) should stay narrower than justified line 5 ($line5Width)",
+      line8Width < line5Width * 0.65f,
+    )
+    val line8Center = (line8Rect[0] + line8Rect[2]) * 0.5f
+    assertTrue(
+      "Tajweed page 2 line 8 center ($line8Center) should be centered in ${tajweedSpec.widthPx}",
+      kotlin.math.abs(line8Center - tajweedSpec.widthPx * 0.5f) < tajweedSpec.widthPx * 0.08f,
+    )
   }
 }
