@@ -23,10 +23,13 @@ import com.example.data.pdf.PdfMushafTransferState
 import com.example.data.pdf.PdfRendererBridge
 import com.example.data.pdf.RiwayaColorGuideSection
 import com.example.data.prefs.BackgroundTheme
+import com.example.data.prefs.CachedGlobalFontSizes
 import com.example.data.prefs.PageViewMode
 import com.example.data.prefs.PersistedReaderState
 import com.example.data.prefs.ReaderPreferences
 import com.example.data.quran.CreditSourceInfo
+import com.example.data.quran.GlobalFontSizingProgress
+import com.example.data.quran.GlobalMushafFontSizer
 import com.example.data.quran.JuzMeta
 import com.example.data.quran.MushafDownloadManager
 import com.example.data.quran.MushafEdition
@@ -166,6 +169,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private val audioCacheManager = audioDownloadManager.cacheManager
   private val preferences = ReaderPreferences(application)
   private val pageBitmapRenderer = MushafPageBitmapRenderer(application)
+  private val globalFontSizer = GlobalMushafFontSizer(quranRepository, fontManager, pageBitmapRenderer)
   private val pdfMushafRepository = PdfMushafRepository(application, viewModelScope)
   private val pdfRendererBridge = PdfRendererBridge()
 
@@ -241,6 +245,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private val _wordSearchState = MutableStateFlow(QuranWordSearchUiState())
   val wordSearchState: StateFlow<QuranWordSearchUiState> = _wordSearchState.asStateFlow()
 
+  private val _fontSizingProgress = MutableStateFlow<GlobalFontSizingProgress?>(null)
+  val fontSizingProgress: StateFlow<GlobalFontSizingProgress?> = _fontSizingProgress.asStateFlow()
+
   val themeStateFlow: StateFlow<Pair<BackgroundTheme, Boolean>> = _uiState
     .map { it.backgroundTheme to it.isDarkMode }
     .distinctUntilChanged()
@@ -313,6 +320,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private var measuredFontScale: Float = 1f
   private var measuredIsTwoPageMode: Boolean = false
   private val activePdfFileKeys = java.util.concurrent.ConcurrentHashMap<String, String>()
+  private val globalFontSizeCache = java.util.concurrent.ConcurrentHashMap<String, CachedGlobalFontSizes>()
+  private val fontSizingFailedKeys = java.util.Collections.synchronizedSet(HashSet<String>())
+  private var fontSizingJob: Job? = null
+  private var activeFontSizingKey: String? = null
   private var searchJob: Job? = null
   private var indexWarmupJob: Job? = null
   private var hasReaderActivated: Boolean = false
@@ -379,10 +390,27 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
+  private fun computeGlobalFontCacheKey(spec: PageRenderSpec): Pair<String, Boolean>? {
+    if (spec.isPdfMode || !spec.isValid) return null
+    val needsTagFallback =
+      spec.edition == MushafEdition.TAJWEED_V4 && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+    val fontVersion = fontManager.fontVersionFor(spec.edition, needsTagFallback)
+    val metrics = pageBitmapRenderer.computeTextBodyMetrics(spec)
+    val key = GlobalMushafFontSizer.buildCacheKey(
+      edition = spec.edition,
+      fontVersion = fontVersion,
+      layoutVersion = QuranRepository.LAYOUT_CACHE_VERSION,
+      safeWidthPx = metrics.safeWidthPx,
+      bodySlotHeightPx = metrics.bodySlotHeightPx,
+      spec = spec,
+    )
+    return key to needsTagFallback
+  }
+
   private fun rebuildRenderSpec(): PageRenderSpec {
     val st = _uiState.value
     val pdfId = if (st.activeMushafIsPdf) st.activePdfMushafId else null
-    return PageRenderSpec(
+    val baseSpec = PageRenderSpec(
       widthPx = measuredWidthPx,
       heightPx = measuredHeightPx,
       density = measuredDensity,
@@ -393,6 +421,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       isTwoPageMode = measuredIsTwoPageMode,
       pdfMushafId = pdfId,
       pdfFileKey = pdfId?.let { activePdfFileKeys[it] },
+    )
+    val cacheKey = computeGlobalFontCacheKey(baseSpec)?.first ?: return baseSpec
+    val cachedSizes = globalFontSizeCache[cacheKey] ?: return baseSpec
+    return baseSpec.copy(
+      globalIntroFontSp = cachedSizes.introSp,
+      globalBodyFontSp = cachedSizes.bodySp,
     )
   }
 
@@ -429,6 +463,87 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     if (hasReaderActivated && nextSpec.isValid) {
       loadPageWindow(_uiState.value.currentPage, nextSpec)
     }
+    ensureGlobalFontSizesIfNeeded(nextSpec)
+  }
+
+  private fun ensureGlobalFontSizesIfNeeded(spec: PageRenderSpec) {
+    if (spec.isPdfMode || !spec.isValid) {
+      if (fontSizingJob?.isActive == true) {
+        fontSizingJob?.cancel()
+        fontSizingJob = null
+        activeFontSizingKey = null
+        _fontSizingProgress.value = null
+      }
+      return
+    }
+    if (spec.globalIntroFontSp != null && spec.globalBodyFontSp != null) {
+      if (fontSizingJob?.isActive == true) {
+        fontSizingJob?.cancel()
+        fontSizingJob = null
+        activeFontSizingKey = null
+      }
+      _fontSizingProgress.value = null
+      return
+    }
+    val keyPair = computeGlobalFontCacheKey(spec) ?: return
+    val (cacheKey, needsTagFallback) = keyPair
+    globalFontSizeCache[cacheKey]?.let {
+      val upgraded = rebuildRenderSpec()
+      if (upgraded != activeRenderSpec && upgraded.globalIntroFontSp != null && upgraded.globalBodyFontSp != null) {
+        onRenderSpecUpdated(upgraded)
+      }
+      return
+    }
+    if (fontSizingFailedKeys.contains(cacheKey)) return
+    if (activeFontSizingKey == cacheKey && fontSizingJob?.isActive == true) return
+
+    fontSizingJob?.cancel()
+    activeFontSizingKey = cacheKey
+    val mushafId = MushafRegistry.getByEdition(spec.edition).id
+    val fontVersion = fontManager.fontVersionFor(spec.edition, needsTagFallback)
+    fontSizingJob = viewModelScope.launch {
+      _fontSizingProgress.value = GlobalFontSizingProgress(
+        mushafId = mushafId,
+        completedPages = 0,
+        totalPages = 604,
+      )
+      try {
+        val result = globalFontSizer.computeGlobalFontSizes(
+          spec = spec,
+          usesTagFallbackTajweed = needsTagFallback,
+          fontVersion = fontVersion,
+          onProgress = { completed, total ->
+            if (activeFontSizingKey == cacheKey) {
+              _fontSizingProgress.value = GlobalFontSizingProgress(
+                mushafId = mushafId,
+                completedPages = completed,
+                totalPages = total,
+              )
+            }
+          },
+        )
+        if (result.measuredPagesCount > 0 && result.allPagesMeasured) {
+          val entry = CachedGlobalFontSizes(introSp = result.introSp, bodySp = result.bodySp)
+          globalFontSizeCache[cacheKey] = entry
+          preferences.saveGlobalFontSizes(cacheKey, result.introSp, result.bodySp)
+          val updatedSpec = rebuildRenderSpec()
+          if (updatedSpec != activeRenderSpec && computeGlobalFontCacheKey(updatedSpec)?.first == cacheKey) {
+            onRenderSpecUpdated(updatedSpec)
+          }
+        } else {
+          fontSizingFailedKeys.add(cacheKey)
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (_: Exception) {
+        fontSizingFailedKeys.add(cacheKey)
+      } finally {
+        if (activeFontSizingKey == cacheKey) {
+          activeFontSizingKey = null
+          _fontSizingProgress.value = null
+        }
+      }
+    }
   }
 
   private fun bootstrap() {
@@ -441,6 +556,18 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       } else {
         emptyList()
       }
+
+      if (saved.layoutCacheVersion < QuranRepository.LAYOUT_CACHE_VERSION) {
+        quranRepository.clearInMemoryPageCache()
+        pageBitmapRenderer.clearAll()
+        globalFontSizeCache.clear()
+        fontSizingFailedKeys.clear()
+        preferences.clearGlobalFontSizes()
+        preferences.setLayoutCacheVersion(QuranRepository.LAYOUT_CACHE_VERSION)
+      } else {
+        globalFontSizeCache.putAll(saved.globalFontSizes)
+      }
+
       _uiState.update {
         it.copy(
           currentPage = saved.lastPage,
@@ -455,16 +582,19 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           colorsGuideSections = orderedCachedSections,
         )
       }
-      activeRenderSpec = rebuildRenderSpec()
-
-      if (saved.layoutCacheVersion < QuranRepository.LAYOUT_CACHE_VERSION) {
-        quranRepository.clearInMemoryPageCache()
-        pageBitmapRenderer.clearAll()
-        preferences.setLayoutCacheVersion(QuranRepository.LAYOUT_CACHE_VERSION)
+      val bootSpec = rebuildRenderSpec()
+      if (bootSpec != activeRenderSpec) {
+        onRenderSpecUpdated(bootSpec)
+      } else {
+        activeRenderSpec = bootSpec
+        ensureGlobalFontSizesIfNeeded(bootSpec)
       }
 
       launch {
         preferences.stateFlow.collect { pref ->
+          for ((k, v) in pref.globalFontSizes) {
+            globalFontSizeCache.putIfAbsent(k, v)
+          }
           val prev = _uiState.value
           val themeChanged = (prev.isDarkMode != pref.isDarkMode) ||
             (prev.backgroundTheme != pref.backgroundTheme)
@@ -532,6 +662,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   fun startMushafDownload(item: MushafItem) {
     mushafDownloadManager.startDownload(item) {
+      fontSizingFailedKeys.clear()
       preferences.addDownloadedMushaf(item.id)
       preferences.setActiveTextMushaf(item.id, item.edition)
       val wasPdf = _uiState.value.activeMushafIsPdf
@@ -559,6 +690,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   fun selectActiveMushaf(id: String) {
     val item = MushafRegistry.getById(id)
     viewModelScope.launch {
+      fontSizingFailedKeys.clear()
       val wasPdf = _uiState.value.activeMushafIsPdf
       preferences.setActiveTextMushaf(item.id, item.edition)
       _uiState.update {

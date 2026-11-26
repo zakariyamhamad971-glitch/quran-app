@@ -36,7 +36,7 @@ class QuranRepository(
   private var cachedAssetHashes: List<AssetHashStatus>? = null
 
   companion object {
-    const val LAYOUT_CACHE_VERSION = 3
+    const val LAYOUT_CACHE_VERSION = 4
   }
 
   // Compute each page layout once and keep up to 10 pages (covering +-2 prefetch + 8 bitmap pages)
@@ -228,67 +228,93 @@ class QuranRepository(
     val cacheKey = "v${LAYOUT_CACHE_VERSION}_${edition.name}_${pageNumber}_$includeTajweedFallback"
     pageMemoryCache.get(cacheKey)?.let { return@runCatching it }
 
-    withContext(Dispatchers.IO) {
-      pageMemoryCache.get(cacheKey)?.let { return@withContext it }
+    val built = buildPageInternal(
+      pageNumber = pageNumber,
+      edition = edition,
+      includeTajweedFallback = includeTajweedFallback,
+    )
+    pageMemoryCache.put(cacheKey, built)
+    built
+  }
 
-      val surahs = getSurahs().getOrThrow().associateBy { it.id }
-      val basmalahWords = getBasmalahWords()
-      val qulLines = QulPageLayoutLoader.getPageLines(context, edition, pageNumber)
+  /**
+   * Loads and builds a page for background global font sizing without evicting the active
+   * reader page LRU cache.
+   */
+  suspend fun getPageForMeasurement(
+    pageNumber: Int,
+    edition: MushafEdition = MushafEdition.MADINAH_1421,
+    includeTajweedFallback: Boolean = false,
+  ): Result<MushafPageData> = runCatching {
+    val cacheKey = "v${LAYOUT_CACHE_VERSION}_${edition.name}_${pageNumber}_$includeTajweedFallback"
+    pageMemoryCache.get(cacheKey)?.let { return@runCatching it }
+    buildPageInternal(
+      pageNumber = pageNumber,
+      edition = edition,
+      includeTajweedFallback = includeTajweedFallback,
+    )
+  }
 
-      val currentVersesResp = loadRawPageVerses(pageNumber)
-      val responses = mutableListOf(currentVersesResp)
+  private suspend fun buildPageInternal(
+    pageNumber: Int,
+    edition: MushafEdition,
+    includeTajweedFallback: Boolean,
+  ): MushafPageData = withContext(Dispatchers.IO) {
+    val surahs = getSurahs().getOrThrow().associateBy { it.id }
+    val basmalahWords = getBasmalahWords()
+    val qulLines = QulPageLayoutLoader.getPageLines(context, edition, pageNumber)
 
-      val expectedCount = qulLines
-        .filter { it.type == "ayah" && it.first != null && it.last != null }
-        .let { ayahLines ->
-          if (ayahLines.isEmpty()) 0
-          else (ayahLines.maxOf { it.last!! } - ayahLines.minOf { it.first!! } + 1)
-        }
+    val currentVersesResp = loadRawPageVerses(pageNumber)
+    val responses = mutableListOf(currentVersesResp)
 
-      if (expectedCount > 0 &&
-        MushafPageBuilder.countExpandedWordsForPage(pageNumber, responses) < expectedCount &&
-        pageNumber > 1
-      ) {
-        runCatching { loadRawPageVerses(pageNumber - 1) }.getOrNull()?.let { prevResp ->
-          responses.add(0, prevResp)
-        }
+    val expectedCount = qulLines
+      .filter { it.type == "ayah" && it.first != null && it.last != null }
+      .let { ayahLines ->
+        if (ayahLines.isEmpty()) 0
+        else (ayahLines.maxOf { it.last!! } - ayahLines.minOf { it.first!! } + 1)
       }
 
-      if (expectedCount > 0 &&
-        MushafPageBuilder.countExpandedWordsForPage(pageNumber, responses) < expectedCount &&
-        pageNumber < 604
-      ) {
-        runCatching { loadRawPageVerses(pageNumber + 1) }.getOrNull()?.let { nextResp ->
-          responses.add(nextResp)
-        }
+    if (expectedCount > 0 &&
+      MushafPageBuilder.countExpandedWordsForPage(pageNumber, responses) < expectedCount &&
+      pageNumber > 1
+    ) {
+      runCatching { loadRawPageVerses(pageNumber - 1) }.getOrNull()?.let { prevResp ->
+        responses.add(0, prevResp)
       }
+    }
 
-      val tajweedTexts = if (includeTajweedFallback) {
-        fetchTajweedPageTexts(pageNumber)
-      } else {
-        emptyMap()
+    if (expectedCount > 0 &&
+      MushafPageBuilder.countExpandedWordsForPage(pageNumber, responses) < expectedCount &&
+      pageNumber < 604
+    ) {
+      runCatching { loadRawPageVerses(pageNumber + 1) }.getOrNull()?.let { nextResp ->
+        responses.add(nextResp)
       }
+    }
 
-      val built = if (qulLines.isNotEmpty()) {
-        MushafPageBuilder.buildPageFromQulLayout(
-          pageNumber = pageNumber,
-          qulLines = qulLines,
-          versesResponses = responses,
-          chaptersById = surahs,
-          basmalahTokens = basmalahWords,
-          tajweedAyahTexts = tajweedTexts,
-        )
-      } else {
-        MushafPageBuilder.buildPage(
-          pageNumber = pageNumber,
-          versesResponse = currentVersesResp,
-          chaptersById = surahs,
-          basmalahTokens = basmalahWords,
-          tajweedAyahTexts = tajweedTexts,
-        )
-      }
-      pageMemoryCache.put(cacheKey, built)
-      built
+    val tajweedTexts = if (includeTajweedFallback) {
+      fetchTajweedPageTexts(pageNumber)
+    } else {
+      emptyMap()
+    }
+
+    if (qulLines.isNotEmpty()) {
+      MushafPageBuilder.buildPageFromQulLayout(
+        pageNumber = pageNumber,
+        qulLines = qulLines,
+        versesResponses = responses,
+        chaptersById = surahs,
+        basmalahTokens = basmalahWords,
+        tajweedAyahTexts = tajweedTexts,
+      )
+    } else {
+      MushafPageBuilder.buildPage(
+        pageNumber = pageNumber,
+        versesResponse = currentVersesResp,
+        chaptersById = surahs,
+        basmalahTokens = basmalahWords,
+        tajweedAyahTexts = tajweedTexts,
+      )
     }
   }
 

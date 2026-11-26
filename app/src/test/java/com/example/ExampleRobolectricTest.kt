@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.integrity.VerifiedDiskCache
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.ReaderPreferences
+import com.example.data.quran.GlobalMushafFontSizer
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafLine
 import com.example.data.quran.MushafOfflineSetupManager
@@ -332,7 +333,7 @@ class ExampleRobolectricTest {
 
   @Test
   fun `layout cache version is bumped and renderer enforces uniform non-clipping layout in portrait and two-page modes`() = runBlocking {
-    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 3)
+    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 4)
 
     val context = ApplicationProvider.getApplicationContext<Context>()
     val renderer = MushafPageBitmapRenderer(context)
@@ -382,10 +383,10 @@ class ExampleRobolectricTest {
       com.example.data.quran.QulLayoutLine(7, "ayah", first = 34, last = 39, centered = true),
       com.example.data.quran.QulLayoutLine(8, "ayah", first = 40, last = 42, centered = true),
     )
-    fun makeRange(startId: Int, count: Int, lineNo: Int, verseKey: String): VerseDto = VerseDto(
+    fun makeRange(startId: Int, count: Int, lineNo: Int, verseKey: String, pageNo: Int = 2): VerseDto = VerseDto(
       id = startId,
       verse_key = verseKey,
-      page_number = 2,
+      page_number = pageNo,
       juz_number = 1,
       hizb_number = 1,
       words = (0 until count).map { idx ->
@@ -394,7 +395,7 @@ class ExampleRobolectricTest {
           position = idx + 1,
           char_type_name = if (idx == count - 1) "end" else "word",
           line_number = lineNo,
-          page_number = 2,
+          page_number = pageNo,
           code_v2 = "كَلِمَة",
           text_uthmani = "ٱلْمُتَّقِينَ",
         )
@@ -445,11 +446,48 @@ class ExampleRobolectricTest {
       val rectLong = rendered.verseHighlightRects["2:3"]!!
       val rectCenteredShort = rendered.verseHighlightRects["2:6"]!!
       assertEquals(rectLong[3] - rectLong[1], rectCenteredShort[3] - rectCenteredShort[1], 1.5f)
-      // Centered short line (2:6) is NOT stretched edge-to-edge like justified line (2:3)
-      val longW = rectLong[2] - rectLong[0]
+      // On page 2, every multi-word ayah line (including 2:6 flagged centered=true) fills the width like page 1
       val centeredShortW = rectCenteredShort[2] - rectCenteredShort[0]
-      assertTrue("Centered short line ($centeredShortW) should stay narrower than justified line ($longW)", centeredShortW < longW * 0.85f)
+      assertTrue(
+        "Page 2 multi-word line ($centeredShortW) should fill width (specWidth=${spec.widthPx})",
+        centeredShortW > spec.widthPx * 0.70f,
+      )
     }
+
+    // On pages 3-604, lines flagged centered=true stay centered at their natural width
+    val page3WithCentered = MushafPageBuilder.buildPageFromQulLayout(
+      pageNumber = 3,
+      qulLines = listOf(
+        com.example.data.quran.QulLayoutLine(1, "ayah", first = 1, last = 8, centered = false),
+        com.example.data.quran.QulLayoutLine(2, "ayah", first = 9, last = 11, centered = true),
+      ),
+      versesResponses = listOf(
+        VersesByPageResponse(
+          verses = listOf(
+            makeRange(1, 8, 1, "2:10", pageNo = 3),
+            makeRange(9, 3, 2, "2:11", pageNo = 3),
+          ),
+        ),
+      ),
+      chaptersById = surahs,
+      basmalahTokens = emptyList(),
+    )
+    val renderedPage3 = renderer.renderOrGet(
+      pageData = page3WithCentered,
+      spec = portraitSpec,
+      pageTypeface = Typeface.SERIF,
+      basmalahTypeface = Typeface.SERIF,
+      usesTagFallbackTajweed = false,
+      surahsById = surahs,
+    )
+    val justifiedBodyRect = renderedPage3.verseHighlightRects["2:10"]!!
+    val centeredBodyRect = renderedPage3.verseHighlightRects["2:11"]!!
+    val justifiedBodyW = justifiedBodyRect[2] - justifiedBodyRect[0]
+    val centeredBodyW = centeredBodyRect[2] - centeredBodyRect[0]
+    assertTrue(
+      "Body page centered short line ($centeredBodyW) should stay narrower than justified line ($justifiedBodyW)",
+      centeredBodyW < justifiedBodyW * 0.85f,
+    )
 
     // Verify proportional vertical line spacing on page 2 vs standard 15-line page (lines 3..8 pitch < stretched full-body/8)
     val portraitPage2 = renderer.renderOrGet(
@@ -531,5 +569,142 @@ class ExampleRobolectricTest {
         }
       }
     }
+  }
+
+  @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+  @Test
+  fun `global mushaf font sizer computes unified intro and body sizes and persists cache in preferences`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefs = ReaderPreferences(context)
+    val diskCache = VerifiedDiskCache(context)
+    val fontManager = PageFontManager(diskCache)
+    val repo = QuranRepository(context, diskCache, fontManager)
+    val renderer = MushafPageBitmapRenderer(context)
+    val sizer = GlobalMushafFontSizer(repo, fontManager, renderer)
+
+    val surahsJson = """{"chapters":[""" +
+      """{"id":1,"name_simple":"Al-Fatihah","name_arabic":"الفاتحة","revelation_order":5,"verses_count":7,"bismillah_pre":false,"pages":[1,1],"revelation_place":"makkah"},""" +
+      """{"id":2,"name_simple":"Al-Baqarah","name_arabic":"البقرة","revelation_order":87,"verses_count":286,"bismillah_pre":true,"pages":[2,49],"revelation_place":"madinah"}""" +
+      """]}"""
+    diskCache.writeVerifiedBytes("api/chapters_ar.json", surahsJson.encodeToByteArray())
+    diskCache.writeVerifiedBytes(
+      "api/verse_1_1.json",
+      ("""{"verse":{"id":1,"verse_key":"1:1","page_number":1,"juz_number":1,"hizb_number":1,"words":[""" +
+        """{"id":1,"position":1,"char_type_name":"word","line_number":2,"page_number":1,"code_v2":"بِسْمِ","text_uthmani":"بِسْمِ"},""" +
+        """{"id":2,"position":2,"char_type_name":"word","line_number":2,"page_number":1,"code_v2":"اللَّهِ","text_uthmani":"اللَّهِ"},""" +
+        """{"id":3,"position":3,"char_type_name":"word","line_number":2,"page_number":1,"code_v2":"الرَّحْمَٰنِ","text_uthmani":"الرَّحْمَٰنِ"},""" +
+        """{"id":4,"position":4,"char_type_name":"word","line_number":2,"page_number":1,"code_v2":"الرَّحِيمِ","text_uthmani":"الرَّحِيمِ"}""" +
+        """]}}""").encodeToByteArray(),
+    )
+
+    // Craft verified cached pages 1..4 matching the exact QUL token counts in layout_madinah_v2.json
+    // so MushafPageBuilder resolves every line cleanly; make page 2 wider than page 1 and page 4 wider than page 3.
+    suspend fun writeQulMatchedPageJson(pageNum: Int, verseKey: String, wideLineNo: Int?, tokenTextNormal: String, tokenTextWide: String) {
+      val qulAyahLines = com.example.data.quran.QulPageLayoutLoader
+        .getPageLines(context, MushafEdition.MADINAH_1421, pageNum)
+        .filter { it.type == "ayah" && it.first != null && it.last != null }
+      val firstQulId = qulAyahLines.minOf { it.first!! }
+      val lastQulId = qulAyahLines.maxOf { it.last!! }
+      val lineByWordId = HashMap<Int, Int>()
+      for (ql in qulAyahLines) {
+        for (wid in ql.first!!..ql.last!!) {
+          lineByWordId[wid] = ql.line
+        }
+      }
+      val wordsJson = (firstQulId..lastQulId).mapIndexed { idx, wid ->
+        val lineNo = lineByWordId[wid] ?: qulAyahLines.first().line
+        val txt = if (wideLineNo != null && lineNo == wideLineNo) tokenTextWide else tokenTextNormal
+        val pos = idx + 1
+        val type = if (wid == lastQulId) "end" else "word"
+        """{"id":$wid,"position":$pos,"char_type_name":"$type","line_number":$lineNo,"page_number":$pageNum,"code_v2":"$txt","text_uthmani":"$txt"}"""
+      }.joinToString(",")
+      val json = """{"verses":[{"id":$pageNum,"verse_key":"$verseKey","page_number":$pageNum,"juz_number":1,"hizb_number":1,"words":[$wordsJson]}]}"""
+      diskCache.writeVerifiedBytes("api/page_$pageNum.json", json.encodeToByteArray())
+    }
+
+    writeQulMatchedPageJson(pageNum = 1, verseKey = "1:1", wideLineNo = null, tokenTextNormal = "ا", tokenTextWide = "ا")
+    writeQulMatchedPageJson(pageNum = 2, verseKey = "2:1", wideLineNo = 5, tokenTextNormal = "بِسْمِ", tokenTextWide = "ٱلْمُتَّقِينَٱلْمُتَّقِينَ")
+    writeQulMatchedPageJson(pageNum = 3, verseKey = "2:6", wideLineNo = null, tokenTextNormal = "ا", tokenTextWide = "ا")
+    writeQulMatchedPageJson(pageNum = 4, verseKey = "2:17", wideLineNo = 2, tokenTextNormal = "كَلِمَة", tokenTextWide = "ٱلْمُتَّقِينَٱلْمُتَّقِينَ")
+
+    val spec = PageRenderSpec(
+      widthPx = 620,
+      heightPx = 1000,
+      density = 2.0f,
+      fontScale = 1.0f,
+      edition = MushafEdition.MADINAH_1421,
+      isDarkTheme = false,
+      backgroundTheme = BackgroundTheme.WHITE,
+      isTwoPageMode = false,
+    )
+    val metrics = renderer.computeTextBodyMetrics(spec)
+    val fontVersion = fontManager.fontVersionFor(MushafEdition.MADINAH_1421, usesTagFallback = true)
+    val cacheKey = GlobalMushafFontSizer.buildCacheKey(
+      edition = spec.edition,
+      fontVersion = fontVersion,
+      layoutVersion = QuranRepository.LAYOUT_CACHE_VERSION,
+      safeWidthPx = metrics.safeWidthPx,
+      bodySlotHeightPx = metrics.bodySlotHeightPx,
+      spec = spec,
+    )
+
+    var lastProgressTotal = 0
+    val sizingResult = sizer.computeGlobalFontSizes(
+      spec = spec,
+      usesTagFallbackTajweed = true,
+      fontVersion = fontVersion,
+      pageRangeIntro = 1..2,
+      pageRangeBody = 3..4,
+      onProgress = { _, total -> lastProgressTotal = total },
+    )
+
+    assertEquals("sizingResult=$sizingResult", 4, sizingResult.measuredPagesCount)
+    assertTrue("sizingResult=$sizingResult", sizingResult.allPagesMeasured)
+    assertEquals("sizingResult=$sizingResult", 4, lastProgressTotal)
+    assertEquals("sizingResult=$sizingResult", 2, sizingResult.introLimitingPage)
+    assertEquals("sizingResult=$sizingResult", 4, sizingResult.bodyLimitingPage)
+    assertTrue("sizingResult=$sizingResult", sizingResult.introSp > sizingResult.bodySp)
+
+    prefs.saveGlobalFontSizes(cacheKey, sizingResult.introSp, sizingResult.bodySp)
+    val persisted = prefs.stateFlow.first().globalFontSizes[cacheKey]
+    assertNotNull(persisted)
+    assertEquals(sizingResult.introSp, persisted!!.introSp, 0.001f)
+    assertEquals(sizingResult.bodySp, persisted.bodySp, 0.001f)
+
+    // Render Page 1 & Page 2 with globalIntroFontSp -> same line height & full-width fill
+    val globalSpec = spec.copy(
+      globalIntroFontSp = sizingResult.introSp,
+      globalBodyFontSp = sizingResult.bodySp,
+    )
+    val surahs = repo.getSurahs().getOrThrow().associateBy { it.id }
+    val p1Data = repo.getPageForMeasurement(1, MushafEdition.MADINAH_1421, includeTajweedFallback = true).getOrThrow()
+    val p2Data = repo.getPageForMeasurement(2, MushafEdition.MADINAH_1421, includeTajweedFallback = true).getOrThrow()
+    val p3Data = repo.getPageForMeasurement(3, MushafEdition.MADINAH_1421, includeTajweedFallback = true).getOrThrow()
+    val p4Data = repo.getPageForMeasurement(4, MushafEdition.MADINAH_1421, includeTajweedFallback = true).getOrThrow()
+
+    val r1 = renderer.renderOrGet(p1Data, globalSpec, Typeface.SERIF, Typeface.SERIF, true, surahs)
+    val r2 = renderer.renderOrGet(p2Data, globalSpec, Typeface.SERIF, Typeface.SERIF, true, surahs)
+    val r3 = renderer.renderOrGet(p3Data, globalSpec, Typeface.SERIF, Typeface.SERIF, true, surahs)
+    val r4 = renderer.renderOrGet(p4Data, globalSpec, Typeface.SERIF, Typeface.SERIF, true, surahs)
+
+    // Compare individual line heights from wordHitBoxes (page 1 & 2 span multiple lines of a single synthetic verse)
+    val h1Line = r1.wordHitBoxes.let { it.bottoms[0] - it.tops[0] }
+    val h2Line = r2.wordHitBoxes.let { it.bottoms[0] - it.tops[0] }
+    val h3Line = r3.wordHitBoxes.let { it.bottoms[0] - it.tops[0] }
+    val h4Line = r4.wordHitBoxes.let { it.bottoms[0] - it.tops[0] }
+
+    // Pages 1 & 2 share identical intro font height; Pages 3 & 4 share identical smaller body font height
+    assertEquals(h1Line, h2Line, 1.0f)
+    assertEquals(h3Line, h4Line, 1.0f)
+    assertTrue(h1Line > h3Line)
+
+    // Multi-word ayah line on Page 1 & Page 2 fills the width edge-to-edge
+    val w1 = r1.verseHighlightRects["1:1"]!!.let { it[2] - it[0] }
+    val w2 = r2.verseHighlightRects["2:1"]!!.let { it[2] - it[0] }
+    assertTrue("Page 1 width $w1 should fill frame", w1 > spec.widthPx * 0.70f)
+    assertTrue("Page 2 width $w2 should fill frame", w2 > spec.widthPx * 0.70f)
+
+    prefs.clearGlobalFontSizes()
+    assertTrue(prefs.stateFlow.first().globalFontSizes.isEmpty())
   }
 }

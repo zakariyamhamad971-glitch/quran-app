@@ -13,6 +13,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.quran.MushafEdition
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONObject
 
 private val Context.dataStore by preferencesDataStore(name = "qabasat_reader_prefs")
 
@@ -46,6 +47,13 @@ data class PersistedReaderState(
   val betaChannelUnlocked: Boolean = false,
   val activePdfMushafId: String? = null,
   val activeMushafIsPdf: Boolean = false,
+  val globalFontSizes: Map<String, CachedGlobalFontSizes> = emptyMap(),
+)
+
+@Immutable
+data class CachedGlobalFontSizes(
+  val introSp: Float,
+  val bodySp: Float,
 )
 
 class ReaderPreferences(private val context: Context) {
@@ -67,6 +75,7 @@ class ReaderPreferences(private val context: Context) {
     val BETA_CHANNEL_UNLOCKED = booleanPreferencesKey("beta_channel_unlocked")
     val ACTIVE_PDF_MUSHAF_ID = stringPreferencesKey("active_pdf_mushaf_id")
     val ACTIVE_MUSHAF_IS_PDF = booleanPreferencesKey("active_mushaf_is_pdf")
+    val GLOBAL_FONT_SIZES = stringPreferencesKey("global_mushaf_font_sizes")
   }
 
   val stateFlow: Flow<PersistedReaderState> = context.dataStore.data.map { prefs ->
@@ -112,7 +121,27 @@ class ReaderPreferences(private val context: Context) {
       betaChannelUnlocked = (prefs[Keys.BETA_CHANNEL_UNLOCKED] ?: false) || (prefs[Keys.BETA_CHANNEL_ENABLED] ?: false),
       activePdfMushafId = pdfId,
       activeMushafIsPdf = isPdf,
+      globalFontSizes = decodeGlobalFontSizes(prefs[Keys.GLOBAL_FONT_SIZES]),
     )
+  }
+
+  private fun decodeGlobalFontSizes(raw: String?): Map<String, CachedGlobalFontSizes> {
+    if (raw.isNullOrBlank()) return emptyMap()
+    return runCatching {
+      val root = JSONObject(raw)
+      buildMap {
+        val keys = root.keys()
+        while (keys.hasNext()) {
+          val k = keys.next()
+          val obj = root.optJSONObject(k) ?: continue
+          val intro = obj.optDouble("intro", Double.NaN).toFloat()
+          val body = obj.optDouble("body", Double.NaN).toFloat()
+          if (intro.isFinite() && intro > 0f && body.isFinite() && body > 0f) {
+            put(k, CachedGlobalFontSizes(introSp = intro, bodySp = body))
+          }
+        }
+      }
+    }.getOrDefault(emptyMap())
   }
 
   suspend fun saveLastPage(page: Int) {
@@ -246,6 +275,29 @@ class ReaderPreferences(private val context: Context) {
 
   suspend fun setLayoutCacheVersion(version: Int) {
     context.dataStore.edit { it[Keys.LAYOUT_CACHE_VERSION] = version }
+  }
+
+  suspend fun saveGlobalFontSizes(cacheKey: String, introSp: Float, bodySp: Float) {
+    if (!introSp.isFinite() || introSp <= 0f || !bodySp.isFinite() || bodySp <= 0f) return
+    context.dataStore.edit { prefs ->
+      val current = decodeGlobalFontSizes(prefs[Keys.GLOBAL_FONT_SIZES]).toMutableMap()
+      current[cacheKey] = CachedGlobalFontSizes(introSp = introSp, bodySp = bodySp)
+      val out = JSONObject()
+      for ((k, v) in current) {
+        out.put(
+          k,
+          JSONObject().apply {
+            put("intro", v.introSp.toDouble())
+            put("body", v.bodySp.toDouble())
+          },
+        )
+      }
+      prefs[Keys.GLOBAL_FONT_SIZES] = out.toString()
+    }
+  }
+
+  suspend fun clearGlobalFontSizes() {
+    context.dataStore.edit { it.remove(Keys.GLOBAL_FONT_SIZES) }
   }
 
   suspend fun setBetaChannelEnabled(enabled: Boolean) {

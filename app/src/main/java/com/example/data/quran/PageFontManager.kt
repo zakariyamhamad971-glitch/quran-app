@@ -104,6 +104,55 @@ class PageFontManager(
     }
   }
 
+  fun fontVersionFor(edition: MushafEdition, usesTagFallback: Boolean): String =
+    when {
+      usesTagFallback -> "tag_fallback_v1"
+      edition == MushafEdition.MADINAH_1421 -> "qcf_v2"
+      edition == MushafEdition.TAJWEED_V4 -> "qcf_v4_colrv1_v2"
+      else -> edition.name
+    }
+
+  /**
+   * Loads a page Typeface for background global font measurement without evicting the active
+   * reader font LRU cache.
+   */
+  suspend fun loadPageFontForMeasurement(
+    page: Int,
+    edition: MushafEdition,
+    useWhiteInk: Boolean = false,
+  ): Typeface? {
+    if (page !in 1..604) return null
+    val key = cacheKey(page, edition, useWhiteInk)
+    memoryCache.get(key)?.let { return it }
+
+    return withContext(Dispatchers.IO) {
+      val diskPath = relativeDiskPath(page, edition, useWhiteInk)
+      var file = diskCache.getVerifiedFile(diskPath)
+      if (file == null) {
+        if (edition == MushafEdition.TAJWEED_V4) {
+          val rawPath = "fonts/qcf_v4_raw/p$page.ttf"
+          val rawBytes = diskCache.readVerifiedBytes(rawPath) ?: run {
+            val fetched = fetchBytes(fontUrl(page, edition)) ?: return@withContext null
+            diskCache.writeVerifiedBytes(rawPath, fetched)
+            fetched
+          }
+          val finalBytes = withContext(Dispatchers.Default) {
+            if (useWhiteInk) {
+              CpalFontPatcher.patchCpalBlackToWhite(rawBytes)
+            } else {
+              CpalFontPatcher.patchCpalBlackToBlack(rawBytes)
+            }
+          }
+          file = diskCache.writeVerifiedBytes(diskPath, finalBytes)
+        } else {
+          val rawBytes = fetchBytes(fontUrl(page, edition)) ?: return@withContext null
+          file = diskCache.writeVerifiedBytes(diskPath, rawBytes)
+        }
+      }
+      runCatching { Typeface.createFromFile(file) }.getOrNull()
+    }
+  }
+
   // Page 1 font holds the official 1:1 Basmalah QCF glyphs for Surah headers across the Mushaf
   suspend fun loadBasmalahFont(
     edition: MushafEdition,
