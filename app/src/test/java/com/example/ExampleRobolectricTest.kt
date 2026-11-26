@@ -334,7 +334,7 @@ class ExampleRobolectricTest {
 
   @Test
   fun `layout cache version is bumped and renderer enforces uniform non-clipping layout in portrait and two-page modes`() = runBlocking {
-    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 7)
+    assertTrue(QuranRepository.LAYOUT_CACHE_VERSION >= 8)
 
     val context = ApplicationProvider.getApplicationContext<Context>()
     val renderer = MushafPageBitmapRenderer(context)
@@ -941,18 +941,24 @@ class ExampleRobolectricTest {
         assertFalse("Left edge should contain gold frame, not pure white", edgeLeftPixel == android.graphics.Color.WHITE)
         assertFalse("Right edge should contain gold frame, not pure white", edgeRightPixel == android.graphics.Color.WHITE)
 
-        // Banner must touch both inner gold lines edge-to-edge (just inside innerFrameLeft / innerFrameRight)
+        // Banner must touch both inner gold lines edge-to-edge (outer gold end-cap at innerLeftCheckX, emerald+gold arabesque right inside it)
         val innerLeftCheckX = (4.0f * mSpec.density + 2f).toInt()
         val innerRightCheckX = mBmp.width - innerLeftCheckX - 1
+        val innerWingGreenX = (innerLeftCheckX + 10 * mSpec.density).toInt().coerceAtMost(mBmp.width / 4)
+        val innerRightWingGreenX = mBmp.width - innerWingGreenX - 1
         var foundEdgeToEdgeRow = false
         for (y in 20 until (mBmp.height - 20)) {
-          val leftPx = mBmp.getPixel(innerLeftCheckX, y)
-          val rightPx = mBmp.getPixel(innerRightCheckX, y)
-          val isLeftBanner = android.graphics.Color.red(leftPx) < 0x50 &&
-            android.graphics.Color.green(leftPx) > android.graphics.Color.red(leftPx)
-          val isRightBanner = android.graphics.Color.red(rightPx) < 0x50 &&
-            android.graphics.Color.green(rightPx) > android.graphics.Color.red(rightPx)
-          if (isLeftBanner && isRightBanner) {
+          val leftEdgePx = mBmp.getPixel(innerLeftCheckX, y)
+          val rightEdgePx = mBmp.getPixel(innerRightCheckX, y)
+          val leftWingPx = mBmp.getPixel(innerWingGreenX, y)
+          val rightWingPx = mBmp.getPixel(innerRightWingGreenX, y)
+          val isLeftEdgeBanner = leftEdgePx != android.graphics.Color.WHITE
+          val isRightEdgeBanner = rightEdgePx != android.graphics.Color.WHITE
+          val isLeftGreen = android.graphics.Color.red(leftWingPx) < 0x50 &&
+            android.graphics.Color.green(leftWingPx) > android.graphics.Color.red(leftWingPx)
+          val isRightGreen = android.graphics.Color.red(rightWingPx) < 0x50 &&
+            android.graphics.Color.green(rightWingPx) > android.graphics.Color.red(rightWingPx)
+          if (isLeftEdgeBanner && isRightEdgeBanner && isLeftGreen && isRightGreen) {
             foundEdgeToEdgeRow = true
             break
           }
@@ -1093,5 +1099,151 @@ class ExampleRobolectricTest {
       }
     }
     assertTrue("Line 8 should have at least 2 distinct separated ink clusters, found $clusters", clusters >= 2)
+  }
+
+  @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+  @Test
+  fun `surah banner wings are ornate edge-to-edge and page font fills portrait landscape 1page and 2page`() = runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val renderer = MushafPageBitmapRenderer(context)
+    val surahs = mapOf(
+      9 to SurahMeta(9, "التوبة", 113, 129, false, 187, 207, false),
+    )
+
+    val page187Template = com.example.data.quran.MushafPageData(
+      pageNumber = 187,
+      surahIds = listOf(9),
+      juzNumber = 10,
+      hizbNumber = 19,
+      lines = buildList {
+        add(MushafLine.SurahHeaderLine(lineNumber = 1, surah = surahs.getValue(9)))
+        for (ln in 2..15) {
+          add(
+            MushafLine.AyahWordsLine(
+              lineNumber = ln,
+              isCentered = false,
+              words = (1..10).map { idx ->
+                com.example.data.quran.MushafWord(
+                  id = ln * 20 + idx,
+                  verseKey = "9:1",
+                  surahId = 9,
+                  ayahNumber = 1,
+                  position = idx,
+                  isEndMarker = idx == 10 && ln == 2,
+                  codeV2 = "بَرَآءَةٌ",
+                  textUthmani = "بَرَآءَةٌ",
+                )
+              },
+            ),
+          )
+        }
+      },
+    )
+
+    val specs = listOf(
+      PageRenderSpec(1200, 1920, 2.0f, 1.0f, MushafEdition.MADINAH_1421, isTwoPageMode = false),
+      PageRenderSpec(1200, 1920, 2.0f, 1.0f, MushafEdition.TAJWEED_V4, isTwoPageMode = false),
+      PageRenderSpec(600, 1920, 2.0f, 1.0f, MushafEdition.MADINAH_1421, isTwoPageMode = true),
+      PageRenderSpec(744, 1200, 2.0f, 1.0f, MushafEdition.TAJWEED_V4, isTwoPageMode = false),
+      PageRenderSpec(960, 1200, 2.0f, 1.0f, MushafEdition.MADINAH_1421, isTwoPageMode = true),
+      PageRenderSpec(960, 1200, 2.0f, 1.0f, MushafEdition.TAJWEED_V4, isTwoPageMode = true),
+    )
+
+    for (spec in specs) {
+      val rendered = renderer.renderOrGet(page187Template, spec, Typeface.SERIF, Typeface.SERIF, true, surahs)
+      val bmp = rendered.imageBitmap.asAndroidBitmap()
+
+      // Find banner y-band inside the left arabesque wing (just past outer end-cap)
+      val wingSampleLeftX = (4.0f * spec.density + 10f * spec.density).toInt().coerceIn(16, bmp.width / 6)
+      var bannerY0 = -1
+      var bannerY1 = -1
+      for (y in 20 until (bmp.height / 3)) {
+        val px = bmp.getPixel(wingSampleLeftX, y)
+        val isGreenBand = android.graphics.Color.red(px) < 0x50 &&
+          android.graphics.Color.green(px) > android.graphics.Color.red(px)
+        if (isGreenBand) {
+          if (bannerY0 == -1) bannerY0 = y
+          bannerY1 = y
+        }
+      }
+      assertTrue("Expected top surah banner for spec=$spec", bannerY0 >= 0 && bannerY1 > bannerY0 + 10)
+
+      // Outer left & right wings [innerFrame .. 12% width] must contain ornamental gold pixels (not bare solid green)
+      val wingCheckStartX = (4.0f * spec.density + 2f).toInt().coerceAtLeast(6)
+      val wingSpanEnd = (bmp.width * 0.12f).toInt().coerceAtLeast(wingCheckStartX + 16)
+      var goldOrnamentPixelsLeft = 0
+      var goldOrnamentPixelsRight = 0
+      for (y in (bannerY0 + 3) until (bannerY1 - 2)) {
+        for (x in wingCheckStartX until wingSpanEnd) {
+          val lp = bmp.getPixel(x, y)
+          if (android.graphics.Color.red(lp) > 0xA0 && android.graphics.Color.green(lp) > 0x80) {
+            goldOrnamentPixelsLeft++
+          }
+          val rx = bmp.width - 1 - x
+          val rp = bmp.getPixel(rx, y)
+          if (android.graphics.Color.red(rp) > 0xA0 && android.graphics.Color.green(rp) > 0x80) {
+            goldOrnamentPixelsRight++
+          }
+        }
+      }
+      assertTrue(
+        "Left banner wing must have ornate gold detail (found $goldOrnamentPixelsLeft px) for $spec",
+        goldOrnamentPixelsLeft >= 10,
+      )
+      assertTrue(
+        "Right banner wing must have ornate gold detail (found $goldOrnamentPixelsRight px) for $spec",
+        goldOrnamentPixelsRight >= 10,
+      )
+
+      // Verify zero horizontal clipping across all 140 word boxes
+      val boxes = rendered.wordHitBoxes
+      assertEquals(140, boxes.count)
+      for (i in 0 until boxes.count) {
+        assertTrue(
+          "Word box $i out of bounds [${boxes.lefts[i]}, ${boxes.rights[i]}] width=${spec.widthPx}",
+          boxes.lefts[i] >= 0f && boxes.rights[i] <= spec.widthPx.toFloat(),
+        )
+      }
+    }
+
+    // If QCF p187.ttf is present locally, verify real QCF glyph size fills portrait 1200x1920 cleanly (~68-74px, inkH > 72px)
+    val p187File = java.io.File("/tmp/qcf_test/p187.ttf")
+    if (p187File.exists()) {
+      val qcfTypeface = Typeface.createFromFile(p187File)
+      val qcfWordPage = com.example.data.quran.MushafPageData(
+        pageNumber = 187,
+        surahIds = listOf(9),
+        juzNumber = 10,
+        hizbNumber = 19,
+        lines = buildList {
+          add(MushafLine.SurahHeaderLine(lineNumber = 1, surah = surahs.getValue(9)))
+          for (ln in 2..15) {
+            add(
+              MushafLine.AyahWordsLine(
+                lineNumber = ln,
+                isCentered = false,
+                words = (1..10).map { idx ->
+                  com.example.data.quran.MushafWord(
+                    id = ln * 20 + idx,
+                    verseKey = "9:1",
+                    surahId = 9,
+                    ayahNumber = 1,
+                    position = idx,
+                    isEndMarker = false,
+                    codeV2 = "\uFC41",
+                    textUthmani = "بَرَآءَةٌ",
+                  )
+                },
+              ),
+            )
+          }
+        },
+      )
+      val portraitSpec = PageRenderSpec(1200, 1920, 2.0f, 1.0f, MushafEdition.MADINAH_1421, isTwoPageMode = false)
+      val qcfRendered = renderer.renderOrGet(qcfWordPage, portraitSpec, qcfTypeface, qcfTypeface, false, surahs)
+      val boxes = qcfRendered.wordHitBoxes
+      val boxH = boxes.bottoms[0] - boxes.tops[0]
+      assertTrue("Real QCF text box height on 1200x1920 should be large (>= 80px), got $boxH", boxH >= 80f)
+    }
   }
 }

@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Paint
@@ -9,9 +10,12 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.text.TextPaint
+import android.util.LruCache
 import com.example.data.quran.MushafEdition
 import com.example.data.quran.SurahMeta
 import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 internal object SurahHeaderOrnamentRenderer {
 
@@ -21,6 +25,11 @@ internal object SurahHeaderOrnamentRenderer {
   private const val GLYPH_WIDTH_UNITS = 8240f
   private const val GLYPH_HEIGHT_UNITS = 1016f
   internal const val HEADER_GLYPH_ASPECT_RATIO = GLYPH_WIDTH_UNITS / GLYPH_HEIGHT_UNITS
+
+  // Wing / medallion seam fractions from gid=40 ('header') contours
+  private const val WING_CAP_NX = 0.014f
+  private const val WING_LEFT_END_NX = 0.160f
+  private const val WING_RIGHT_START_NX = 0.840f
 
   // Exact normalized circle centers & radii extracted from glyph 40 ('header') contours C40 & C31
   private const val LEFT_CIRCLE_NX = 0.20619f
@@ -174,16 +183,17 @@ internal object SurahHeaderOrnamentRenderer {
     }
 
     // Unified shared palette for both Madinah and Tajweed mushafs (identical appearance)
-    val bgTopBottomColor = 0xFF0A4E2F.toInt()
-    val bgCenterColor = 0xFF05361F.toInt()
-    val circleTopColor = 0xFF0D643C.toInt()
-    val circleBottomColor = 0xFF073E24.toInt()
-    val glyphGoldColor = if (effectiveDark) 0xFFEDC96D.toInt() else 0xFFE6BF5A.toInt()
+    val bgTopBottomColor = 0xFF0B6A35.toInt()
+    val bgCenterColor = 0xFF064C24.toInt()
+    val circleTopColor = 0xFF0E8040.toInt()
+    val circleBottomColor = 0xFF07572A.toInt()
+    val glyphGoldColor = if (effectiveDark) 0xFFF3CF68.toInt() else 0xFFEEC658.toInt()
+    val glyphOutlineColor = 0xFF02200E.toInt()
     val panelWhiteColor = 0xFFFFFFFF.toInt()
     val panelInkColor = 0xFF111514.toInt()
 
-    // 1. Colored frame background spanning edge-to-edge across the entire [left, left + width] between inner gold lines
-    val bgInset = (glyphH * 0.015f).coerceAtLeast(0.5f)
+    // 1. Emerald frame background spanning edge-to-edge across the entire [left, left + width] between inner gold lines
+    val bgInset = (glyphH * 0.012f).coerceAtLeast(0.5f)
     val bgRect = RectF(
       left,
       glyphRect.top + bgInset,
@@ -202,42 +212,7 @@ internal object SurahHeaderOrnamentRenderer {
     canvas.drawRect(bgRect, fillPaint)
     fillPaint.shader = null
 
-    // 1b. When container width exceeds centered glyphRect width (e.g., wide/landscape slots),
-    // extend matching top & bottom ornamental gold rails cleanly out to both inner gold lines with zero gap.
-    if (glyphRect.left > left + 0.5f || glyphRect.right < (left + width) - 0.5f) {
-      val railStroke = (glyphH * 0.042f).coerceIn(dpFn(0.9f), dpFn(2.2f))
-      val innerRailStroke = (railStroke * 0.55f).coerceAtLeast(dpFn(0.5f))
-      val outerRailInset = bgInset + railStroke * 0.5f
-      val innerRailInset = bgInset + glyphH * 0.085f
-      val leftWingEnd = (glyphRect.left + dpFn(1.5f)).coerceAtMost(left + width)
-      val rightWingStart = (glyphRect.right - dpFn(1.5f)).coerceAtLeast(left)
-
-      strokePaint.color = glyphGoldColor
-      strokePaint.strokeCap = Paint.Cap.BUTT
-      strokePaint.strokeWidth = railStroke
-      if (leftWingEnd > left) {
-        canvas.drawLine(left, glyphRect.top + outerRailInset, leftWingEnd, glyphRect.top + outerRailInset, strokePaint)
-        canvas.drawLine(left, glyphRect.bottom - outerRailInset, leftWingEnd, glyphRect.bottom - outerRailInset, strokePaint)
-      }
-      if (rightWingStart < left + width) {
-        canvas.drawLine(rightWingStart, glyphRect.top + outerRailInset, left + width, glyphRect.top + outerRailInset, strokePaint)
-        canvas.drawLine(rightWingStart, glyphRect.bottom - outerRailInset, left + width, glyphRect.bottom - outerRailInset, strokePaint)
-      }
-
-      strokePaint.color = (glyphGoldColor and 0x00FFFFFF) or 0xA8000000.toInt()
-      strokePaint.strokeWidth = innerRailStroke
-      if (leftWingEnd > left) {
-        canvas.drawLine(left, glyphRect.top + innerRailInset, leftWingEnd, glyphRect.top + innerRailInset, strokePaint)
-        canvas.drawLine(left, glyphRect.bottom - innerRailInset, leftWingEnd, glyphRect.bottom - innerRailInset, strokePaint)
-      }
-      if (rightWingStart < left + width) {
-        canvas.drawLine(rightWingStart, glyphRect.top + innerRailInset, left + width, glyphRect.top + innerRailInset, strokePaint)
-        canvas.drawLine(rightWingStart, glyphRect.bottom - innerRailInset, left + width, glyphRect.bottom - innerRailInset, strokePaint)
-      }
-      strokePaint.strokeCap = Paint.Cap.ROUND
-    }
-
-    // 2. Circle discs behind the left & right glyph medallions
+    // 2. Circle discs behind the left & right glyph medallions (centered in exact undistorted center coordinates)
     val cy = glyphRect.top + glyphH * CIRCLE_NY
     val leftCircleX = glyphRect.left + glyphW * LEFT_CIRCLE_NX
     val rightCircleX = glyphRect.left + glyphW * RIGHT_CIRCLE_NX
@@ -265,22 +240,35 @@ internal object SurahHeaderOrnamentRenderer {
     strokePaint.strokeWidth = (glyphH * 0.022f).coerceIn(dpFn(0.8f), dpFn(2.0f))
     canvas.drawPath(cartouchePath, strokePaint)
 
-    // 4. Official QUL 'header' glyph drawn on top in bright gold
+    // 4. Official QUL 'header' glyph drawn on top with crisp dark outline + bright gold,
+    // tiling the authentic arabesque wing pattern seamlessly edge-to-edge across [left, left + width].
     if (quranCommon != null) {
-      drawHeaderGlyphOnRect(
+      drawEdgeToEdgeHeaderGlyph(
         canvas = canvas,
+        bandLeft = left,
+        bandWidth = width,
         glyphRect = glyphRect,
-        color = glyphGoldColor,
+        goldColor = glyphGoldColor,
+        outlineColor = glyphOutlineColor,
         typeface = quranCommon,
+        dpFn = dpFn,
       )
     } else {
-      // Fallback border only if Typeface failed to load
-      strokePaint.color = glyphGoldColor
-      strokePaint.strokeWidth = (glyphH * 0.036f).coerceAtLeast(1.2f)
-      canvas.drawRect(bgRect, strokePaint)
-      canvas.drawPath(cartouchePath, strokePaint)
-      canvas.drawCircle(leftCircleX, cy, glyphH * CIRCLE_RADIUS_H_RATIO, strokePaint)
-      canvas.drawCircle(rightCircleX, cy, glyphH * CIRCLE_RADIUS_H_RATIO, strokePaint)
+      // Ornate geometric fallback when Typeface is unavailable
+      drawFallbackOrnateBanner(
+        canvas = canvas,
+        bandLeft = left,
+        bandWidth = width,
+        bgRect = bgRect,
+        glyphRect = glyphRect,
+        cartouchePath = cartouchePath,
+        leftCircleX = leftCircleX,
+        rightCircleX = rightCircleX,
+        cy = cy,
+        glyphGoldColor = glyphGoldColor,
+        outlineColor = glyphOutlineColor,
+        dpFn = dpFn,
+      )
     }
 
     // 5. Text inside the two glyph circles: Right = "ترتيبها" + order, Left = "آياتها" + verses count
@@ -371,43 +359,258 @@ internal object SurahHeaderOrnamentRenderer {
     return path
   }
 
-  private fun drawHeaderGlyphOnRect(
-    canvas: Canvas,
-    glyphRect: RectF,
-    color: Int,
+  private data class HeaderBitmapKey(
+    val widthPx: Int,
+    val heightPx: Int,
+    val goldColor: Int,
+    val outlineColor: Int,
+    val typefaceId: Int,
+  )
+
+  private val headerGlyphBitmapCache = LruCache<HeaderBitmapKey, Bitmap>(6)
+
+  private fun getOrRenderHeaderGlyphBitmap(
+    targetW: Int,
+    targetH: Int,
+    goldColor: Int,
+    outlineColor: Int,
     typeface: Typeface,
-  ) {
+  ): Bitmap {
+    val safeW = targetW.coerceAtLeast(8)
+    val safeH = targetH.coerceAtLeast(4)
+    val key = HeaderBitmapKey(
+      widthPx = safeW,
+      heightPx = safeH,
+      goldColor = goldColor,
+      outlineColor = outlineColor,
+      typefaceId = System.identityHashCode(typeface),
+    )
+    headerGlyphBitmapCache.get(key)?.let { return it }
+
+    val bmp = Bitmap.createBitmap(safeW, safeH, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
     val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
       this.typeface = typeface
-      this.color = color
       this.textLocale = Locale.US
       this.fontFeatureSettings = "liga"
     }
-    val targetW = glyphRect.width()
     val bounds = Rect()
-
-    var fontSizePx = (targetW * (GLYPH_UNITS_PER_EM / GLYPH_WIDTH_UNITS)).coerceAtLeast(8f)
+    var fontSizePx = (safeW * (GLYPH_UNITS_PER_EM / GLYPH_WIDTH_UNITS)).coerceAtLeast(8f)
     paint.textSize = fontSizePx
     paint.getTextBounds(HEADER_LIGATURE, 0, HEADER_LIGATURE.length, bounds)
 
     if (bounds.width() > 0) {
-      fontSizePx *= targetW / bounds.width().toFloat()
+      fontSizePx *= safeW.toFloat() / bounds.width().toFloat()
       paint.textSize = fontSizePx
       paint.getTextBounds(HEADER_LIGATURE, 0, HEADER_LIGATURE.length, bounds)
     }
 
-    val drawX = if (bounds.width() > 0) {
-      glyphRect.left - bounds.left.toFloat()
-    } else {
-      glyphRect.left
-    }
+    val drawX = if (bounds.width() > 0) -bounds.left.toFloat() else 0f
     val baseline = if (bounds.height() > 0) {
-      glyphRect.centerY() - (bounds.top + bounds.bottom) * 0.5f
+      safeH * 0.5f - (bounds.top + bounds.bottom) * 0.5f
     } else {
       val fm = paint.fontMetrics
-      glyphRect.centerY() - (fm.ascent + fm.descent) * 0.5f
+      safeH * 0.5f - (fm.ascent + fm.descent) * 0.5f
     }
-    canvas.drawText(HEADER_LIGATURE, drawX, baseline, paint)
+
+    // Dark-forest outline underlay makes every arabesque stem & leaf sharp and prominent
+    paint.style = Paint.Style.STROKE
+    paint.strokeJoin = Paint.Join.ROUND
+    paint.strokeCap = Paint.Cap.ROUND
+    paint.strokeWidth = (safeH * 0.015f).coerceIn(0.8f, 2.2f)
+    paint.color = outlineColor
+    c.drawText(HEADER_LIGATURE, drawX, baseline, paint)
+
+    paint.style = Paint.Style.FILL
+    paint.color = goldColor
+    c.drawText(HEADER_LIGATURE, drawX, baseline, paint)
+
+    synchronized(headerGlyphBitmapCache) {
+      headerGlyphBitmapCache.put(key, bmp)
+    }
+    return bmp
+  }
+
+  private fun drawEdgeToEdgeHeaderGlyph(
+    canvas: Canvas,
+    bandLeft: Float,
+    bandWidth: Float,
+    glyphRect: RectF,
+    goldColor: Int,
+    outlineColor: Int,
+    typeface: Typeface,
+    dpFn: (Float) -> Float,
+  ) {
+    val bmpW = ceil(glyphRect.width().toDouble()).toInt().coerceAtLeast(16)
+    val bmpH = ceil(glyphRect.height().toDouble()).toInt().coerceAtLeast(8)
+    val bmp = getOrRenderHeaderGlyphBitmap(
+      targetW = bmpW,
+      targetH = bmpH,
+      goldColor = goldColor,
+      outlineColor = outlineColor,
+      typeface = typeface,
+    )
+    val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+    val bandRight = bandLeft + bandWidth
+    if (bandWidth <= glyphRect.width() + 2f) {
+      canvas.drawBitmap(
+        bmp,
+        Rect(0, 0, bmpW, bmpH),
+        RectF(bandLeft, glyphRect.top, bandRight, glyphRect.bottom),
+        bmpPaint,
+      )
+      return
+    }
+
+    val centerSrcL = (bmpW * WING_LEFT_END_NX).roundToInt().coerceIn(1, bmpW - 2)
+    val centerSrcR = (bmpW * WING_RIGHT_START_NX).roundToInt().coerceIn(centerSrcL + 1, bmpW - 1)
+    val leftCapSrcEnd = (bmpW * WING_CAP_NX).roundToInt().coerceIn(1, centerSrcL - 1)
+    val rightCapSrcStart = (bmpW * (1f - WING_CAP_NX)).roundToInt().coerceIn(centerSrcR + 1, bmpW - 1)
+
+    val centerDstL = glyphRect.left + glyphRect.width() * WING_LEFT_END_NX
+    val centerDstR = glyphRect.left + glyphRect.width() * WING_RIGHT_START_NX
+    val capDstW = (glyphRect.width() * WING_CAP_NX).coerceAtLeast(dpFn(2.0f))
+
+    // 1. Center medallions & white cartouche at exact 1:1 natural aspect ratio
+    canvas.drawBitmap(
+      bmp,
+      Rect(centerSrcL, 0, centerSrcR, bmpH),
+      RectF(centerDstL, glyphRect.top, centerDstR, glyphRect.bottom),
+      bmpPaint,
+    )
+
+    // 2. Left floral arabesque wing tiled & alternatingly mirrored seamlessly from centerDstL to bandLeft + capDstW
+    val leftWingFillStart = (bandLeft + capDstW).coerceAtMost(centerDstL)
+    if (centerDstL > leftWingFillStart + 0.5f) {
+      val srcLeftWing = Rect(leftCapSrcEnd, 0, centerSrcL, bmpH)
+      val tileW = (glyphRect.width() * (WING_LEFT_END_NX - WING_CAP_NX)).coerceAtLeast(dpFn(12f))
+      canvas.save()
+      canvas.clipRect(leftWingFillStart, glyphRect.top, centerDstL + 0.5f, glyphRect.bottom)
+      var curRight = centerDstL
+      var tileIdx = 0
+      while (curRight > leftWingFillStart) {
+        val curLeft = curRight - tileW
+        val dst = RectF(curLeft, glyphRect.top, curRight + 0.5f, glyphRect.bottom)
+        if (tileIdx % 2 == 0) {
+          canvas.drawBitmap(bmp, srcLeftWing, dst, bmpPaint)
+        } else {
+          canvas.save()
+          canvas.scale(-1f, 1f, (curLeft + curRight) * 0.5f, glyphRect.centerY())
+          canvas.drawBitmap(bmp, srcLeftWing, dst, bmpPaint)
+          canvas.restore()
+        }
+        curRight = curLeft
+        tileIdx++
+      }
+      canvas.restore()
+    }
+
+    // 3. Right floral arabesque wing tiled & alternatingly mirrored seamlessly from centerDstR to bandRight - capDstW
+    val rightWingFillEnd = (bandRight - capDstW).coerceAtLeast(centerDstR)
+    if (rightWingFillEnd > centerDstR + 0.5f) {
+      val srcRightWing = Rect(centerSrcR, 0, rightCapSrcStart, bmpH)
+      val tileW = (glyphRect.width() * (1f - WING_CAP_NX - WING_RIGHT_START_NX)).coerceAtLeast(dpFn(12f))
+      canvas.save()
+      canvas.clipRect(centerDstR - 0.5f, glyphRect.top, rightWingFillEnd, glyphRect.bottom)
+      var curLeft = centerDstR
+      var tileIdx = 0
+      while (curLeft < rightWingFillEnd) {
+        val curRight = curLeft + tileW
+        val dst = RectF(curLeft - 0.5f, glyphRect.top, curRight, glyphRect.bottom)
+        if (tileIdx % 2 == 0) {
+          canvas.drawBitmap(bmp, srcRightWing, dst, bmpPaint)
+        } else {
+          canvas.save()
+          canvas.scale(-1f, 1f, (curLeft + curRight) * 0.5f, glyphRect.centerY())
+          canvas.drawBitmap(bmp, srcRightWing, dst, bmpPaint)
+          canvas.restore()
+        }
+        curLeft = curRight
+        tileIdx++
+      }
+      canvas.restore()
+    }
+
+    // 4. Left & right outer ornamental border end-caps flush against the inner gold frame lines
+    canvas.drawBitmap(
+      bmp,
+      Rect(0, 0, leftCapSrcEnd, bmpH),
+      RectF(bandLeft, glyphRect.top, (bandLeft + capDstW).coerceAtMost(centerDstL), glyphRect.bottom),
+      bmpPaint,
+    )
+    canvas.drawBitmap(
+      bmp,
+      Rect(rightCapSrcStart, 0, bmpW, bmpH),
+      RectF((bandRight - capDstW).coerceAtLeast(centerDstR), glyphRect.top, bandRight, glyphRect.bottom),
+      bmpPaint,
+    )
+  }
+
+  private fun drawFallbackOrnateBanner(
+    canvas: Canvas,
+    bandLeft: Float,
+    bandWidth: Float,
+    bgRect: RectF,
+    glyphRect: RectF,
+    cartouchePath: Path,
+    leftCircleX: Float,
+    rightCircleX: Float,
+    cy: Float,
+    glyphGoldColor: Int,
+    outlineColor: Int,
+    dpFn: (Float) -> Float,
+  ) {
+    val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      style = Paint.Style.STROKE
+      strokeJoin = Paint.Join.ROUND
+      strokeCap = Paint.Cap.ROUND
+    }
+    val glyphH = glyphRect.height()
+    val strokeW = (glyphH * 0.032f).coerceAtLeast(dpFn(1.1f))
+    val radius = glyphH * CIRCLE_RADIUS_H_RATIO
+
+    // Ornate diamond + scroll lattice along both left & right wings so fallback wings are never plain
+    val wingPadY = glyphH * 0.14f
+    val diamondH = (glyphH - wingPadY * 2f) * 0.42f
+    val stepW = (diamondH * 1.45f).coerceAtLeast(dpFn(12f))
+    val leftEnd = leftCircleX - radius
+    val rightStart = rightCircleX + radius
+
+    fun drawWingLattice(startX: Float, endX: Float) {
+      if (endX <= startX + dpFn(4f)) return
+      canvas.save()
+      canvas.clipRect(startX, bgRect.top, endX, bgRect.bottom)
+      var cx = startX + stepW * 0.5f
+      val diamondPath = Path()
+      while (cx - stepW * 0.5f < endX) {
+        diamondPath.reset()
+        diamondPath.moveTo(cx, cy - diamondH)
+        diamondPath.lineTo(cx + stepW * 0.44f, cy)
+        diamondPath.lineTo(cx, cy + diamondH)
+        diamondPath.lineTo(cx - stepW * 0.44f, cy)
+        diamondPath.close()
+        strokePaint.color = outlineColor
+        strokePaint.strokeWidth = strokeW * 1.45f
+        canvas.drawPath(diamondPath, strokePaint)
+        strokePaint.color = glyphGoldColor
+        strokePaint.strokeWidth = strokeW * 0.72f
+        canvas.drawPath(diamondPath, strokePaint)
+        canvas.drawCircle(cx, cy, diamondH * 0.24f, strokePaint)
+        cx += stepW
+      }
+      canvas.restore()
+    }
+
+    drawWingLattice(bandLeft, leftEnd)
+    drawWingLattice(rightStart, bandLeft + bandWidth)
+
+    strokePaint.color = glyphGoldColor
+    strokePaint.strokeWidth = strokeW
+    canvas.drawRect(bgRect, strokePaint)
+    canvas.drawPath(cartouchePath, strokePaint)
+    canvas.drawCircle(leftCircleX, cy, radius, strokePaint)
+    canvas.drawCircle(rightCircleX, cy, radius, strokePaint)
   }
 
   private fun drawCircleLabelAndNumber(

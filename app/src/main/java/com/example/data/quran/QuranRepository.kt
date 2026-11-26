@@ -36,7 +36,7 @@ class QuranRepository(
   private var cachedAssetHashes: List<AssetHashStatus>? = null
 
   companion object {
-    const val LAYOUT_CACHE_VERSION = 7
+    const val LAYOUT_CACHE_VERSION = 8
   }
 
   // Compute each page layout once and keep up to 10 pages (covering +-2 prefetch + 8 bitmap pages)
