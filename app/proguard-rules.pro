@@ -51,4 +51,10 @@
 # Media3 ExoPlayer & Playback Service
 -keep class androidx.media3.** { *; }
 -keep class com.example.player.** { *; }
+-keep class com.example.data.prayer.** { *; }
+-keep class com.example.ui.** { *; }
+-keep public class * extends androidx.work.CoroutineWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+
 

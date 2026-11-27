@@ -16,6 +16,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
+        android:name=".QabasatApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -44,6 +45,12 @@
             android:launchMode="singleTop"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
+            android:theme="@style/Theme.MyApplication" />
+
+        <activity
+            android:name=".ui.CrashActivity"
+            android:exported="false"
+            android:process=":crash"
             android:theme="@style/Theme.MyApplication" />
 
         <service
