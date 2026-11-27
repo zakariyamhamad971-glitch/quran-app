@@ -56,12 +56,14 @@ class AdhanPlaybackService : Service() {
         val locationName = intent.getStringExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME).orEmpty()
         val modeName = intent.getStringExtra(EXTRA_ALARM_MODE).orEmpty()
         val customUriStr = intent.getStringExtra(EXTRA_CUSTOM_URI)
+        val muezzinIdStr = intent.getStringExtra(EXTRA_MUEZZIN_ID)
         val mode = runCatching { PrayerAlarmMode.valueOf(modeName) }
           .getOrDefault(PrayerAlarmMode.SYSTEM_DEFAULT)
 
         val config = PrayerAlarmConfig(
           mode = if (isTest && mode == PrayerAlarmMode.SILENT) PrayerAlarmMode.SYSTEM_DEFAULT else mode,
           customUri = customUriStr,
+          muezzinId = muezzinIdStr,
         )
 
         val notification = AdhanNotificationHelper.buildAdhanAlarmNotification(
@@ -211,6 +213,7 @@ class AdhanPlaybackService : Service() {
 
     const val EXTRA_ALARM_MODE = "extra_alarm_mode"
     const val EXTRA_CUSTOM_URI = "extra_custom_uri"
+    const val EXTRA_MUEZZIN_ID = "extra_muezzin_id"
 
     private const val TEST_DURATION_MS = 10_000L
     private const val MAX_ALARM_DURATION_MS = 180_000L
@@ -238,6 +241,7 @@ class AdhanPlaybackService : Service() {
         putExtra(AdhanNotificationHelper.EXTRA_IS_TEST, false)
         putExtra(EXTRA_ALARM_MODE, config.mode.name)
         putExtra(EXTRA_CUSTOM_URI, config.customUri)
+        putExtra(EXTRA_MUEZZIN_ID, config.muezzinId)
       }
       ContextCompat.startForegroundService(context, intent)
     }
@@ -257,6 +261,7 @@ class AdhanPlaybackService : Service() {
         putExtra(AdhanNotificationHelper.EXTRA_IS_TEST, true)
         putExtra(EXTRA_ALARM_MODE, config.mode.name)
         putExtra(EXTRA_CUSTOM_URI, config.customUri)
+        putExtra(EXTRA_MUEZZIN_ID, config.muezzinId)
       }
       ContextCompat.startForegroundService(context, intent)
     }

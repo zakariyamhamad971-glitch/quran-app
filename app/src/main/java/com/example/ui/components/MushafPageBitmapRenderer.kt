@@ -877,7 +877,9 @@ class MushafPageBitmapRenderer(
     // 3. Top Header Row (Surah Name on RTL-right, Juz/Hizb Pill on RTL-left)
     val surahHeaderNames = surahIds.mapNotNull { surahsById[it]?.nameArabic }.joinToString(" • ")
     val headerTitle = if (surahHeaderNames.isNotBlank()) "سورة $surahHeaderNames" else ""
-    val juzHizbText = if (juzNumber != null && hizbNumber != null && juzNumber > 0 && hizbNumber > 0) {
+    val juzHizbText = if (pageNumber in 1..604) {
+      com.example.data.quran.QuranQuartersCatalog.getHeaderQuarterText(pageNumber)
+    } else if (juzNumber != null && hizbNumber != null && juzNumber > 0 && hizbNumber > 0) {
       "الجزء ${toArabicIndicDigits(juzNumber)} • الحزب ${toArabicIndicDigits(hizbNumber)}"
     } else {
       ""

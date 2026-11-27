@@ -241,6 +241,18 @@ private fun ReaderScreenContent(
     }
   }
 
+  var activeQuarterBannerText by remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(uiState.currentPage) {
+    val bannerText = com.example.data.quran.QuranQuartersCatalog.getQuarterBannerForPage(uiState.currentPage)
+    if (bannerText != null) {
+      activeQuarterBannerText = bannerText
+      kotlinx.coroutines.delay(3500L)
+      activeQuarterBannerText = null
+    } else {
+      activeQuarterBannerText = null
+    }
+  }
+
   val speeds = remember { listOf(0.75f, 1.0f, 1.15f, 1.25f) }
   val onCycleSpeed: (Float) -> Unit = remember(viewModel, speeds) {
     { currentSpeed ->
@@ -250,10 +262,22 @@ private fun ReaderScreenContent(
     }
   }
   val onWordTapped: (String, Int, String) -> Unit = remember(viewModel) {
-    { key, p, glyphs -> viewModel.onWordTapped(key, p, glyphs) }
+    { key, p, glyphs ->
+      if (viewModel.uiState.value.selectedVerseKeys.isNotEmpty()) {
+        viewModel.onWordTapped(key, p, glyphs)
+      } else {
+        isChromeVisible = !isChromeVisible
+      }
+    }
   }
   val onWordLongPressed: (String, Int, String) -> Unit = remember(viewModel) {
-    { key, p, glyphs -> viewModel.onWordLongPressed(key, p, glyphs) }
+    { key, p, glyphs ->
+      if (viewModel.uiState.value.selectedVerseKeys.isEmpty()) {
+        viewModel.onWordTapped(key, p, glyphs)
+      } else {
+        viewModel.onWordLongPressed(key, p, glyphs)
+      }
+    }
   }
   val onToggleBookmark: (Int) -> Unit = remember(viewModel) { { p -> viewModel.toggleBookmark(p) } }
   val onRetryPage: (Int) -> Unit = remember(viewModel) { { p -> viewModel.retryPage(p) } }
@@ -278,15 +302,11 @@ private fun ReaderScreenContent(
   }
   val view = LocalView.current
 
-  LaunchedEffect(isChromeVisible, isIndexOpen, isHomeOpen) {
+  LaunchedEffect(Unit) {
     val activity = view.context.findActivity() ?: return@LaunchedEffect
     val controller = WindowCompat.getInsetsController(activity.window, view)
     controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-    if (isChromeVisible || isIndexOpen || isHomeOpen) {
-      controller.show(WindowInsetsCompat.Type.systemBars())
-    } else {
-      controller.hide(WindowInsetsCompat.Type.systemBars())
-    }
+    controller.hide(WindowInsetsCompat.Type.systemBars())
   }
 
   DisposableEffect(view) {
@@ -854,6 +874,33 @@ private fun ReaderScreenContent(
           }
         },
       )
+    }
+
+    AnimatedVisibility(
+      visible = activeQuarterBannerText != null && !isHomeOpen && !isIndexOpen,
+      enter = fadeIn() + slideInVertically { it / 2 },
+      exit = fadeOut() + slideOutVertically { it / 2 },
+      modifier = Modifier
+        .align(Alignment.BottomCenter)
+        .padding(bottom = 72.dp),
+    ) {
+      Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = Color(0xFF143833).copy(alpha = 0.95f),
+        border = BorderStroke(1.dp, QabasatNightGold.copy(alpha = 0.6f)),
+        shadowElevation = 8.dp,
+        modifier = Modifier.testTag("quarter_hizb_banner"),
+      ) {
+        Text(
+          text = activeQuarterBannerText.orEmpty(),
+          style = MaterialTheme.typography.titleMedium.copy(
+            fontFamily = AmiriFontFamily,
+            fontWeight = FontWeight.Bold,
+          ),
+          color = QabasatNightGold,
+          modifier = Modifier.padding(horizontal = 22.dp, vertical = 9.dp),
+        )
+      }
     }
 
     ReaderVerseInsightsHost(

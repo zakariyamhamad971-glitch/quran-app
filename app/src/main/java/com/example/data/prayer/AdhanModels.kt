@@ -12,6 +12,10 @@ enum class PrayerAlarmMode(val arabicLabel: String, val subtitleAr: String) {
     arabicLabel = "نغمة النظام الافتراضية",
     subtitleAr = "استخدام صوت المنبه الافتراضي للجهاز",
   ),
+  MUEZZIN(
+    arabicLabel = "مؤذن معتمد",
+    subtitleAr = "اختيار مؤذن من مكتبة المؤذنين (بث وتنزيل)",
+  ),
   CUSTOM_URI(
     arabicLabel = "ملف صوتي من الجهاز",
     subtitleAr = "اختيار ملف أذان أو تنبيه محفوظ على جهازك",
@@ -23,10 +27,12 @@ data class PrayerAlarmConfig(
   val mode: PrayerAlarmMode = PrayerAlarmMode.SYSTEM_DEFAULT,
   val customUri: String? = null,
   val customDisplayName: String? = null,
+  val muezzinId: String? = null,
 ) {
   fun summaryLabelAr(): String = when (mode) {
     PrayerAlarmMode.SILENT -> "صامت"
     PrayerAlarmMode.SYSTEM_DEFAULT -> "نغمة النظام"
+    PrayerAlarmMode.MUEZZIN -> customDisplayName?.takeIf { it.isNotBlank() } ?: "مؤذن معتمد"
     PrayerAlarmMode.CUSTOM_URI -> customDisplayName?.takeIf { it.isNotBlank() } ?: "ملف مخصص"
   }
 }
@@ -81,6 +87,7 @@ data class AdhanSettingsState(
             put("mode", cfg.mode.name)
             if (!cfg.customUri.isNullOrBlank()) put("uri", cfg.customUri)
             if (!cfg.customDisplayName.isNullOrBlank()) put("name", cfg.customDisplayName)
+            if (!cfg.muezzinId.isNullOrBlank()) put("muezzin_id", cfg.muezzinId)
           },
         )
       }
@@ -99,6 +106,7 @@ data class AdhanSettingsState(
           } ?: defaultConfigFor(type).mode
           val uri = obj.optString("uri", "").takeIf { it.isNotBlank() }
           val name = obj.optString("name", "").takeIf { it.isNotBlank() }
+          val muezzinId = obj.optString("muezzin_id", "").takeIf { it.isNotBlank() }
           defaults[type] = PrayerAlarmConfig(
             mode = if (mode == PrayerAlarmMode.CUSTOM_URI && uri == null) {
               PrayerAlarmMode.SYSTEM_DEFAULT
@@ -107,6 +115,7 @@ data class AdhanSettingsState(
             },
             customUri = uri,
             customDisplayName = name,
+            muezzinId = muezzinId,
           )
         }
         defaults

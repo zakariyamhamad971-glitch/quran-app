@@ -84,8 +84,53 @@ class AdhanSoundRepository(private val context: Context) {
     }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
   }
 
+  fun getLocalMuezzinAudioFile(muezzinId: String): java.io.File {
+    val dir = java.io.File(context.filesDir, "muezzins")
+    if (!dir.exists()) dir.mkdirs()
+    return java.io.File(dir, "$muezzinId.mp3")
+  }
+
+  fun isMuezzinDownloaded(muezzinId: String): Boolean {
+    val file = getLocalMuezzinAudioFile(muezzinId)
+    return file.exists() && file.length() > 1024L
+  }
+
+  suspend fun downloadMuezzinAudio(entry: AdhanSoundRegistryEntry): Result<java.io.File> = withContext(Dispatchers.IO) {
+    runCatching {
+      val url = entry.audioUrl ?: error("لا يوجد رابط صوتي للمؤذن")
+      val dest = getLocalMuezzinAudioFile(entry.id)
+      val temp = java.io.File(dest.parentFile, "${dest.name}.tmp")
+      val req = okhttp3.Request.Builder().url(url).build()
+      val client = com.example.data.quran.QuranApiClient.okHttpClient
+      val resp = client.newCall(req).execute()
+      if (!resp.isSuccessful) error("فشل تنزيل ملف الأذان (${resp.code})")
+      val body = resp.body ?: error("بيانات الصوت فارغة")
+      body.byteStream().use { input ->
+        temp.outputStream().use { output ->
+          input.copyTo(output)
+        }
+      }
+      temp.renameTo(dest)
+      dest
+    }
+  }
+
+  fun deleteDownloadedMuezzin(muezzinId: String): Boolean {
+    val file = getLocalMuezzinAudioFile(muezzinId)
+    return if (file.exists()) file.delete() else true
+  }
+
   fun resolvePlayableUri(config: PrayerAlarmConfig): Uri? {
     if (config.mode == PrayerAlarmMode.SILENT) return null
+    if (config.mode == PrayerAlarmMode.MUEZZIN && !config.muezzinId.isNullOrBlank()) {
+      val localFile = getLocalMuezzinAudioFile(config.muezzinId)
+      if (localFile.exists() && localFile.length() > 1024L) {
+        return Uri.fromFile(localFile)
+      }
+      if (!config.customUri.isNullOrBlank()) {
+        return runCatching { Uri.parse(config.customUri) }.getOrNull()
+      }
+    }
     if (config.mode == PrayerAlarmMode.CUSTOM_URI && !config.customUri.isNullOrBlank()) {
       val parsed = runCatching { Uri.parse(config.customUri) }.getOrNull()
       if (parsed != null && isUriReadable(parsed)) {

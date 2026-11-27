@@ -29,15 +29,24 @@ sealed interface LocationLookupResult {
 class LocationLookupHelper(private val context: Context) {
 
   fun hasCoarseLocationPermission(): Boolean {
-    return ContextCompat.checkSelfPermission(
+    return hasLocationPermission()
+  }
+
+  fun hasLocationPermission(): Boolean {
+    val fine = ContextCompat.checkSelfPermission(
+      context,
+      Manifest.permission.ACCESS_FINE_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED
+    val coarse = ContextCompat.checkSelfPermission(
       context,
       Manifest.permission.ACCESS_COARSE_LOCATION,
     ) == PackageManager.PERMISSION_GRANTED
+    return fine || coarse
   }
 
   @SuppressLint("MissingPermission")
   suspend fun fetchCoarseLocation(): LocationLookupResult = withContext(Dispatchers.IO) {
-    if (!hasCoarseLocationPermission()) {
+    if (!hasLocationPermission()) {
       return@withContext LocationLookupResult.PermissionDenied
     }
 
@@ -70,6 +79,9 @@ class LocationLookupHelper(private val context: Context) {
   @SuppressLint("MissingPermission")
   private suspend fun requestFreshCoarseLocation(lm: LocationManager): Location? {
     val providers = buildList {
+      if (runCatching { lm.isProviderEnabled(LocationManager.GPS_PROVIDER) }.getOrDefault(false)) {
+        add(LocationManager.GPS_PROVIDER)
+      }
       if (runCatching { lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) }.getOrDefault(false)) {
         add(LocationManager.NETWORK_PROVIDER)
       }
@@ -104,9 +116,9 @@ class LocationLookupHelper(private val context: Context) {
   @SuppressLint("MissingPermission")
   private fun pickBestLastKnownLocation(lm: LocationManager): Location? {
     val candidates = listOf(
+      LocationManager.GPS_PROVIDER,
       LocationManager.NETWORK_PROVIDER,
       LocationManager.PASSIVE_PROVIDER,
-      LocationManager.GPS_PROVIDER,
     )
     return candidates
       .mapNotNull { provider -> runCatching { lm.getLastKnownLocation(provider) }.getOrNull() }

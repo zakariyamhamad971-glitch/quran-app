@@ -266,17 +266,17 @@ private fun AdhanLockScreenContent(
         OutlinedButton(
           onClick = onDismiss,
           shape = RoundedCornerShape(16.dp),
-          border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+          border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.50f)),
           modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 52.dp)
-            .testTag("adhan_dismiss_button"),
+            .testTag("adhan_stop_button"),
         ) {
           Icon(Icons.Filled.Close, contentDescription = null, tint = Color.White)
           Spacer(Modifier.width(8.dp))
           Text(
-            text = "إغلاق",
-            style = MaterialTheme.typography.titleMedium,
+            text = "إيقاف الأذان",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
             color = Color.White,
           )
         }

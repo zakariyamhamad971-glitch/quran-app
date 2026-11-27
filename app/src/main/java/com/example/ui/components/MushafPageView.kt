@@ -454,58 +454,29 @@ fun MushafPageFrame(
                       }
                     }
                   } else {
-                    awaitPointerEventScope {
-                      while (true) {
-                        val downEvent = awaitPointerEvent()
-                        val down = downEvent.changes.firstOrNull { it.pressed } ?: continue
-                        val downPos = down.position
-                        val pointerId = down.id
-                        var longPressed = false
-                        val slop = viewConfiguration.touchSlop
-                        val startTime = System.currentTimeMillis()
+                    awaitEachGesture {
+                      val down = awaitFirstDown(requireUnconsumed = false)
+                      val downPos = down.position
+                      val pointerId = down.id
+                      val slop = viewConfiguration.touchSlop
+                      var movedBeyondSlop = false
 
-                        while (true) {
-                          val elapsed = System.currentTimeMillis() - startTime
-                          val remaining = 1500L - elapsed
-                          if (remaining <= 0) {
-                            longPressed = true
-                            break
-                          }
-                          val event = awaitPointerEvent()
-                          val up = event.changes.firstOrNull { it.id == pointerId && !it.pressed }
-                          if (up != null) break
-                          val moved = event.changes.firstOrNull { it.id == pointerId }
-                          if (moved != null && (moved.position - downPos).getDistance() > slop) break
-                        }
-
-                        if (longPressed) {
-                          val viewW = size.width.toFloat().coerceAtLeast(1f)
-                          val viewH = size.height.toFloat().coerceAtLeast(1f)
-                          val sx = rendered.widthPx.toFloat() / viewW
-                          val sy = rendered.heightPx.toFloat() / viewH
-                          val tx = downPos.x * sx
-                          val ty = downPos.y * sy
-                          val boxes = rendered.wordHitBoxes
-                          val hitIdx = findHitWordIndex(boxes, tx, ty)
-                          if (hitIdx >= 0) {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onWordLongPressed(
-                              boxes.verseKeys[hitIdx],
-                              rendered.pageNumber,
-                              boxes.codeV2Lines[hitIdx],
-                            )
-                          }
-                          while (true) {
-                            val event = awaitPointerEvent()
-                            if (event.changes.all { !it.pressed }) break
-                          }
-                        } else {
+                      try {
+                        withTimeout(1500L) {
                           while (true) {
                             val event = awaitPointerEvent()
                             val ch = event.changes.firstOrNull { it.id == pointerId }
-                            if (ch == null || !ch.pressed) break
+                            if (ch == null || !ch.pressed) {
+                              break
+                            }
+                            if ((ch.position - downPos).getDistance() > slop) {
+                              movedBeyondSlop = true
+                              break
+                            }
                           }
+                        }
 
+                        if (!movedBeyondSlop) {
                           val viewW = size.width.toFloat().coerceAtLeast(1f)
                           val viewH = size.height.toFloat().coerceAtLeast(1f)
                           val sx = rendered.widthPx.toFloat() / viewW
@@ -523,6 +494,27 @@ fun MushafPageFrame(
                           } else {
                             onNonWordTapped()
                           }
+                        }
+                      } catch (_: androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException) {
+                        val viewW = size.width.toFloat().coerceAtLeast(1f)
+                        val viewH = size.height.toFloat().coerceAtLeast(1f)
+                        val sx = rendered.widthPx.toFloat() / viewW
+                        val sy = rendered.heightPx.toFloat() / viewH
+                        val tx = downPos.x * sx
+                        val ty = downPos.y * sy
+                        val boxes = rendered.wordHitBoxes
+                        val hitIdx = findHitWordIndex(boxes, tx, ty)
+                        if (hitIdx >= 0) {
+                          haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                          onWordLongPressed(
+                            boxes.verseKeys[hitIdx],
+                            rendered.pageNumber,
+                            boxes.codeV2Lines[hitIdx],
+                          )
+                        }
+                        while (true) {
+                          val event = awaitPointerEvent()
+                          if (event.changes.all { !it.pressed }) break
                         }
                       }
                     }

@@ -235,6 +235,16 @@ object AdhanNotificationHelper {
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
+    val deleteIntent = Intent(context, AdhanAlarmReceiver::class.java).apply {
+      action = AdhanAlarmReceiver.ACTION_REFRESH_COUNTDOWN
+    }
+    val deletePi = PendingIntent.getBroadcast(
+      context,
+      9202,
+      deleteIntent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
     val notification = NotificationCompat.Builder(context, CHANNEL_PRAYER_COUNTDOWN)
       .setSmallIcon(R.drawable.ic_adhan_notification)
       .setContentTitle(title)
@@ -249,6 +259,7 @@ object AdhanNotificationHelper {
       .setSilent(true)
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
       .setContentIntent(contentPi)
+      .setDeleteIntent(deletePi)
       .build()
 
     runCatching {

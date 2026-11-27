@@ -404,9 +404,12 @@ class TafsirRegistryRepository(
     }
   }
 
-  private fun getArabicEditionName(slug: String, rawName: String): String {
+  private fun getArabicEditionName(slug: String, rawName: String, langKey: String = "", author: String = ""): String {
     val s = slug.lowercase(Locale.ROOT)
+    val a = author.lowercase(Locale.ROOT)
+    val r = rawName.lowercase(Locale.ROOT)
     return when {
+      s.contains("i-rab") || s.contains("irab") || s.contains("eerab") || r.contains("اعراب") || r.contains("إعراب") -> "إعراب القرآن الكريم"
       s.contains("ibn-kathir") || s.contains("kathir") -> "تفسير ابن كثير"
       s.contains("tabari") -> "تفسير الطبري"
       s.contains("saadi") -> "تفسير السعدي"
@@ -417,8 +420,25 @@ class TafsirRegistryRepository(
       s.contains("waseet") -> "التفسير الوسيط"
       s.contains("mukhtasar") -> "المختصر في التفسير"
       s.contains("ibn-ashour") || s.contains("tahrir") -> "تفسير التحرير والتنوير لابن عاشور"
-      s.contains("i-rab") || s.contains("irab") || s.contains("eerab") -> "إعراب القرآن"
-      else -> rawName
+      s.contains("sahih") || r.contains("sahih") -> "ترجمة صحيح إنترناشونال"
+      s.contains("yusuf") || a.contains("yusuf") || r.contains("yusuf") -> "ترجمة عبد الله يوسف علي"
+      s.contains("pickthall") || a.contains("pickthall") || r.contains("pickthall") -> "ترجمة محمد مرمادوك بيكثول"
+      s.contains("ghali") -> "ترجمة د. محمود غالي"
+      s.contains("arberry") -> "ترجمة آرثر آربري"
+      s.contains("asad") -> "ترجمة محمد أسد"
+      s.contains("hilali") || s.contains("khan") -> "ترجمة تقي الدين الهلالي ومحسن خان"
+      langKey == "english" || langKey == "en" -> if (author.isNotBlank()) "ترجمة $author (الإنجليزية)" else "ترجمة معاني القرآن بالإنجليزية"
+      langKey == "french" || langKey == "fr" -> if (author.isNotBlank()) "ترجمة $author (الفرنسية)" else "ترجمة معاني القرآن بالفرنسية"
+      langKey == "urdu" || langKey == "ur" -> if (author.isNotBlank()) "ترجمة $author (الأردية)" else "ترجمة معاني القرآن بالأردية"
+      langKey == "indonesian" || langKey == "id" -> if (author.isNotBlank()) "ترجمة $author (الإندونيسية)" else "ترجمة معاني القرآن بالإندونيسية"
+      langKey == "turkish" || langKey == "tr" -> if (author.isNotBlank()) "ترجمة $author (التركية)" else "ترجمة معاني القرآن بالتركية"
+      langKey == "russian" || langKey == "ru" -> if (author.isNotBlank()) "ترجمة $author (الروسية)" else "ترجمة معاني القرآن بالروسية"
+      langKey == "spanish" || langKey == "es" -> if (author.isNotBlank()) "ترجمة $author (الإسبانية)" else "ترجمة معاني القرآن بالإسبانية"
+      langKey == "german" || langKey == "de" -> if (author.isNotBlank()) "ترجمة $author (الألمانية)" else "ترجمة معاني القرآن بالألمانية"
+      langKey == "bengali" || langKey == "bn" -> if (author.isNotBlank()) "ترجمة $author (البنغالية)" else "ترجمة معاني القرآن بالبنغالية"
+      langKey == "persian" || langKey == "farsi" || langKey == "fa" -> if (author.isNotBlank()) "ترجمة $author (الفارسية)" else "ترجمة معاني القرآن بالفارسية"
+      rawName.isNotBlank() && rawName.any { it in '\u0600'..'\u06FF' } -> rawName
+      else -> if (author.isNotBlank()) "ترجمة $author" else rawName
     }
   }
 
@@ -439,10 +459,10 @@ class TafsirRegistryRepository(
       val rawName = obj.optString("name").trim()
       if (slug.isBlank() || rawName.isBlank()) continue
       val isIrab = isIrabEdition(slug, rawName)
-      val name = getArabicEditionName(slug, rawName)
       val langRaw = obj.optString("language_name").trim().ifBlank { "other" }
       val langKey = langRaw.lowercase(Locale.ROOT)
       val author = obj.optString("author_name").trim()
+      val name = getArabicEditionName(slug, rawName, langKey, author)
       val sourceName = obj.optString("source").trim()
       val type = if (isIrab) InsightSourceType.IRAB else inferSourceType(slug, langKey, rawName)
       out.add(
