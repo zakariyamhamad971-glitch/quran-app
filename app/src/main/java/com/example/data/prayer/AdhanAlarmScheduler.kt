@@ -69,72 +69,74 @@ object AdhanAlarmScheduler {
     persisted: ReaderPreferences.PersistedPrayerPreferences,
     repository: PrayerTimesRepository = PrayerTimesRepository(),
   ) {
-    val appCtx = context.applicationContext
-    AdhanNotificationHelper.ensureChannels(appCtx)
+    runCatching {
+      val appCtx = context.applicationContext
+      AdhanNotificationHelper.ensureChannels(appCtx)
 
-    val settings = persisted.settings
-    val adhanSettings = persisted.adhanSettings
-    val location = settings.location
+      val settings = persisted.settings
+      val adhanSettings = persisted.adhanSettings
+      val location = settings.location
 
-    // Cancel all previously slotted alarm PendingIntents first
-    cancelAllScheduledPrayerAlarms(appCtx)
+      // Cancel all previously slotted alarm PendingIntents first
+      cancelAllScheduledPrayerAlarms(appCtx)
 
-    if (location != null) {
-      val nowMs = System.currentTimeMillis()
-      val tz = TimeZone.getTimeZone(location.timeZoneId)
-      val validCache = persisted.cachedSchedule?.takeIf { it.cacheKey == settings.cacheKey() }
-      val records = (0 until MAX_DAY_SLOTS).map { dayOffset ->
-        val cal = Calendar.getInstance(tz).apply {
-          timeInMillis = nowMs
-          add(Calendar.DAY_OF_YEAR, dayOffset)
+      if (location != null) {
+        val nowMs = System.currentTimeMillis()
+        val tz = TimeZone.getTimeZone(location.timeZoneId)
+        val validCache = persisted.cachedSchedule?.takeIf { it.cacheKey == settings.cacheKey() }
+        val records = (0 until MAX_DAY_SLOTS).map { dayOffset ->
+          val cal = Calendar.getInstance(tz).apply {
+            timeInMillis = nowMs
+            add(Calendar.DAY_OF_YEAR, dayOffset)
+          }
+          val key = PrayerFormatters.calendarDateKey(cal)
+          validCache?.daysByDateKey?.get(key) ?: repository.computeDay(
+            location = location,
+            method = settings.calculationMethod,
+            madhab = settings.asrMadhab,
+            highLatitudeRule = settings.highLatitudeRule,
+            adjustments = settings.adjustments,
+            year = cal.get(Calendar.YEAR),
+            month = cal.get(Calendar.MONTH) + 1,
+            day = cal.get(Calendar.DAY_OF_MONTH),
+          )
         }
-        val key = PrayerFormatters.calendarDateKey(cal)
-        validCache?.daysByDateKey?.get(key) ?: repository.computeDay(
-          location = location,
-          method = settings.calculationMethod,
-          madhab = settings.asrMadhab,
-          highLatitudeRule = settings.highLatitudeRule,
-          adjustments = settings.adjustments,
-          year = cal.get(Calendar.YEAR),
-          month = cal.get(Calendar.MONTH) + 1,
-          day = cal.get(Calendar.DAY_OF_MONTH),
+
+        val alarms = collectAlarmsForWindow(
+          nowMs = nowMs,
+          windowMs = FORTY_EIGHT_HOURS_MS,
+          dailyRecords = records,
+          adhanSettings = adhanSettings,
         )
+        for (alarm in alarms) {
+          scheduleSinglePrayerAlarm(appCtx, alarm, location)
+        }
+
+        // Schedule next boundary refresh for the persistent countdown notification
+        val nextTarget = repository.resolveNextPrayer(
+          todayRecord = records.getOrNull(0),
+          tomorrowRecord = records.getOrNull(1),
+          nowEpochMs = nowMs,
+        )
+        scheduleCountdownRefreshAlarm(
+          context = appCtx,
+          triggerMs = nextTarget?.targetEpochMs?.plus(1_000L),
+          enabled = adhanSettings.persistentCountdownEnabled,
+        )
+      } else {
+        scheduleCountdownRefreshAlarm(appCtx, triggerMs = null, enabled = false)
       }
 
-      val alarms = collectAlarmsForWindow(
-        nowMs = nowMs,
-        windowMs = FORTY_EIGHT_HOURS_MS,
-        dailyRecords = records,
-        adhanSettings = adhanSettings,
-      )
-      for (alarm in alarms) {
-        scheduleSinglePrayerAlarm(appCtx, alarm, location)
-      }
-
-      // Schedule next boundary refresh for the persistent countdown notification
-      val nextTarget = repository.resolveNextPrayer(
-        todayRecord = records.getOrNull(0),
-        tomorrowRecord = records.getOrNull(1),
-        nowEpochMs = nowMs,
-      )
-      scheduleCountdownRefreshAlarm(
+      AdhanNotificationHelper.refreshPersistentCountdownNotification(
         context = appCtx,
-        triggerMs = nextTarget?.targetEpochMs?.plus(1_000L),
-        enabled = adhanSettings.persistentCountdownEnabled,
+        settings = settings,
+        adhanSettings = adhanSettings,
+        cachedSchedule = persisted.cachedSchedule,
+        repository = repository,
       )
-    } else {
-      scheduleCountdownRefreshAlarm(appCtx, triggerMs = null, enabled = false)
+
+      ensureDailyWorkerScheduled(appCtx)
     }
-
-    AdhanNotificationHelper.refreshPersistentCountdownNotification(
-      context = appCtx,
-      settings = settings,
-      adhanSettings = adhanSettings,
-      cachedSchedule = persisted.cachedSchedule,
-      repository = repository,
-    )
-
-    ensureDailyWorkerScheduled(appCtx)
   }
 
   fun cancelAllScheduledPrayerAlarms(context: Context) {

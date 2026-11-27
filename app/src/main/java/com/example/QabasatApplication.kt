@@ -23,11 +23,17 @@ class QabasatApplication : Application() {
 
         val intent = Intent(this, CrashActivity::class.java).apply {
           putExtra("extra_stack_trace", stackTraceStr)
-          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
         startActivity(intent)
       }
-      defaultHandler?.uncaughtException(thread, throwable) ?: run {
+      try {
+        Thread.sleep(300)
+      } catch (_: Exception) {}
+
+      if (defaultHandler != null) {
+        defaultHandler.uncaughtException(thread, throwable)
+      } else {
         android.os.Process.killProcess(android.os.Process.myPid())
         System.exit(10)
       }

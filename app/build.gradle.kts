@@ -50,8 +50,9 @@ android {
     release {
       isDebuggable = false
       isCrunchPngs = false
-      isMinifyEnabled = true
-      isShrinkResources = true
+      // TODO: Re-enable isMinifyEnabled and isShrinkResources after release diagnosis
+      isMinifyEnabled = false
+      isShrinkResources = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("debugConfig")
     }
