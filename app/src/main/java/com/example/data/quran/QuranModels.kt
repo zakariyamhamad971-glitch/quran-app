@@ -264,17 +264,41 @@ data class VerseTranslationEntry(
 )
 
 @Immutable
+data class AyahSourceInsightEntry(
+  val editionId: String,
+  val sourceTitle: String,
+  val languageLabelAr: String,
+  val typeLabelAr: String,
+  val isRtl: Boolean,
+  val text: String,
+)
+
+@Immutable
+data class AyahInsightSection(
+  val verseKey: String,
+  val surahId: Int,
+  val ayahNumber: Int,
+  val surahName: String,
+  val exactAyahText: String,
+  val codeV2Line: String,
+  val sourceEntries: List<AyahSourceInsightEntry>,
+)
+
+@Immutable
 data class VerseInsightsData(
   val verseKey: String,
   val surahId: Int,
   val ayahNumber: Int,
   val pageNumber: Int,
   val codeV2Line: String,
-  val translations: List<VerseTranslationEntry>,
-  val tafsirArabicTitle: String,
-  val tafsirArabicText: String,
-  val tafsirEnglishTitle: String,
-  val tafsirEnglishText: String,
+  val sections: List<AyahInsightSection> = emptyList(),
+  val referenceSummary: String = "",
+  val checkedEditionIds: Set<String> = emptySet(),
+  val translations: List<VerseTranslationEntry> = emptyList(),
+  val tafsirArabicTitle: String = "",
+  val tafsirArabicText: String = "",
+  val tafsirEnglishTitle: String = "",
+  val tafsirEnglishText: String = "",
 )
 
 @JsonClass(generateAdapter = true)

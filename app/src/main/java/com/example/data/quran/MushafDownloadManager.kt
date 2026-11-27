@@ -61,7 +61,12 @@ class MushafDownloadManager(
 
     activeJobs[id]?.cancel()
     activeJobs[id] = scope.launch {
-      val tasks = buildTasksForEdition(item.edition)
+      val needsTajweedFallback = if (item.edition == MushafEdition.TAJWEED_V4) {
+        fontManager.resolveTajweedRenderPath(allowNetworkFetch = true) != TajweedRenderPath.QCF_V4_COLR
+      } else {
+        false
+      }
+      val tasks = buildTasksForEdition(item.edition, needsTajweedFallback)
       val total = tasks.size
 
       updateState(id) {
@@ -205,8 +210,10 @@ class MushafDownloadManager(
     }
   }
 
-  private fun buildTasksForEdition(edition: MushafEdition): List<SetupTask> {
-    val includeFallback = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+  private fun buildTasksForEdition(
+    edition: MushafEdition,
+    includeFallback: Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU,
+  ): List<SetupTask> {
     return buildList {
       add(SetupTask.Chapters)
       add(SetupTask.Basmalah)

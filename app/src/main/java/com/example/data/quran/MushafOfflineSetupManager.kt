@@ -105,8 +105,12 @@ class MushafOfflineSetupManager(
   private val quranRepository: QuranRepository,
   private val fontManager: PageFontManager,
   private val scope: CoroutineScope,
-  private val includeTajweedFallback: Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU,
+  private val includeTajweedFallbackOverride: Boolean? = null,
 ) {
+  private val shouldIncludeTajweedFallback: Boolean
+    get() = includeTajweedFallbackOverride
+      ?: (fontManager.currentTajweedRenderPathOrDefault() != TajweedRenderPath.QCF_V4_COLR ||
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU)
   companion object {
     private const val DOWNLOAD_CONCURRENCY = 6
     private const val PROGRESS_EMIT_INTERVAL_MS = 80L
@@ -169,8 +173,12 @@ class MushafOfflineSetupManager(
   }
 
   internal suspend fun inspectCachedProgress(): CacheScanResult = withContext(Dispatchers.IO) {
+    val includeFallback = includeTajweedFallbackOverride
+      ?: (fontManager.resolveTajweedRenderPath(allowNetworkFetch = false) != TajweedRenderPath.QCF_V4_COLR &&
+        fontManager.currentTajweedRenderPathOrDefault() != TajweedRenderPath.QCF_V4_COLR) ||
+        shouldIncludeTajweedFallback
     val allMadinah = buildMadinahTasks()
-    val allTajweed = buildTajweedTasks(includeTajweedFallback)
+    val allTajweed = buildTajweedTasks(includeFallback)
 
     val pendingMadinah = ArrayList<SetupTask>(allMadinah.size)
     var madinahDone = 0
@@ -208,8 +216,9 @@ class MushafOfflineSetupManager(
 
   private fun launchSetup(onCompleted: suspend () -> Unit) {
     setupJob = scope.launch {
+      val includeFallbackNow = shouldIncludeTajweedFallback
       val initialMadinahTotal = 1211
-      val initialTajweedTotal = if (includeTajweedFallback) 1208 else 604
+      val initialTajweedTotal = if (includeFallbackNow) 1208 else 604
       val prevRequired = _state.value as? MushafSetupState.Required
       _state.value = MushafSetupState.Required(
         isScanningCache = true,

@@ -100,6 +100,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.audio.VerifiedReciter
+import com.example.data.prefs.AyahBookmark
 import com.example.data.quran.AyahWordHit
 import com.example.data.quran.JuzMeta
 import com.example.data.quran.SurahMeta
@@ -149,6 +150,7 @@ fun FullScreenQuranIndex(
   juzs: List<JuzMeta>,
   juzsLoading: Boolean,
   bookmarks: List<Int>,
+  ayahBookmarks: List<AyahBookmark> = emptyList(),
   currentPage: Int,
   isDarkTheme: Boolean,
   activeReciterFlow: StateFlow<VerifiedReciter?>,
@@ -175,6 +177,7 @@ fun FullScreenQuranIndex(
   onDownloadSurah: (Int) -> Unit,
   onDeleteDownloadedSurah: (Int) -> Unit,
   onRemoveBookmark: (Int) -> Unit,
+  onRemoveAyahBookmark: (Int, Int) -> Unit = { _, _ -> },
   onOpenReader: () -> Unit,
   onToggleTheme: () -> Unit,
   onOpenSettings: () -> Unit,
@@ -528,6 +531,7 @@ fun FullScreenQuranIndex(
           juzs = juzs,
           juzsLoading = juzsLoading,
           bookmarks = bookmarks,
+          ayahBookmarks = ayahBookmarks,
           currentPage = currentPage,
           activeReciterFlow = activeReciterFlow,
           downloadedKeys = downloadedKeys,
@@ -540,6 +544,12 @@ fun FullScreenQuranIndex(
               onOpenReader()
             }
           },
+          onJumpToVerse = remember(onJumpToVerse, onOpenReader) {
+            { key, page ->
+              onJumpToVerse(key, page)
+              onOpenReader()
+            }
+          },
           onPlaySurah = remember(onPlaySurah, onOpenReader) {
             { surahId ->
               onPlaySurah(surahId)
@@ -549,6 +559,7 @@ fun FullScreenQuranIndex(
           onDownloadSurah = onDownloadSurah,
           onDeleteDownloadedSurah = onDeleteDownloadedSurah,
           onRemoveBookmark = onRemoveBookmark,
+          onRemoveAyahBookmark = onRemoveAyahBookmark,
           modifier = Modifier
             .weight(1f)
             .let { mod ->
@@ -601,6 +612,7 @@ private fun QuranIndexContentHost(
   juzs: List<JuzMeta>,
   juzsLoading: Boolean,
   bookmarks: List<Int>,
+  ayahBookmarks: List<AyahBookmark>,
   currentPage: Int,
   activeReciterFlow: StateFlow<VerifiedReciter?>,
   downloadedKeys: Set<String>,
@@ -608,10 +620,12 @@ private fun QuranIndexContentHost(
   bottomExtraPadding: androidx.compose.ui.unit.Dp,
   onSelectJuzTab: () -> Unit,
   onJumpToPage: (Int) -> Unit,
+  onJumpToVerse: (String, Int) -> Unit,
   onPlaySurah: (Int) -> Unit,
   onDownloadSurah: (Int) -> Unit,
   onDeleteDownloadedSurah: (Int) -> Unit,
   onRemoveBookmark: (Int) -> Unit,
+  onRemoveAyahBookmark: (Int, Int) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val activeReciter by activeReciterFlow.collectAsStateWithLifecycle()
@@ -619,16 +633,19 @@ private fun QuranIndexContentHost(
     surahs = surahs,
     juzs = juzs,
     bookmarks = bookmarks,
+    ayahBookmarks = ayahBookmarks,
     currentPage = currentPage,
     activeReciter = activeReciter,
     downloadedKeys = downloadedKeys,
     downloadProgress = downloadProgress,
     bottomExtraPadding = bottomExtraPadding,
     onJumpToPage = onJumpToPage,
+    onJumpToVerse = onJumpToVerse,
     onPlaySurah = onPlaySurah,
     onDownloadSurah = onDownloadSurah,
     onDeleteDownloadedSurah = onDeleteDownloadedSurah,
     onRemoveBookmark = onRemoveBookmark,
+    onRemoveAyahBookmark = onRemoveAyahBookmark,
     modifier = modifier,
     juzsLoading = juzsLoading,
     onSelectJuzTab = onSelectJuzTab,
@@ -1497,16 +1514,19 @@ private fun QuranIndexContent(
   surahs: List<SurahMeta>,
   juzs: List<JuzMeta>,
   bookmarks: List<Int>,
+  ayahBookmarks: List<AyahBookmark> = emptyList(),
   currentPage: Int,
   activeReciter: VerifiedReciter?,
   downloadedKeys: Set<String>,
   downloadProgress: Map<String, Float>,
   bottomExtraPadding: androidx.compose.ui.unit.Dp,
   onJumpToPage: (Int) -> Unit,
+  onJumpToVerse: (String, Int) -> Unit = { _, p -> onJumpToPage(p) },
   onPlaySurah: (Int) -> Unit,
   onDownloadSurah: (Int) -> Unit,
   onDeleteDownloadedSurah: (Int) -> Unit,
   onRemoveBookmark: (Int) -> Unit,
+  onRemoveAyahBookmark: (Int, Int) -> Unit = { _, _ -> },
   modifier: Modifier = Modifier,
   juzsLoading: Boolean = false,
   onSelectJuzTab: () -> Unit = {},
@@ -1694,7 +1714,7 @@ private fun QuranIndexContent(
               }
             }
 
-            if (bookmarks.isEmpty()) {
+            if (bookmarks.isEmpty() && ayahBookmarks.isEmpty()) {
               item(key = "empty_bookmarks", contentType = "empty_state") {
                 Box(
                   modifier = Modifier
@@ -1703,67 +1723,143 @@ private fun QuranIndexContent(
                   contentAlignment = Alignment.Center,
                 ) {
                   Text(
-                    text = "لا توجد علامات مرجعية مضافة بعد.\nاضغط على أيقونة العلامة أسفل أي صفحة لحفظها هنا.",
+                    text = "لا توجد علامات مرجعية مضافة بعد.\nاضغط على أي آية لحفظها أو على أيقونة العلامة أسفل أي صفحة.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                   )
                 }
               }
             } else {
-              items(bookmarks, key = { it }, contentType = { "bookmark_row" }) { page ->
-                val surahsOnPage = remember(page, surahs) {
-                  surahs.filter { page in it.startPage..it.endPage }
-                    .joinToString(" • ") { it.nameArabic }
+              if (ayahBookmarks.isNotEmpty()) {
+                item(key = "ayah_bookmarks_header", contentType = "section_header") {
+                  Text(
+                    text = "مرجعيات الآيات",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                  )
                 }
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 58.dp)
-                    .clickable { onJumpToPage(page) }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically,
-                ) {
+                items(
+                  items = ayahBookmarks,
+                  key = { "ayah_${it.verseKey}" },
+                  contentType = { "ayah_bookmark_row" },
+                ) { ab ->
+                  val surahName = surahsById[ab.surahId]?.nameArabic.orEmpty()
                   Row(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .heightIn(min = 58.dp)
+                      .clickable { onJumpToVerse(ab.verseKey, ab.pageNumber) }
+                      .padding(horizontal = 12.dp, vertical = 6.dp)
+                      .testTag("ayah_bookmark_row_${ab.verseKey}"),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f),
                   ) {
-                    Icon(
-                      imageVector = Icons.Filled.Bookmark,
-                      contentDescription = null,
-                      tint = MaterialTheme.colorScheme.secondary,
-                      modifier = Modifier.size(20.dp),
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column {
-                      Text(
-                        text = "صفحة ${toArabicIndicDigits(page)}",
-                        style = MaterialTheme.typography.titleSmall,
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      modifier = Modifier.weight(1f),
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.Bookmark,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp),
                       )
-                      if (surahsOnPage.isNotBlank()) {
+                      Spacer(Modifier.width(10.dp))
+                      Column {
                         Text(
-                          text = "سورة $surahsOnPage",
+                          text = "سورة $surahName • الآية ${toArabicIndicDigits(ab.ayahNumber)}",
+                          style = MaterialTheme.typography.titleSmall.copy(fontFamily = AmiriFontFamily),
+                        )
+                        Text(
+                          text = "صفحة ${toArabicIndicDigits(ab.pageNumber)}",
                           style = MaterialTheme.typography.bodySmall,
                           color = MaterialTheme.colorScheme.onSurfaceVariant,
-                          maxLines = 1,
-                          overflow = TextOverflow.Ellipsis,
                         )
                       }
                     }
+                    IconButton(
+                      onClick = { onRemoveAyahBookmark(ab.surahId, ab.ayahNumber) },
+                      modifier = Modifier.minimumInteractiveComponentSize(),
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.DeleteOutline,
+                        contentDescription = "حذف مرجعية الآية",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                      )
+                    }
                   }
-                  IconButton(
-                    onClick = { onRemoveBookmark(page) },
-                    modifier = Modifier.minimumInteractiveComponentSize(),
-                  ) {
-                    Icon(
-                      imageVector = Icons.Filled.DeleteOutline,
-                      contentDescription = "حذف العلامة المرجعية",
-                      tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                      modifier = Modifier.size(20.dp),
+                  HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                }
+              }
+
+              if (bookmarks.isNotEmpty()) {
+                if (ayahBookmarks.isNotEmpty()) {
+                  item(key = "page_bookmarks_header", contentType = "section_header") {
+                    Text(
+                      text = "مرجعيات الصفحات",
+                      style = MaterialTheme.typography.labelLarge,
+                      color = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                     )
                   }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                items(bookmarks, key = { it }, contentType = { "bookmark_row" }) { page ->
+                  val surahsOnPage = remember(page, surahs) {
+                    surahs.filter { page in it.startPage..it.endPage }
+                      .joinToString(" • ") { it.nameArabic }
+                  }
+                  Row(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .heightIn(min = 58.dp)
+                      .clickable { onJumpToPage(page) }
+                      .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      modifier = Modifier.weight(1f),
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.Bookmark,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(20.dp),
+                      )
+                      Spacer(Modifier.width(10.dp))
+                      Column {
+                        Text(
+                          text = "صفحة ${toArabicIndicDigits(page)}",
+                          style = MaterialTheme.typography.titleSmall,
+                        )
+                        if (surahsOnPage.isNotBlank()) {
+                          Text(
+                            text = "سورة $surahsOnPage",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                        }
+                      }
+                    }
+                    IconButton(
+                      onClick = { onRemoveBookmark(page) },
+                      modifier = Modifier.minimumInteractiveComponentSize(),
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.DeleteOutline,
+                        contentDescription = "حذف العلامة المرجعية",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                      )
+                    }
+                  }
+                  HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                }
               }
             }
           }

@@ -451,6 +451,8 @@ private fun parseGuideColorOrNull(rawHex: String): Color? {
 fun CreditsAndIntegrityDialog(
   credits: List<CreditSourceInfo>,
   assetHashes: List<AssetHashStatus>,
+  tajweedRenderPathLabel: String = "",
+  androidApiLevelText: String = "",
   onDismiss: () -> Unit,
 ) {
   AlertDialog(
@@ -468,6 +470,43 @@ fun CreditsAndIntegrityDialog(
           .fillMaxWidth()
           .verticalScroll(rememberScrollState()),
       ) {
+        if (tajweedRenderPathLabel.isNotBlank() || androidApiLevelText.isNotBlank()) {
+          Surface(
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(bottom = 8.dp)
+              .testTag("about_tajweed_diagnostics_card"),
+          ) {
+            Column(
+              modifier = Modifier.padding(10.dp),
+              verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+              Text(
+                text = "معلومات عرض التجويد والنظام",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+              )
+              if (tajweedRenderPathLabel.isNotBlank()) {
+                Text(
+                  text = "مسار التجويد النشط: $tajweedRenderPathLabel",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurface,
+                  modifier = Modifier.testTag("about_tajweed_render_path"),
+                )
+              }
+              if (androidApiLevelText.isNotBlank()) {
+                Text(
+                  text = "مستوى النظام: $androidApiLevelText",
+                  style = MaterialTheme.typography.labelMedium,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  modifier = Modifier.testTag("about_android_api_level"),
+                )
+              }
+            }
+          }
+        }
         for (src in credits) {
           Surface(
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -497,6 +536,15 @@ fun CreditsAndIntegrityDialog(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
+              if (src.url.isNotBlank()) {
+                Text(
+                  text = src.url,
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis,
+                )
+              }
             }
           }
         }

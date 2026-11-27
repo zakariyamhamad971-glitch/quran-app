@@ -33,6 +33,8 @@ import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -142,6 +144,8 @@ fun SettingsSheet(
   onRetryLoadDownloadableReciters: () -> Unit,
   onOpenReciterDownloads: (VerifiedReciter) -> Unit,
   onOpenReciterManager: () -> Unit = {},
+  onOpenTafsirManager: () -> Unit = {},
+  onOpenAdhanSettings: () -> Unit = {},
   onOpenMushafsManager: () -> Unit,
   onToggleDarkMode: () -> Unit,
   onSelectBackgroundTheme: (BackgroundTheme) -> Unit,
@@ -449,6 +453,124 @@ fun SettingsSheet(
                   Spacer(Modifier.height(2.dp))
                   Text(
                     text = "تحميل وإدارة تلاوات القراء",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+              }
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+
+          Surface(
+            onClick = {
+              onDismiss()
+              onOpenTafsirManager()
+            },
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("settings_open_tafsir_manager"),
+          ) {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(40.dp)
+                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Language,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(22.dp),
+                  )
+                }
+                Spacer(Modifier.width(14.dp))
+                Column {
+                  Text(
+                    text = "الترجمات والتفاسير",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                  )
+                  Spacer(Modifier.height(2.dp))
+                  Text(
+                    text = "تنزيل وإدارة التفاسير والترجمات للقراءة دون اتصال",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+              }
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+
+          Surface(
+            onClick = {
+              onDismiss()
+              onOpenAdhanSettings()
+            },
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("settings_open_adhan_alarms"),
+          ) {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(40.dp)
+                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.NotificationsActive,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(22.dp),
+                  )
+                }
+                Spacer(Modifier.width(14.dp))
+                Column {
+                  Text(
+                    text = "تنبيهات الأذان والمواقيت",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                  )
+                  Spacer(Modifier.height(2.dp))
+                  Text(
+                    text = "ضبط أصوات الأذان، الإشعار الدائم، وتجربة التنبيه",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                   )

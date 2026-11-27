@@ -38,7 +38,10 @@
     <string name="prayer_location_pick_city">اختيار مدينة يدوياً</string>
     <string name="prayer_location_needed">يرجى تحديد الموقع أو اختيار مدينة لعرض مواقيت الصلاة بدقة</string>
     <string name="prayer_mark_prayed">تحديد كمصلاة</string>
-    <string name="prayer_adhan_coming_soon">تنبيه الأذان سيتوفر لاحقاً</string>
+    <string name="prayer_adhan_sound_button">ضبط تنبيه الأذان</string>
+    <string name="prayer_adhan_settings_title">تنبيهات الأذان والمواقيت</string>
+    <string name="prayer_persistent_notif_title">إشعار المواقيت الدائم</string>
+    <string name="prayer_test_adhan_now">تجربة الأذان الآن</string>
     <string name="prayer_settings_title">إعدادات المواقيت</string>
     <string name="prayer_method_title">طريقة الحساب</string>
     <string name="prayer_madhab_title">مذهب العصر</string>

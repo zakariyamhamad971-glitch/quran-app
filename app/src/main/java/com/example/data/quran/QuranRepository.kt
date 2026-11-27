@@ -432,6 +432,138 @@ class QuranRepository(
     parsed?.verse?.page_number?.takeIf { it in 1..604 }
   }
 
+  suspend fun getExactVerseText(verseKey: String, hintPageNumber: Int? = null): String? = withContext(Dispatchers.IO) {
+    loadExactVerseDto(verseKey = verseKey, hintPageNumber = hintPageNumber)?.let(::extractExactUthmaniText)
+  }
+
+  suspend fun getExactVersesForShare(
+    orderedVerseKeys: List<String>,
+    pageHints: Map<String, Int> = emptyMap(),
+  ): Result<Pair<String, String>> = runCatching {
+    withContext(Dispatchers.IO) {
+      val cleanKeys = orderedVerseKeys.distinct()
+      require(cleanKeys.isNotEmpty()) { "لا توجد آيات محددة" }
+      val surahsById = getSurahs().getOrDefault(emptyList()).associateBy { it.id }
+
+      val ayahTextParts = ArrayList<String>(cleanKeys.size)
+      for (vk in cleanKeys) {
+        val parts = vk.split(":")
+        val ayahNum = parts.getOrNull(1)?.toIntOrNull() ?: continue
+        val dto = loadExactVerseDto(vk, hintPageNumber = pageHints[vk])
+          ?: error("تعذر تحميل نص الآية $vk")
+        val exactText = extractExactUthmaniText(dto)
+        if (exactText.isBlank()) error("النص غير متاح للآية $vk")
+        ayahTextParts.add("$exactText ﴿${toArabicIndicDigitsRepo(ayahNum)}﴾")
+      }
+
+      val reference = formatAyahSelectionReference(cleanKeys, surahsById)
+      val bodyText = "${ayahTextParts.joinToString(" ")}\n\n[$reference]"
+      bodyText to reference
+    }
+  }
+
+  private suspend fun loadExactVerseDto(verseKey: String, hintPageNumber: Int? = null): VerseDto? {
+    val parts = verseKey.split(":")
+    val surahId = parts.getOrNull(0)?.toIntOrNull()
+    val safeKey = verseKey.replace(":", "_")
+
+    // 1. Check hinted page cache first (zero network)
+    if (hintPageNumber != null && hintPageNumber in 1..604) {
+      diskCache.readVerifiedBytes("api/page_$hintPageNumber.json")?.let { bytes ->
+        val found = runCatching { pageAdapter.fromJson(bytes.decodeToString()) }.getOrNull()
+          ?.verses?.firstOrNull { it.verse_key == verseKey }
+        if (found != null) return found
+      }
+    }
+
+    // 2. Check cached verse meta
+    diskCache.readVerifiedBytes("api/verse_meta_$safeKey.json")?.let { bytes ->
+      val parsed = runCatching { verseKeyAdapter.fromJson(bytes.decodeToString()) }.getOrNull()?.verse
+      if (parsed != null && !extractExactUthmaniText(parsed).isBlank()) return parsed
+    }
+
+    // 3. Scan cached page JSONs for that surah's page span
+    if (surahId != null) {
+      val surahMeta = cachedSurahs?.firstOrNull { it.id == surahId }
+        ?: getSurahs().getOrNull()?.firstOrNull { it.id == surahId }
+      if (surahMeta != null) {
+        for (p in surahMeta.startPage..surahMeta.endPage) {
+          val pageBytes = diskCache.readVerifiedBytes("api/page_$p.json") ?: continue
+          val found = runCatching { pageAdapter.fromJson(pageBytes.decodeToString()) }.getOrNull()
+            ?.verses?.firstOrNull { it.verse_key == verseKey }
+          if (found != null) return found
+        }
+      }
+    }
+
+    // 4. Fetch individual verse from official Quran.com API and cache it
+    val resp = runCatching { QuranApiClient.quranComApi.getVerseByKeyRaw(verseKey) }.getOrNull()
+    if (resp?.isSuccessful == true) {
+      val body = resp.body()?.bytes()
+      if (body != null) {
+        diskCache.writeVerifiedBytes("api/verse_meta_$safeKey.json", body)
+        return runCatching { verseKeyAdapter.fromJson(body.decodeToString()) }.getOrNull()?.verse
+      }
+    }
+    return null
+  }
+
+  private fun extractExactUthmaniText(verse: VerseDto): String {
+    val direct = verse.text_uthmani?.trim().orEmpty()
+    if (direct.isNotBlank()) return direct
+    return verse.words
+      .filter { !it.char_type_name.equals("end", ignoreCase = true) }
+      .mapNotNull { it.text_uthmani?.trim()?.takeIf { t -> t.isNotBlank() } }
+      .joinToString(" ")
+  }
+
+  fun formatAyahSelectionReference(
+    orderedVerseKeys: List<String>,
+    surahsById: Map<Int, SurahMeta>,
+  ): String {
+    val parsed = orderedVerseKeys.mapNotNull { vk ->
+      val p = vk.split(":")
+      val s = p.getOrNull(0)?.toIntOrNull() ?: return@mapNotNull null
+      val a = p.getOrNull(1)?.toIntOrNull() ?: return@mapNotNull null
+      s to a
+    }.sortedWith(compareBy({ it.first }, { it.second }))
+
+    if (parsed.isEmpty()) return ""
+    val bySurah = LinkedHashMap<Int, MutableList<Int>>()
+    for ((s, a) in parsed) {
+      val list = bySurah.getOrPut(s) { mutableListOf() }
+      if (list.lastOrNull() != a) list.add(a)
+    }
+    return bySurah.entries.joinToString("، ") { (surahId, ayahs) ->
+      val surahName = surahsById[surahId]?.nameArabic?.takeIf { it.isNotBlank() } ?: "$surahId"
+      val ranges = ArrayList<String>()
+      var start = ayahs.first()
+      var prev = start
+      for (idx in 1 until ayahs.size) {
+        val cur = ayahs[idx]
+        if (cur == prev + 1) {
+          prev = cur
+        } else {
+          ranges.add(if (start == prev) "$start" else "$start-$prev")
+          start = cur
+          prev = cur
+        }
+      }
+      ranges.add(if (start == prev) "$start" else "$start-$prev")
+      "سورة $surahName ${ranges.joinToString("، ")}"
+    }
+  }
+
+  private fun toArabicIndicDigitsRepo(number: Int): String {
+    val digits = charArrayOf('٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩')
+    val raw = number.toString()
+    return buildString(raw.length) {
+      for (ch in raw) {
+        append(if (ch in '0'..'9') digits[ch - '0'] else ch)
+      }
+    }
+  }
+
   private val wordSearchEngine = QuranWordSearchEngine(
     diskCache = diskCache,
     ensurePageCached = ::ensurePageJsonCached,

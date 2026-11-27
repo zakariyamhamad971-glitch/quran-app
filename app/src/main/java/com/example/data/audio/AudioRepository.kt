@@ -17,6 +17,11 @@ import java.util.concurrent.ConcurrentHashMap
 
 interface Mp3QuranApi {
   @GET("reciters")
+  suspend fun getAllRecitersRaw(
+    @Query("language") language: String = "ar",
+  ): Response<ResponseBody>
+
+  @GET("reciters")
   suspend fun getRecitersRaw(
     @Query("language") language: String = "ar",
     @Query("rewaya") rewaya: Int = 1,
@@ -75,7 +80,7 @@ class AudioRepository(
 
   companion object {
     const val TARGET_MOSHAF_NAME = "حفص عن عاصم - مرتل"
-    private val DIACRITICS_REGEX = Regex("[\\u064B-\\u065F\\u0670]")
+    private val DIACRITICS_REGEX = Regex("[\\u064B-\\u065F\\u0670\\u06D6-\\u06ED\\u0640]")
     private val WHITESPACE_REGEX = Regex("\\s+")
 
     val ORDERED_REQUESTED_RECITERS = listOf(
@@ -112,20 +117,34 @@ class AudioRepository(
 
     internal fun normalizeArabicForSearch(input: String): String {
       return input
+        .replace(DIACRITICS_REGEX, "")
         .replace("أ", "ا")
         .replace("إ", "ا")
         .replace("آ", "ا")
+        .replace("ٱ", "ا")
         .replace("ى", "ي")
         .replace("ة", "ه")
-        .replace(DIACRITICS_REGEX, "")
+        .replace("ؤ", "و")
+        .replace("ئ", "ي")
         .replace(WHITESPACE_REGEX, " ")
         .replace("عبد ", "عبد")
         .replace("ابو ", "ابو")
         .trim()
+        .lowercase()
     }
 
     internal fun compactArabic(input: String): String =
       normalizeArabicForSearch(input).replace(" ", "")
+
+    fun matchesReciterSearchQuery(displayName: String, query: String): Boolean {
+      val normQuery = normalizeArabicForSearch(query)
+      if (normQuery.isEmpty()) return true
+      val normName = normalizeArabicForSearch(displayName)
+      if (normName.contains(normQuery)) return true
+      val compactQuery = normQuery.replace(" ", "")
+      if (compactQuery.isEmpty()) return true
+      return normName.replace(" ", "").contains(compactQuery)
+    }
 
     internal fun parseTimingReadsJson(rawJson: String): List<TimingReadDto> {
       val trimmed = rawJson.trimStart()
@@ -201,137 +220,176 @@ class AudioRepository(
     cachedRecitersCatalog?.let { return@runCatching it }
     withContext(Dispatchers.IO) {
       cachedRecitersCatalog?.let { return@withContext it }
-      val bytes = diskCache.readVerifiedBytes("api/mp3quran_reciters_ar_r1.json") ?: run {
-        val resp = api.getRecitersRaw("ar", 1)
-        if (!resp.isSuccessful) error("فشل جلب قائمة القراء (${resp.code()})")
-        val body = resp.body()?.bytes() ?: error("استجابة القراء فارغة")
-        diskCache.writeVerifiedBytes("api/mp3quran_reciters_ar_r1.json", body)
-        body
+      val bytes = diskCache.readVerifiedBytes("api/mp3quran_reciters_ar_all.json") ?: run {
+        val allResp = runCatching { api.getAllRecitersRaw("ar") }.getOrNull()
+        val allBody = if (allResp?.isSuccessful == true) allResp.body()?.bytes() else null
+        if (allBody != null && allBody.isNotEmpty()) {
+          diskCache.writeVerifiedBytes("api/mp3quran_reciters_ar_all.json", allBody)
+          allBody
+        } else {
+          diskCache.readVerifiedBytes("api/mp3quran_reciters_ar_r1.json") ?: run {
+            val resp = api.getRecitersRaw("ar", 1)
+            if (!resp.isSuccessful) error("فشل جلب قائمة القراء (${resp.code()})")
+            val body = resp.body()?.bytes() ?: error("استجابة القراء فارغة")
+            diskCache.writeVerifiedBytes("api/mp3quran_reciters_ar_r1.json", body)
+            body
+          }
+        }
       }
       val parsed = recitersAdapter.fromJson(bytes.decodeToString())
         ?: error("تعذر تحليل بيانات القراء")
 
       val normTargetMoshaf = normalizeArabicForSearch(TARGET_MOSHAF_NAME)
 
-    // Only keep reciters that have a moshaf strictly matching "حفص عن عاصم - مرتل"
-    val allHafsMurattal = parsed.reciters.mapNotNull { reciter ->
-      val exactMoshafs = reciter.moshaf.filter { m ->
-        normalizeArabicForSearch(m.name) == normTargetMoshaf
-      }
-      if (exactMoshafs.isEmpty()) return@mapNotNull null
-      val pickedMoshaf = exactMoshafs.maxByOrNull { parseSurahList(it.surah_list).size } ?: return@mapNotNull null
-      Pair(reciter, pickedMoshaf)
-    }
-
-    val usedReciterIds = mutableSetOf<Int>()
-    val orderedPrimary = ORDERED_REQUESTED_RECITERS.mapIndexed { idx, requested ->
-      val normReq = normalizeArabicForSearch(requested)
-      val aliases = when (requested) {
-        "المنشاوي" -> listOf(normReq, normalizeArabicForSearch("محمد صديق المنشاوي"))
-        "أبو بكر الشاطري" -> listOf(normReq, normalizeArabicForSearch("شيخ ابو بكر الشاطري"))
-        "أحمد دايبان" -> listOf(normReq, normalizeArabicForSearch("احمد ديبان"), normalizeArabicForSearch("احمد بن علي دايبان"))
-        "مشاري العفاسي" -> listOf(normReq, normalizeArabicForSearch("مشاري راشد العفاسي"))
-        else -> listOf(normReq)
-      }
-
-      val matches = allHafsMurattal.filter { (rec, _) ->
-        val normName = normalizeArabicForSearch(rec.name)
-        aliases.any { alias ->
-          normName == alias || normName.contains(alias)
-        }
-      }
-
-      when {
-        matches.isEmpty() -> VerifiedReciter(
-          orderIndex = idx,
-          requestedName = requested,
-          reciterId = null,
-          displayName = requested,
-          moshafId = null,
-          moshafName = null,
-          serverUrl = null,
-          availableSurahs = emptySet(),
-          status = ReciterMatchStatus.MISSING,
-          statusNote = "غير متوفر بمصحف \"$TARGET_MOSHAF_NAME\" في واجهة mp3quran",
-          isPrimaryOrdered = true,
-        )
-        matches.size > 1 -> {
-          val exact = matches.filter { (r, _) ->
-            val n = normalizeArabicForSearch(r.name)
-            aliases.any { it == n }
-          }
-          if (exact.size == 1) {
-            val (rec, moshaf) = exact.first()
-            usedReciterIds.add(rec.id)
-            val surahs = parseSurahList(moshaf.surah_list)
-            VerifiedReciter(
-              orderIndex = idx,
-              requestedName = requested,
-              reciterId = rec.id,
-              displayName = rec.name,
-              moshafId = moshaf.id,
-              moshafName = moshaf.name,
-              serverUrl = normalizeHttpsServer(moshaf.server),
+      // Keep ALL valid Hafs styles for each reciter, preserving strictly the raw API moshaf.name
+      val allHafsWithStyles = parsed.reciters.mapNotNull { reciter ->
+        val validMoshafs = reciter.moshaf.mapNotNull { m ->
+          val surahs = parseSurahList(m.surah_list)
+          val server = normalizeHttpsServer(m.server)
+          val normName = normalizeArabicForSearch(m.name)
+          if (surahs.isNotEmpty() &&
+            server.isNotBlank() &&
+            normName.contains("حفص") &&
+            !normName.contains("ترجم")
+          ) {
+            ReciterMoshafStyle(
+              moshafId = m.id,
+              moshafName = m.name.trim(),
+              serverUrl = server,
               availableSurahs = surahs,
-              status = ReciterMatchStatus.VERIFIED,
-              statusNote = "متوفر (${surahs.size} سورة)",
-              isPrimaryOrdered = true,
+              hasAyahTiming = false,
+              riwayaId = 1,
+              riwayaName = "حفص عن عاصم",
             )
           } else {
-            VerifiedReciter(
-              orderIndex = idx,
-              requestedName = requested,
-              reciterId = null,
-              displayName = requested,
-              moshafId = null,
-              moshafName = null,
-              serverUrl = null,
-              availableSurahs = emptySet(),
-              status = ReciterMatchStatus.AMBIGUOUS,
-              statusNote = "تطابق متعدد (${matches.joinToString(" / ") { it.first.name }})",
-              isPrimaryOrdered = true,
-            )
+            null
+          }
+        }.distinctBy { it.moshafId }
+
+        if (validMoshafs.isEmpty()) return@mapNotNull null
+
+        val sortedStyles = validMoshafs.sortedWith(
+          compareBy<ReciterMoshafStyle>(
+            { style ->
+              val norm = normalizeArabicForSearch(style.moshafName)
+              when {
+                norm == normTargetMoshaf -> 0
+                norm.contains("مرتل") -> 1
+                norm.contains("مجود") -> 2
+                else -> 3
+              }
+            },
+            { -it.availableSurahs.size },
+          ),
+        )
+        Pair(reciter, sortedStyles)
+      }
+
+      val usedReciterIds = mutableSetOf<Int>()
+      val orderedPrimary = ORDERED_REQUESTED_RECITERS.mapIndexed { idx, requested ->
+        val normReq = normalizeArabicForSearch(requested)
+        val aliases = when (requested) {
+          "المنشاوي" -> listOf(normReq, normalizeArabicForSearch("محمد صديق المنشاوي"))
+          "أبو بكر الشاطري" -> listOf(normReq, normalizeArabicForSearch("شيخ ابو بكر الشاطري"))
+          "أحمد دايبان" -> listOf(normReq, normalizeArabicForSearch("احمد ديبان"), normalizeArabicForSearch("احمد بن علي دايبان"))
+          "مشاري العفاسي" -> listOf(normReq, normalizeArabicForSearch("مشاري راشد العفاسي"))
+          else -> listOf(normReq)
+        }
+
+        val matches = allHafsWithStyles.filter { (rec, _) ->
+          val normName = normalizeArabicForSearch(rec.name)
+          aliases.any { alias ->
+            normName == alias || normName.contains(alias)
           }
         }
-        else -> {
-          val (rec, moshaf) = matches.first()
+
+        fun buildVerified(rec: Mp3QuranReciterDto, styles: List<ReciterMoshafStyle>): VerifiedReciter {
+          val defaultStyle = styles.first()
           usedReciterIds.add(rec.id)
-          val surahs = parseSurahList(moshaf.surah_list)
-          VerifiedReciter(
+          return VerifiedReciter(
             orderIndex = idx,
             requestedName = requested,
             reciterId = rec.id,
             displayName = rec.name,
-            moshafId = moshaf.id,
-            moshafName = moshaf.name,
-            serverUrl = normalizeHttpsServer(moshaf.server),
-            availableSurahs = surahs,
+            moshafId = defaultStyle.moshafId,
+            moshafName = defaultStyle.moshafName,
+            serverUrl = defaultStyle.serverUrl,
+            availableSurahs = defaultStyle.availableSurahs,
             status = ReciterMatchStatus.VERIFIED,
-            statusNote = "متوفر (${surahs.size} سورة)",
+            statusNote = "متوفر (${defaultStyle.availableSurahs.size} سورة)",
             isPrimaryOrdered = true,
+            riwayaId = 1,
+            riwayaName = "حفص عن عاصم",
+            availableStyles = styles,
           )
         }
-      }
-    }
 
-    val additionalVerified = allHafsMurattal
-      .filter { (rec, _) -> !usedReciterIds.contains(rec.id) }
-      .mapIndexed { idx, (rec, moshaf) ->
-        val surahs = parseSurahList(moshaf.surah_list)
-        VerifiedReciter(
-          orderIndex = orderedPrimary.size + idx,
-          requestedName = rec.name,
-          reciterId = rec.id,
-          displayName = rec.name,
-          moshafId = moshaf.id,
-          moshafName = moshaf.name,
-          serverUrl = normalizeHttpsServer(moshaf.server),
-          availableSurahs = surahs,
-          status = ReciterMatchStatus.VERIFIED,
-          statusNote = "متوفر (${surahs.size} سورة)",
-          isPrimaryOrdered = false,
-        )
+        when {
+          matches.isEmpty() -> VerifiedReciter(
+            orderIndex = idx,
+            requestedName = requested,
+            reciterId = null,
+            displayName = requested,
+            moshafId = null,
+            moshafName = null,
+            serverUrl = null,
+            availableSurahs = emptySet(),
+            status = ReciterMatchStatus.MISSING,
+            statusNote = "غير متوفر برواية حفص عن عاصم في واجهة mp3quran",
+            isPrimaryOrdered = true,
+          )
+          matches.size > 1 -> {
+            val exact = matches.filter { (r, _) ->
+              val n = normalizeArabicForSearch(r.name)
+              aliases.any { it == n }
+            }
+            if (exact.size == 1) {
+              val (rec, styles) = exact.first()
+              buildVerified(rec, styles)
+            } else {
+              VerifiedReciter(
+                orderIndex = idx,
+                requestedName = requested,
+                reciterId = null,
+                displayName = requested,
+                moshafId = null,
+                moshafName = null,
+                serverUrl = null,
+                availableSurahs = emptySet(),
+                status = ReciterMatchStatus.AMBIGUOUS,
+                statusNote = "تطابق متعدد (${matches.joinToString(" / ") { it.first.name }})",
+                isPrimaryOrdered = true,
+              )
+            }
+          }
+          else -> {
+            val (rec, styles) = matches.first()
+            buildVerified(rec, styles)
+          }
+        }
       }
+
+      val additionalVerified = allHafsWithStyles
+        .filter { (rec, _) -> !usedReciterIds.contains(rec.id) }
+        .mapIndexed { idx, (rec, styles) ->
+          val defaultStyle = styles.first()
+          VerifiedReciter(
+            orderIndex = orderedPrimary.size + idx,
+            requestedName = rec.name,
+            reciterId = rec.id,
+            displayName = rec.name,
+            moshafId = defaultStyle.moshafId,
+            moshafName = defaultStyle.moshafName,
+            serverUrl = defaultStyle.serverUrl,
+            availableSurahs = defaultStyle.availableSurahs,
+            status = ReciterMatchStatus.VERIFIED,
+            statusNote = "متوفر (${defaultStyle.availableSurahs.size} سورة)",
+            isPrimaryOrdered = false,
+            riwayaId = 1,
+            riwayaName = "حفص عن عاصم",
+            availableStyles = styles,
+          )
+        }
 
       val catalog = Pair(orderedPrimary, additionalVerified)
       cachedRecitersCatalog = catalog

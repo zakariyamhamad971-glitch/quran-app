@@ -434,33 +434,56 @@ object Mp3QuranRiwayatParser {
     for (riwayaId in orderedRiwayaIds) {
       val groupEntries = entriesByRiwayaId[riwayaId].orEmpty()
       for (entry in groupEntries) {
-        for (moshaf in entry.moshafList) {
-          if (!seenMoshafIds.add(moshaf.id)) continue
-          val hasTiming = timingReadIds.contains(moshaf.id)
-          val timingText = if (hasTiming) "له توقيت" else "تلاوة سورة كاملة (بدون تحديد آيات)"
-          val statusParts = buildList {
-            if (entry.riwayaName.isNotBlank()) add(entry.riwayaName)
-            add("${moshaf.availableSurahs.size} سورة")
-            add(timingText)
-          }
-          result += VerifiedReciter(
-            orderIndex = orderCursor++,
-            requestedName = entry.reciterName,
-            reciterId = entry.reciterId,
-            displayName = entry.reciterName,
-            moshafId = moshaf.id,
-            moshafName = moshaf.name,
-            serverUrl = moshaf.server,
-            availableSurahs = moshaf.availableSurahs,
-            status = ReciterMatchStatus.VERIFIED,
-            statusNote = statusParts.joinToString(" • "),
-            isPrimaryOrdered = true,
+        val validMoshafs = entry.moshafList.filter { seenMoshafIds.add(it.id) }
+        if (validMoshafs.isEmpty()) continue
+        val sortedMoshafs = validMoshafs.sortedWith(
+          compareByDescending<Mp3QuranMoshafInfo> { timingReadIds.contains(it.id) }
+            .thenBy { m ->
+              val norm = normalizeArabicNoDiacritics(m.name)
+              when {
+                norm.contains("مرتل") -> 0
+                norm.contains("مجود") -> 1
+                else -> 2
+              }
+            }
+            .thenByDescending { it.availableSurahs.size },
+        )
+        val styles = sortedMoshafs.map { m ->
+          ReciterMoshafStyle(
+            moshafId = m.id,
+            moshafName = m.name.trim(),
+            serverUrl = m.server,
+            availableSurahs = m.availableSurahs,
+            hasAyahTiming = timingReadIds.contains(m.id),
             riwayaId = entry.riwayaId,
             riwayaName = entry.riwayaName,
-            hasAyahTiming = hasTiming,
-            isPdfModeReciter = true,
           )
         }
+        val defaultStyle = styles.first()
+        val timingText = if (defaultStyle.hasAyahTiming) "له توقيت" else "تلاوة سورة كاملة (بدون تحديد آيات)"
+        val statusParts = buildList {
+          if (entry.riwayaName.isNotBlank()) add(entry.riwayaName)
+          add("${defaultStyle.availableSurahs.size} سورة")
+          add(timingText)
+        }
+        result += VerifiedReciter(
+          orderIndex = orderCursor++,
+          requestedName = entry.reciterName,
+          reciterId = entry.reciterId,
+          displayName = entry.reciterName,
+          moshafId = defaultStyle.moshafId,
+          moshafName = defaultStyle.moshafName,
+          serverUrl = defaultStyle.serverUrl,
+          availableSurahs = defaultStyle.availableSurahs,
+          status = ReciterMatchStatus.VERIFIED,
+          statusNote = statusParts.joinToString(" • "),
+          isPrimaryOrdered = true,
+          riwayaId = entry.riwayaId,
+          riwayaName = entry.riwayaName,
+          hasAyahTiming = defaultStyle.hasAyahTiming,
+          isPdfModeReciter = true,
+          availableStyles = styles,
+        )
       }
     }
     return result

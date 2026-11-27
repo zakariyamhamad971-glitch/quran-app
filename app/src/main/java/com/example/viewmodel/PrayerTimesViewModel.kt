@@ -4,6 +4,9 @@ import android.app.Application
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.prayer.AdhanAlarmScheduler
+import com.example.data.prayer.AdhanPlaybackService
+import com.example.data.prayer.AdhanSettingsState
 import com.example.data.prayer.AsrMadhab
 import com.example.data.prayer.CachedPrayerSchedule
 import com.example.data.prayer.DailyPrayerTimesRecord
@@ -11,6 +14,7 @@ import com.example.data.prayer.LocationLookupHelper
 import com.example.data.prayer.LocationLookupResult
 import com.example.data.prayer.NextPrayerTarget
 import com.example.data.prayer.OfflineCityOption
+import com.example.data.prayer.PrayerAlarmConfig
 import com.example.data.prayer.PrayerCalculationMethod
 import com.example.data.prayer.PrayerFormatters
 import com.example.data.prayer.PrayerHighLatitudeRule
@@ -36,6 +40,8 @@ import java.util.TimeZone
 @Immutable
 data class PrayerTimesUiState(
   val settings: PrayerSettingsState = PrayerSettingsState(),
+  val adhanSettings: AdhanSettingsState = AdhanSettingsState(),
+  val isTestAdhanPlaying: Boolean = false,
   val selectedDayOffset: Int = 0, // -1 yesterday, 0 today, +1 tomorrow
   val todayRecord: DailyPrayerTimesRecord? = null,
   val displayedRecord: DailyPrayerTimesRecord? = null,
@@ -67,10 +73,20 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
 
   private var latestPrefs = ReaderPreferences.PersistedPrayerPreferences()
   private var inMemorySchedule: CachedPrayerSchedule? = null
+  private var lastSyncedAlarmSignature: String? = null
 
   init {
     observePreferences()
     observePrayerRolloverTicker()
+    observeTestPlayback()
+  }
+
+  private fun observeTestPlayback() {
+    viewModelScope.launch {
+      AdhanPlaybackService.isTestPlayingFlow.collectLatest { playing ->
+        _uiState.update { it.copy(isTestAdhanPlaying = playing) }
+      }
+    }
   }
 
   private fun observePreferences() {
@@ -87,8 +103,37 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
         val loc = persisted.settings.location
         if (loc != null && needsScheduleRefresh(persisted.settings, inMemorySchedule)) {
           recomputeAndCache30Days(persisted.settings)
+        } else {
+          syncAlarmsIfNeeded(persisted)
         }
       }
+    }
+  }
+
+  private suspend fun syncAlarmsIfNeeded(persisted: ReaderPreferences.PersistedPrayerPreferences) {
+    val sig = buildString {
+      append(persisted.settings.cacheKey())
+      append("|en=").append(persisted.adhanSettings.alarmsEnabled)
+      append("|notif=").append(persisted.adhanSettings.persistentCountdownEnabled)
+      append("|cfg=").append(AdhanSettingsState.encodeConfigsJson(persisted.adhanSettings.perPrayerConfig))
+    }
+    if (sig == lastSyncedAlarmSignature) return
+    lastSyncedAlarmSignature = sig
+    withContext(Dispatchers.IO) {
+      runCatching {
+        AdhanAlarmScheduler.syncFromPreferences(
+          context = getApplication(),
+          persisted = persisted,
+          repository = repository,
+        )
+      }
+    }
+  }
+
+  fun refreshAlarmsAndNotification() {
+    lastSyncedAlarmSignature = null
+    viewModelScope.launch {
+      syncAlarmsIfNeeded(latestPrefs)
     }
   }
 
@@ -230,6 +275,48 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
     }
   }
 
+  fun setAdhanAlarmsEnabled(enabled: Boolean) {
+    viewModelScope.launch {
+      preferences.setAdhanAlarmsEnabled(enabled)
+    }
+  }
+
+  fun setPersistentCountdownEnabled(enabled: Boolean) {
+    viewModelScope.launch {
+      preferences.setPersistentCountdownEnabled(enabled)
+    }
+  }
+
+  fun updatePrayerAlarmConfig(prayerType: PrayerType, config: PrayerAlarmConfig) {
+    viewModelScope.launch {
+      preferences.savePrayerAlarmConfig(prayerType, config)
+    }
+  }
+
+  fun applyAlarmConfigToAllPrayers(config: PrayerAlarmConfig) {
+    viewModelScope.launch {
+      preferences.saveAllPrayersAlarmConfig(config = config, includeSunrise = false)
+    }
+  }
+
+  fun startTestAdhan10s(
+    prayerType: PrayerType = PrayerType.FAJR,
+    configOverride: PrayerAlarmConfig? = null,
+  ) {
+    val config = configOverride ?: latestPrefs.adhanSettings.configFor(prayerType)
+    val locationName = latestPrefs.settings.location?.resolvedLabel().orEmpty()
+    AdhanPlaybackService.startTestAdhan10s(
+      context = getApplication(),
+      prayerType = prayerType,
+      config = config,
+      locationName = locationName,
+    )
+  }
+
+  fun stopTestAdhan() {
+    AdhanPlaybackService.stopAdhan(getApplication())
+  }
+
   private fun needsScheduleRefresh(
     settings: PrayerSettingsState,
     cached: CachedPrayerSchedule?,
@@ -334,6 +421,7 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
 
       UiSnapshotComputation(
         settings = settings,
+        adhanSettings = persisted.adhanSettings,
         todayRecord = todayRec,
         displayedRecord = selectedRec,
         nextPrayer = nextTarget,
@@ -349,6 +437,7 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
     _uiState.update { current ->
       current.copy(
         settings = snapshot.settings,
+        adhanSettings = snapshot.adhanSettings,
         todayRecord = snapshot.todayRecord,
         displayedRecord = snapshot.displayedRecord,
         nextPrayer = snapshot.nextPrayer,
@@ -365,6 +454,7 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
 
   private data class UiSnapshotComputation(
     val settings: PrayerSettingsState,
+    val adhanSettings: AdhanSettingsState,
     val todayRecord: DailyPrayerTimesRecord?,
     val displayedRecord: DailyPrayerTimesRecord?,
     val nextPrayer: NextPrayerTarget?,

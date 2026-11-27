@@ -205,6 +205,7 @@ fun PrayerSettingsSheet(
   onSelectHighLatitudeRule: (PrayerHighLatitudeRule) -> Unit,
   onAdjustMinutes: (PrayerType, Int) -> Unit,
   onResetAdjustments: () -> Unit,
+  onOpenAdhanSettings: (() -> Unit)? = null,
   onDismiss: () -> Unit,
 ) {
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -225,6 +226,22 @@ fun PrayerSettingsSheet(
         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
         color = MaterialTheme.colorScheme.onSurface,
       )
+      if (onOpenAdhanSettings != null) {
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(
+          onClick = {
+            onDismiss()
+            onOpenAdhanSettings()
+          },
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .testTag("prayer_settings_open_adhan_button"),
+        ) {
+          Text("إعدادات تنبيهات الأذان والإشعار الدائم")
+        }
+      }
       Spacer(Modifier.height(14.dp))
 
       // Calculation method section

@@ -223,6 +223,71 @@ class VerseInsightsRepository(
     return Pair(title, text)
   }
 
+  suspend fun getMultiVerseInsights(
+    orderedVerseKeys: List<String>,
+    primaryPageNumber: Int,
+    surahsById: Map<Int, SurahMeta>,
+    pageHints: Map<String, Int>,
+    codeV2Hints: Map<String, String>,
+    quranRepository: QuranRepository,
+    tafsirRegistryRepository: TafsirRegistryRepository,
+    checkedEditions: List<DownloadedTafsirEdition>,
+  ): Result<VerseInsightsData> = runCatching {
+    val cleanKeys = orderedVerseKeys.distinct()
+    require(cleanKeys.isNotEmpty()) { "لا توجد آيات محددة" }
+    val primaryKey = cleanKeys.first()
+    val primaryParts = primaryKey.split(":")
+    val primarySurah = primaryParts.getOrNull(0)?.toIntOrNull() ?: 1
+    val primaryAyah = primaryParts.getOrNull(1)?.toIntOrNull() ?: 1
+
+    val sections = ArrayList<AyahInsightSection>(cleanKeys.size)
+    for (vk in cleanKeys) {
+      val parts = vk.split(":")
+      val surahId = parts.getOrNull(0)?.toIntOrNull() ?: continue
+      val ayahNumber = parts.getOrNull(1)?.toIntOrNull() ?: continue
+      val surahName = surahsById[surahId]?.nameArabic.orEmpty()
+      val exactText = quranRepository.getExactVerseText(vk, hintPageNumber = pageHints[vk]).orEmpty()
+      val entries = checkedEditions.map { ed ->
+        val rawText = tafsirRegistryRepository.readAyahTextOffline(
+          slug = ed.slug,
+          surahId = surahId,
+          ayahNumber = ayahNumber,
+        ).orEmpty()
+        val isRtl = ed.languageKey in setOf("arabic", "urdu", "kurdish", "persian", "farsi", "ar", "ur", "ku", "fa")
+        AyahSourceInsightEntry(
+          editionId = ed.editionId,
+          sourceTitle = ed.nameAr,
+          languageLabelAr = ed.languageLabelAr,
+          typeLabelAr = ed.type.labelAr,
+          isRtl = isRtl,
+          text = rawText,
+        )
+      }
+      sections.add(
+        AyahInsightSection(
+          verseKey = vk,
+          surahId = surahId,
+          ayahNumber = ayahNumber,
+          surahName = surahName,
+          exactAyahText = exactText,
+          codeV2Line = codeV2Hints[vk].orEmpty(),
+          sourceEntries = entries,
+        ),
+      )
+    }
+
+    VerseInsightsData(
+      verseKey = primaryKey,
+      surahId = primarySurah,
+      ayahNumber = primaryAyah,
+      pageNumber = primaryPageNumber,
+      codeV2Line = codeV2Hints[primaryKey].orEmpty(),
+      sections = sections,
+      referenceSummary = quranRepository.formatAyahSelectionReference(cleanKeys, surahsById),
+      checkedEditionIds = checkedEditions.mapTo(HashSet()) { it.editionId },
+    )
+  }
+
   private fun cleanHtml(raw: String): String {
     if (raw.isBlank()) return ""
     // Remove footnote <sup> markers that reference numeric footnotes cleanly

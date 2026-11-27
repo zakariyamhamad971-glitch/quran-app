@@ -33,6 +33,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Brightness7
@@ -77,8 +78,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.data.prayer.AdhanSettingsState
 import com.example.data.prayer.DailyPrayerTimesRecord
 import com.example.data.prayer.NextPrayerTarget
+import com.example.data.prayer.PrayerAlarmMode
 import com.example.data.prayer.PrayerFormatters
 import com.example.data.prayer.PrayerType
 import com.example.data.quran.SurahMeta
@@ -109,6 +112,8 @@ fun PrayerHomeScreen(
   val uiState by prayerViewModel.uiState.collectAsStateWithLifecycle()
   var showCityPicker by rememberSaveable { mutableStateOf(false) }
   var showPrayerSettings by rememberSaveable { mutableStateOf(false) }
+  var showAdhanSettings by rememberSaveable { mutableStateOf(false) }
+  var editingSoundPrayer by rememberSaveable { mutableStateOf<PrayerType?>(null) }
 
   val locationPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestPermission(),
@@ -178,6 +183,7 @@ fun PrayerHomeScreen(
                 onRequestLocation = onRequestCoarseLocation,
                 onOpenCityPicker = { showCityPicker = true },
                 onTogglePrayerCompleted = prayerViewModel::togglePrayerCompleted,
+                onOpenPrayerSound = { editingSoundPrayer = it },
               )
             }
 
@@ -197,6 +203,7 @@ fun PrayerHomeScreen(
               QuickPrayerMetaCard(
                 uiState = uiState,
                 onOpenPrayerSettings = { showPrayerSettings = true },
+                onOpenAdhanSettings = { showAdhanSettings = true },
                 onOpenCityPicker = { showCityPicker = true },
               )
             }
@@ -217,6 +224,7 @@ fun PrayerHomeScreen(
               onRequestLocation = onRequestCoarseLocation,
               onOpenCityPicker = { showCityPicker = true },
               onTogglePrayerCompleted = prayerViewModel::togglePrayerCompleted,
+              onOpenPrayerSound = { editingSoundPrayer = it },
             )
 
             MushafHomeTile(
@@ -252,7 +260,39 @@ fun PrayerHomeScreen(
       onSelectHighLatitudeRule = prayerViewModel::setHighLatitudeRule,
       onAdjustMinutes = prayerViewModel::adjustPrayerMinutes,
       onResetAdjustments = prayerViewModel::resetAllAdjustments,
+      onOpenAdhanSettings = { showAdhanSettings = true },
       onDismiss = { showPrayerSettings = false },
+    )
+  }
+
+  if (showAdhanSettings) {
+    AdhanAlarmsManagementSheet(
+      adhanSettings = uiState.adhanSettings,
+      isTestPlaying = uiState.isTestAdhanPlaying,
+      onToggleAlarmsEnabled = prayerViewModel::setAdhanAlarmsEnabled,
+      onTogglePersistentCountdown = prayerViewModel::setPersistentCountdownEnabled,
+      onEditPrayerSound = { editingSoundPrayer = it },
+      onTestAdhanNow = { prayerViewModel.startTestAdhan10s() },
+      onStopTestAdhan = { prayerViewModel.stopTestAdhan() },
+      onDismiss = {
+        showAdhanSettings = false
+        prayerViewModel.refreshAlarmsAndNotification()
+      },
+    )
+  }
+
+  editingSoundPrayer?.let { targetPrayer ->
+    PrayerSoundConfigSheet(
+      prayerType = targetPrayer,
+      currentConfig = uiState.adhanSettings.configFor(targetPrayer),
+      isTestPlaying = uiState.isTestAdhanPlaying,
+      onSaveConfig = { cfg -> prayerViewModel.updatePrayerAlarmConfig(targetPrayer, cfg) },
+      onApplyToAllPrayers = { cfg -> prayerViewModel.applyAlarmConfigToAllPrayers(cfg) },
+      onTestAdhanNow = { cfg ->
+        prayerViewModel.startTestAdhan10s(prayerType = targetPrayer, configOverride = cfg)
+      },
+      onStopTestAdhan = { prayerViewModel.stopTestAdhan() },
+      onDismiss = { editingSoundPrayer = null },
     )
   }
 }
@@ -339,6 +379,7 @@ private fun PrayerTimesMainCard(
   onRequestLocation: () -> Unit,
   onOpenCityPicker: () -> Unit,
   onTogglePrayerCompleted: (PrayerType) -> Unit,
+  onOpenPrayerSound: (PrayerType) -> Unit,
 ) {
   val cardContainer = if (isDarkTheme) {
     Color(0xFF0C201D).copy(alpha = 0.90f)
@@ -450,8 +491,10 @@ private fun PrayerTimesMainCard(
             canMarkPrayed = uiState.selectedDayOffset == 0,
             checkedKeysToday = uiState.checkedPrayerKeysToday,
             adjustments = uiState.settings.adjustments,
+            adhanSettings = uiState.adhanSettings,
             isDarkTheme = isDarkTheme,
             onTogglePrayerCompleted = onTogglePrayerCompleted,
+            onOpenPrayerSound = onOpenPrayerSound,
           )
         } else {
           Box(
@@ -694,8 +737,10 @@ private fun PrayerScheduleList(
   canMarkPrayed: Boolean,
   checkedKeysToday: Set<String>,
   adjustments: com.example.data.prayer.PrayerMinuteAdjustments,
+  adhanSettings: AdhanSettingsState,
   isDarkTheme: Boolean,
   onTogglePrayerCompleted: (PrayerType) -> Unit,
+  onOpenPrayerSound: (PrayerType) -> Unit,
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
     PrayerType.entries.forEach { prayerType ->
@@ -812,17 +857,26 @@ private fun PrayerScheduleList(
               color = if (isNext) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.width(4.dp))
+            val soundConfig = adhanSettings.configFor(prayerType)
+            val isAudible = adhanSettings.alarmsEnabled && soundConfig.mode != PrayerAlarmMode.SILENT
             IconButton(
-              onClick = {},
-              enabled = false,
+              onClick = { onOpenPrayerSound(prayerType) },
               modifier = Modifier
-                .size(44.dp)
-                .testTag("prayer_speaker_disabled_${prayerType.key}"),
+                .minimumInteractiveComponentSize()
+                .testTag("prayer_alarm_button_${prayerType.key}"),
             ) {
               Icon(
-                imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                contentDescription = stringResource(R.string.prayer_adhan_coming_soon),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.30f),
+                imageVector = if (isAudible) {
+                  Icons.AutoMirrored.Filled.VolumeUp
+                } else {
+                  Icons.AutoMirrored.Filled.VolumeOff
+                },
+                contentDescription = "${stringResource(R.string.prayer_adhan_sound_button)} ${prayerType.arabicName}",
+                tint = if (isAudible) {
+                  MaterialTheme.colorScheme.primary
+                } else {
+                  MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                },
                 modifier = Modifier.size(20.dp),
               )
             }
@@ -1040,6 +1094,7 @@ private fun MushafHomeTile(
 private fun QuickPrayerMetaCard(
   uiState: PrayerTimesUiState,
   onOpenPrayerSettings: () -> Unit,
+  onOpenAdhanSettings: () -> Unit,
   onOpenCityPicker: () -> Unit,
 ) {
   Surface(
@@ -1084,6 +1139,15 @@ private fun QuickPrayerMetaCard(
         ) {
           Text("ضبط المواقيت", maxLines = 1)
         }
+      }
+      FilledTonalButton(
+        onClick = onOpenAdhanSettings,
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 48.dp)
+          .testTag("home_open_adhan_alarms_button"),
+      ) {
+        Text("تنبيهات الأذان والإشعار الدائم", maxLines = 1)
       }
     }
   }

@@ -10,16 +10,20 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.data.prayer.AdhanSettingsState
 import com.example.data.prayer.AsrMadhab
 import com.example.data.prayer.CachedPrayerSchedule
 import com.example.data.prayer.DailyPrayerTimesRecord
+import com.example.data.prayer.PrayerAlarmConfig
 import com.example.data.prayer.PrayerCalculationMethod
 import com.example.data.prayer.PrayerHighLatitudeRule
 import com.example.data.prayer.PrayerMinuteAdjustments
 import com.example.data.prayer.PrayerSettingsState
+import com.example.data.prayer.PrayerType
 import com.example.data.prayer.SavedPrayerLocation
 import com.example.data.quran.MushafEdition
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
@@ -38,9 +42,20 @@ enum class PageViewMode {
 }
 
 @Immutable
+data class AyahBookmark(
+  val surahId: Int,
+  val ayahNumber: Int,
+  val pageNumber: Int,
+) {
+  val verseKey: String
+    get() = "$surahId:$ayahNumber"
+}
+
+@Immutable
 data class PersistedReaderState(
   val lastPage: Int = 1,
   val bookmarks: List<Int> = emptyList(),
+  val ayahBookmarks: List<AyahBookmark> = emptyList(),
   val mushafEdition: MushafEdition = MushafEdition.MADINAH_1421,
   val isDarkMode: Boolean = false,
   val backgroundTheme: BackgroundTheme = BackgroundTheme.WHITE,
@@ -57,6 +72,8 @@ data class PersistedReaderState(
   val activePdfMushafId: String? = null,
   val activeMushafIsPdf: Boolean = false,
   val globalFontSizes: Map<String, CachedGlobalFontSizes> = emptyMap(),
+  val checkedTafsirEditionIds: Set<String> = emptySet(),
+  val reciterPreferredMoshafIds: Map<Int, Int> = emptyMap(),
 )
 
 @Immutable
@@ -69,6 +86,7 @@ class ReaderPreferences(private val context: Context) {
   private object Keys {
     val LAST_PAGE = intPreferencesKey("last_page")
     val BOOKMARKS = stringSetPreferencesKey("bookmarks")
+    val AYAH_BOOKMARKS = stringSetPreferencesKey("ayah_bookmarks")
     val MUSHAF_EDITION = stringPreferencesKey("mushaf_edition")
     val DARK_MODE = booleanPreferencesKey("dark_mode_override")
     val BACKGROUND_THEME = stringPreferencesKey("background_theme")
@@ -94,10 +112,16 @@ class ReaderPreferences(private val context: Context) {
     val PRAYER_SCHEDULE_CACHE_JSON = stringPreferencesKey("prayer_schedule_cache_json")
     val PRAYER_CHECKED_DATE_KEY = stringPreferencesKey("prayer_checked_date_key")
     val PRAYER_CHECKED_KEYS = stringSetPreferencesKey("prayer_checked_keys")
+    val CHECKED_TAFSIR_EDITION_IDS = stringSetPreferencesKey("checked_tafsir_edition_ids")
+    val RECITER_PREFERRED_MOSHAF_JSON = stringPreferencesKey("reciter_preferred_moshaf_json")
+    val ADHAN_ALARMS_ENABLED = booleanPreferencesKey("adhan_alarms_enabled")
+    val ADHAN_PERSISTENT_COUNTDOWN_ENABLED = booleanPreferencesKey("adhan_persistent_countdown_enabled")
+    val ADHAN_PER_PRAYER_CONFIG_JSON = stringPreferencesKey("adhan_per_prayer_config_json")
   }
 
   data class PersistedPrayerPreferences(
     val settings: PrayerSettingsState = PrayerSettingsState(),
+    val adhanSettings: AdhanSettingsState = AdhanSettingsState(),
     val cachedSchedule: CachedPrayerSchedule? = null,
     val checkedDateKey: String = "",
     val checkedPrayerKeys: Set<String> = emptySet(),
@@ -121,6 +145,11 @@ class ReaderPreferences(private val context: Context) {
       runCatching { PrayerHighLatitudeRule.valueOf(name) }.getOrNull()
     } ?: PrayerHighLatitudeRule.MIDDLE_OF_THE_NIGHT
     val adjustments = decodePrayerAdjustments(prefs[Keys.PRAYER_ADJUSTMENTS_JSON])
+    val adhanSettings = AdhanSettingsState(
+      alarmsEnabled = prefs[Keys.ADHAN_ALARMS_ENABLED] ?: true,
+      persistentCountdownEnabled = prefs[Keys.ADHAN_PERSISTENT_COUNTDOWN_ENABLED] ?: true,
+      perPrayerConfig = AdhanSettingsState.decodeConfigsJson(prefs[Keys.ADHAN_PER_PRAYER_CONFIG_JSON]),
+    )
 
     PersistedPrayerPreferences(
       settings = PrayerSettingsState(
@@ -131,6 +160,7 @@ class ReaderPreferences(private val context: Context) {
         highLatitudeRule = highLat,
         adjustments = adjustments,
       ),
+      adhanSettings = adhanSettings,
       cachedSchedule = decodeCachedPrayerSchedule(prefs[Keys.PRAYER_SCHEDULE_CACHE_JSON]),
       checkedDateKey = prefs[Keys.PRAYER_CHECKED_DATE_KEY].orEmpty(),
       checkedPrayerKeys = prefs[Keys.PRAYER_CHECKED_KEYS].orEmpty(),
@@ -157,6 +187,8 @@ class ReaderPreferences(private val context: Context) {
       .filter { it in 1..604 }
       .sorted()
 
+    val ayahBookmarks = decodeAyahBookmarks(prefs[Keys.AYAH_BOOKMARKS].orEmpty())
+
     val downloadedIds = prefs[Keys.DOWNLOADED_MUSHAF_IDS] ?: emptySet()
     val activeId = prefs[Keys.ACTIVE_MUSHAF_ID] ?: (downloadedIds.firstOrNull() ?: "madinah_1421")
     val pdfId = prefs[Keys.ACTIVE_PDF_MUSHAF_ID]?.takeIf { it.isNotBlank() }
@@ -165,6 +197,7 @@ class ReaderPreferences(private val context: Context) {
     PersistedReaderState(
       lastPage = (prefs[Keys.LAST_PAGE] ?: 1).coerceIn(1, 604),
       bookmarks = bookmarks,
+      ayahBookmarks = ayahBookmarks,
       mushafEdition = edition,
       isDarkMode = isDark,
       backgroundTheme = bgTheme,
@@ -181,6 +214,8 @@ class ReaderPreferences(private val context: Context) {
       activePdfMushafId = pdfId,
       activeMushafIsPdf = isPdf,
       globalFontSizes = decodeGlobalFontSizes(prefs[Keys.GLOBAL_FONT_SIZES]),
+      checkedTafsirEditionIds = prefs[Keys.CHECKED_TAFSIR_EDITION_IDS].orEmpty(),
+      reciterPreferredMoshafIds = decodeReciterPreferredMoshafs(prefs[Keys.RECITER_PREFERRED_MOSHAF_JSON]),
     )
   }
 
@@ -221,6 +256,55 @@ class ReaderPreferences(private val context: Context) {
       val current = prefs[Keys.BOOKMARKS].orEmpty().toMutableSet()
       current.remove(page.toString())
       prefs[Keys.BOOKMARKS] = current
+    }
+  }
+
+  private fun decodeAyahBookmarks(raw: Set<String>): List<AyahBookmark> {
+    if (raw.isEmpty()) return emptyList()
+    return raw.mapNotNull { entry ->
+      val mainAndPage = entry.split("@")
+      val versePart = mainAndPage.getOrNull(0) ?: return@mapNotNull null
+      val page = mainAndPage.getOrNull(1)?.toIntOrNull()?.coerceIn(1, 604) ?: 1
+      val sp = versePart.split(":")
+      val surah = sp.getOrNull(0)?.toIntOrNull()?.takeIf { it in 1..114 } ?: return@mapNotNull null
+      val ayah = sp.getOrNull(1)?.toIntOrNull()?.takeIf { it >= 1 } ?: return@mapNotNull null
+      AyahBookmark(surahId = surah, ayahNumber = ayah, pageNumber = page)
+    }.distinctBy { it.verseKey }
+      .sortedWith(compareBy({ it.surahId }, { it.ayahNumber }))
+  }
+
+  private fun encodeAyahBookmarks(items: List<AyahBookmark>): Set<String> {
+    return items.distinctBy { it.verseKey }
+      .map { "${it.surahId}:${it.ayahNumber}@${it.pageNumber.coerceIn(1, 604)}" }
+      .toSet()
+  }
+
+  suspend fun toggleAyahBookmarks(items: List<AyahBookmark>): Boolean {
+    if (items.isEmpty()) return false
+    var added = false
+    context.dataStore.edit { prefs ->
+      val existing = decodeAyahBookmarks(prefs[Keys.AYAH_BOOKMARKS].orEmpty())
+        .associateBy { it.verseKey }
+        .toMutableMap()
+      val allPresent = items.all { existing.containsKey(it.verseKey) }
+      if (allPresent) {
+        for (item in items) existing.remove(item.verseKey)
+        added = false
+      } else {
+        for (item in items) existing[item.verseKey] = item
+        added = true
+      }
+      prefs[Keys.AYAH_BOOKMARKS] = encodeAyahBookmarks(existing.values.toList())
+    }
+    return added
+  }
+
+  suspend fun removeAyahBookmark(surahId: Int, ayahNumber: Int) {
+    val targetKey = "$surahId:$ayahNumber"
+    context.dataStore.edit { prefs ->
+      val existing = decodeAyahBookmarks(prefs[Keys.AYAH_BOOKMARKS].orEmpty())
+        .filterNot { it.verseKey == targetKey }
+      prefs[Keys.AYAH_BOOKMARKS] = encodeAyahBookmarks(existing)
     }
   }
 
@@ -464,6 +548,86 @@ class ReaderPreferences(private val context: Context) {
       prefs[Keys.PRAYER_CHECKED_DATE_KEY] = dateKey
       prefs[Keys.PRAYER_CHECKED_KEYS] = currentSet
     }
+  }
+
+  suspend fun markPrayerCompleted(dateKey: String, prayerKey: String) {
+    context.dataStore.edit { prefs ->
+      val storedDate = prefs[Keys.PRAYER_CHECKED_DATE_KEY].orEmpty()
+      val currentSet = if (storedDate == dateKey) {
+        prefs[Keys.PRAYER_CHECKED_KEYS].orEmpty().toMutableSet()
+      } else {
+        mutableSetOf()
+      }
+      currentSet.add(prayerKey)
+      prefs[Keys.PRAYER_CHECKED_DATE_KEY] = dateKey
+      prefs[Keys.PRAYER_CHECKED_KEYS] = currentSet
+    }
+  }
+
+  suspend fun readPrayerPreferencesOnce(): PersistedPrayerPreferences = prayerStateFlow.first()
+
+  suspend fun setAdhanAlarmsEnabled(enabled: Boolean) {
+    context.dataStore.edit { it[Keys.ADHAN_ALARMS_ENABLED] = enabled }
+  }
+
+  suspend fun setPersistentCountdownEnabled(enabled: Boolean) {
+    context.dataStore.edit { it[Keys.ADHAN_PERSISTENT_COUNTDOWN_ENABLED] = enabled }
+  }
+
+  suspend fun savePrayerAlarmConfig(prayerType: PrayerType, config: PrayerAlarmConfig) {
+    context.dataStore.edit { prefs ->
+      val current = AdhanSettingsState.decodeConfigsJson(prefs[Keys.ADHAN_PER_PRAYER_CONFIG_JSON]).toMutableMap()
+      current[prayerType] = config
+      prefs[Keys.ADHAN_PER_PRAYER_CONFIG_JSON] = AdhanSettingsState.encodeConfigsJson(current)
+    }
+  }
+
+  suspend fun saveAllPrayersAlarmConfig(config: PrayerAlarmConfig, includeSunrise: Boolean = false) {
+    context.dataStore.edit { prefs ->
+      val current = AdhanSettingsState.decodeConfigsJson(prefs[Keys.ADHAN_PER_PRAYER_CONFIG_JSON]).toMutableMap()
+      for (type in PrayerType.entries) {
+        if (type == PrayerType.SUNRISE && !includeSunrise) continue
+        current[type] = config
+      }
+      prefs[Keys.ADHAN_PER_PRAYER_CONFIG_JSON] = AdhanSettingsState.encodeConfigsJson(current)
+    }
+  }
+
+  suspend fun setTafsirEditionChecked(editionId: String, checked: Boolean) {
+    context.dataStore.edit { prefs ->
+      val current = prefs[Keys.CHECKED_TAFSIR_EDITION_IDS].orEmpty().toMutableSet()
+      if (checked) current.add(editionId) else current.remove(editionId)
+      prefs[Keys.CHECKED_TAFSIR_EDITION_IDS] = current
+    }
+  }
+
+  suspend fun saveReciterPreferredMoshaf(reciterId: Int, moshafId: Int) {
+    if (reciterId <= 0 || moshafId <= 0) return
+    context.dataStore.edit { prefs ->
+      val current = decodeReciterPreferredMoshafs(prefs[Keys.RECITER_PREFERRED_MOSHAF_JSON]).toMutableMap()
+      current[reciterId] = moshafId
+      val root = JSONObject()
+      for ((k, v) in current) {
+        root.put(k.toString(), v)
+      }
+      prefs[Keys.RECITER_PREFERRED_MOSHAF_JSON] = root.toString()
+    }
+  }
+
+  private fun decodeReciterPreferredMoshafs(raw: String?): Map<Int, Int> {
+    if (raw.isNullOrBlank()) return emptyMap()
+    return runCatching {
+      val root = JSONObject(raw)
+      buildMap {
+        val keys = root.keys()
+        while (keys.hasNext()) {
+          val k = keys.next()
+          val rId = k.toIntOrNull() ?: continue
+          val mId = root.optInt(k, -1)
+          if (rId > 0 && mId > 0) put(rId, mId)
+        }
+      }
+    }.getOrDefault(emptyMap())
   }
 
   private fun decodePrayerLocation(raw: String?): SavedPrayerLocation? {

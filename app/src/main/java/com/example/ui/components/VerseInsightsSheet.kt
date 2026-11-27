@@ -1,42 +1,56 @@
 package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -44,341 +58,656 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.audio.RecitationRange
+import com.example.data.quran.DownloadedTafsirEdition
 import com.example.data.quran.SurahMeta
 import com.example.ui.theme.AmiriFontFamily
 import com.example.viewmodel.VerseInsightsUiState
 
-@OptIn(ExperimentalMaterial3Api::class)
+private enum class InsightsSheetTab {
+  GLOBE,
+  PLAY,
+}
+
+private fun toArabicIndicDigitsSheet(number: Int): String {
+  val digits = charArrayOf('٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩')
+  val raw = number.toString()
+  return buildString(raw.length) {
+    for (ch in raw) {
+      append(if (ch in '0'..'9') digits[ch - '0'] else ch)
+    }
+  }
+}
+
 @Composable
 fun VerseInsightsSheet(
   state: VerseInsightsUiState,
   surahsById: Map<Int, SurahMeta>,
+  downloadedSources: List<DownloadedTafsirEdition>,
+  checkedEditionIds: Set<String>,
+  onToggleSourceChecked: (editionId: String, checked: Boolean) -> Unit,
+  onOpenTafsirManager: () -> Unit,
   onPlaySingleAyah: (surahId: Int, ayahNumber: Int) -> Unit,
   onPlayFromAyah: (surahId: Int, ayahNumber: Int) -> Unit,
   onPlayAyahRange: (RecitationRange) -> Unit,
   onOpenRangePicker: () -> Unit,
   onDismiss: () -> Unit,
+  onSheetTopInRootChanged: (Float?) -> Unit = {},
+  modifier: Modifier = Modifier,
 ) {
-  if (state is VerseInsightsUiState.Hidden) return
+  if (state is VerseInsightsUiState.Hidden) {
+    DisposableEffect(Unit) {
+      onSheetTopInRootChanged(null)
+      onDispose {}
+    }
+    return
+  }
+  DisposableEffect(Unit) {
+    onDispose { onSheetTopInRootChanged(null) }
+  }
   BackHandler(onBack = onDismiss)
-  val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-  var showEnglishTafsir by remember { mutableStateOf(false) }
 
-  ModalBottomSheet(
-    onDismissRequest = onDismiss,
-    sheetState = sheetState,
-    containerColor = MaterialTheme.colorScheme.surface,
+  var activeTab by remember { mutableStateOf(InsightsSheetTab.GLOBE) }
+  var sourcesDropdownExpanded by remember { mutableStateOf(false) }
+  val consumeTapInteraction = remember { MutableInteractionSource() }
+
+  Surface(
+    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+    color = MaterialTheme.colorScheme.surface,
+    tonalElevation = 4.dp,
+    shadowElevation = 14.dp,
+    modifier = modifier
+      .fillMaxWidth()
+      .fillMaxHeight(0.47f)
+      .onGloballyPositioned { coords ->
+        if (coords.isAttached) {
+          onSheetTopInRootChanged(coords.positionInRoot().y)
+        }
+      }
+      .clickable(
+        interactionSource = consumeTapInteraction,
+        indication = null,
+        onClick = {},
+      )
+      .testTag("verse_insights_bottom_sheet"),
   ) {
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .fillMaxHeight(0.86f)
-        .padding(horizontal = 18.dp)
-        .verticalScroll(rememberScrollState()),
-    ) {
-      when (state) {
-        is VerseInsightsUiState.Loading -> {
-          Text(
-            text = "سورة ${state.surahName} • الآية ${state.ayahNumber}",
-            style = MaterialTheme.typography.titleLarge.copy(fontFamily = AmiriFontFamily),
-            color = MaterialTheme.colorScheme.primary,
-          )
-          Spacer(Modifier.height(28.dp))
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .windowInsetsPadding(WindowInsets.navigationBars),
+      ) {
+        // Drag handle pill
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 2.dp),
+          contentAlignment = Alignment.Center,
+        ) {
           Box(
             modifier = Modifier
-              .fillMaxWidth()
-              .padding(vertical = 32.dp),
-            contentAlignment = Alignment.Center,
+              .width(36.dp)
+              .height(4.dp)
+              .clip(CircleShape)
+              .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)),
+          )
+        }
+
+        // Top tabs bar: Play, Globe, Collapse Arrow
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
           ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            SheetTabButton(
+              selected = activeTab == InsightsSheetTab.GLOBE,
+              icon = Icons.Filled.Language,
+              label = "الترجمات والتفسير",
+              onClick = { activeTab = InsightsSheetTab.GLOBE },
+              testTag = "insights_tab_globe",
+            )
+            SheetTabButton(
+              selected = activeTab == InsightsSheetTab.PLAY,
+              icon = Icons.Filled.PlayArrow,
+              label = "التلاوة",
+              onClick = { activeTab = InsightsSheetTab.PLAY },
+              testTag = "insights_tab_play",
+            )
+          }
+
+          IconButton(
+            onClick = onDismiss,
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("insights_collapse_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.KeyboardArrowDown,
+              contentDescription = "إغلاق النافذة",
+              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+
+        when (state) {
+          is VerseInsightsUiState.Loading -> {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.Center,
+            ) {
+              Text(
+                text = "سورة ${state.surahName} • الآية ${toArabicIndicDigitsSheet(state.ayahNumber)}",
+                style = MaterialTheme.typography.titleLarge.copy(fontFamily = AmiriFontFamily),
+                color = MaterialTheme.colorScheme.primary,
+              )
+              Spacer(Modifier.height(16.dp))
               CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
               Spacer(Modifier.height(10.dp))
               Text(
-                text = "جاري جلب الترجمات وتفسير ابن كثير...",
+                text = "جاري تجهيز الآيات والمصادر...",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
             }
           }
-        }
 
-        is VerseInsightsUiState.Error -> {
-          Text(
-            text = "الآية ${state.verseKey}",
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.primary,
-          )
-          Spacer(Modifier.height(12.dp))
-          Text(
-            text = state.message,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.error,
-          )
-        }
-
-        is VerseInsightsUiState.Ready -> {
-          val insights = state.insights
-          Text(
-            text = "سورة ${state.surahName} • الآية ${insights.ayahNumber}",
-            style = MaterialTheme.typography.titleLarge.copy(fontFamily = AmiriFontFamily),
-            color = MaterialTheme.colorScheme.primary,
-          )
-          Spacer(Modifier.height(8.dp))
-
-          val maxSurahAyahs = surahsById[insights.surahId]?.versesCount ?: insights.ayahNumber
-          var quickEndAyah by remember(insights.verseKey, maxSurahAyahs) {
-            mutableIntStateOf(minOf(insights.ayahNumber + 4, maxSurahAyahs))
-          }
-
-          // Direct verse recitation action buttons
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-          ) {
-            FilledTonalButton(
-              onClick = {
-                onPlaySingleAyah(insights.surahId, insights.ayahNumber)
-                onDismiss()
-              },
-              modifier = Modifier
-                .weight(1f)
-                .testTag("insights_play_single_ayah"),
-            ) {
-              Icon(Icons.Filled.PlayArrow, contentDescription = null)
-              Spacer(Modifier.width(4.dp))
-              Text("تلاوة هذه الآية")
-            }
-            OutlinedButton(
-              onClick = {
-                onPlayFromAyah(insights.surahId, insights.ayahNumber)
-                onDismiss()
-              },
-              modifier = Modifier
-                .weight(1f)
-                .testTag("insights_play_from_ayah"),
-            ) {
-              Icon(Icons.Filled.PlaylistPlay, contentDescription = null)
-              Spacer(Modifier.width(4.dp))
-              Text("ابدأ التلاوة من هنا")
-            }
-          }
-
-          Spacer(Modifier.height(8.dp))
-          Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-            modifier = Modifier.fillMaxWidth(),
-          ) {
-            Column(modifier = Modifier.padding(10.dp)) {
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                Text(
-                  text = "تلاوة من آية ${insights.ayahNumber} إلى آية:",
-                  style = MaterialTheme.typography.labelLarge,
-                  color = MaterialTheme.colorScheme.primary,
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                  IconButton(
-                    onClick = {
-                      quickEndAyah = (quickEndAyah - 1).coerceAtLeast(insights.ayahNumber)
-                    },
-                  ) {
-                    Icon(Icons.Filled.Remove, contentDescription = "إنقاص آية النهاية")
-                  }
-                  Text(
-                    text = "$quickEndAyah",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                  )
-                  IconButton(
-                    onClick = {
-                      quickEndAyah = (quickEndAyah + 1).coerceAtMost(maxSurahAyahs)
-                    },
-                  ) {
-                    Icon(Icons.Filled.Add, contentDescription = "زيادة آية النهاية")
-                  }
-                }
-              }
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                Button(
-                  onClick = {
-                    onPlayAyahRange(
-                      RecitationRange(
-                        startSurah = insights.surahId,
-                        startAyah = insights.ayahNumber,
-                        endSurah = insights.surahId,
-                        endAyah = quickEndAyah,
-                      ),
-                    )
-                    onDismiss()
-                  },
-                  modifier = Modifier.testTag("insights_play_range_button"),
-                ) {
-                  Text("تشغيل (${insights.ayahNumber} - $quickEndAyah)")
-                }
-                TextButton(
-                  onClick = {
-                    onDismiss()
-                    onOpenRangePicker()
-                  },
-                ) {
-                  Icon(Icons.Filled.Tune, contentDescription = null)
-                  Spacer(Modifier.width(4.dp))
-                  Text("نطاق بسورة أخرى")
-                }
-              }
-            }
-          }
-
-          if (state.pageTypeface != null && insights.codeV2Line.isNotBlank()) {
-            Spacer(Modifier.height(10.dp))
-            val qcfFont = remember(state.pageTypeface) { FontFamily(state.pageTypeface) }
-            Surface(
-              color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-              shape = RoundedCornerShape(12.dp),
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                Text(
-                  text = insights.codeV2Line,
-                  style = TextStyle(
-                    fontFamily = qcfFont,
-                    fontSize = 20.sp,
-                    textAlign = TextAlign.Center,
-                    textDirection = TextDirection.Rtl,
-                  ),
-                  color = MaterialTheme.colorScheme.onSurface,
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                )
-              }
-            }
-          }
-
-          Spacer(Modifier.height(16.dp))
-          Text(
-            text = "الترجمات المعتمدة (English • Français • Español)",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary,
-          )
-          Spacer(Modifier.height(8.dp))
-
-          for (tr in insights.translations) {
-            Surface(
-              shape = RoundedCornerShape(12.dp),
-              color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+          is VerseInsightsUiState.Error -> {
+            Column(
               modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 4.dp),
+                .weight(1f)
+                .padding(horizontal = 18.dp, vertical = 14.dp),
             ) {
-              Column(modifier = Modifier.padding(12.dp)) {
+              Text(
+                text = "الآية ${state.verseKey}",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.primary,
+              )
+              Spacer(Modifier.height(10.dp))
+              Text(
+                text = state.message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+              )
+            }
+          }
+
+          is VerseInsightsUiState.Ready -> {
+            val insights = state.insights
+            if (activeTab == InsightsSheetTab.GLOBE) {
+              val completeDownloaded = remember(downloadedSources) {
+                downloadedSources.filter { it.isComplete || it.completedSurahs > 0 }
+              }
+              val checkedCount = completeDownloaded.count { it.editionId in checkedEditionIds }
+
+              // Dropdown selector bar + downloaded sources checkboxes + "المزيد من الترجمات والتفاسير"
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 16.dp, vertical = 8.dp),
+              ) {
+                Surface(
+                  onClick = { sourcesDropdownExpanded = true },
+                  shape = RoundedCornerShape(12.dp),
+                  color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+                    .testTag("insights_sources_dropdown_button"),
+                ) {
+                  Row(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    val summaryText = when {
+                      completeDownloaded.isEmpty() -> "اختر مصادر التفسير والترجمة (لا توجد ملفات محملة)"
+                      checkedCount == 0 -> "اختر من المصادر المحملة (${toArabicIndicDigitsSheet(completeDownloaded.size)})"
+                      else -> "المصادر المحددة (${toArabicIndicDigitsSheet(checkedCount)})"
+                    }
+                    Text(
+                      text = summaryText,
+                      style = MaterialTheme.typography.labelLarge,
+                      color = MaterialTheme.colorScheme.onSurface,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                      imageVector = Icons.Filled.ArrowDropDown,
+                      contentDescription = "فتح قائمة المصادر",
+                      tint = MaterialTheme.colorScheme.primary,
+                    )
+                  }
+                }
+
+                DropdownMenu(
+                  expanded = sourcesDropdownExpanded,
+                  onDismissRequest = { sourcesDropdownExpanded = false },
+                  modifier = Modifier
+                    .fillMaxWidth(0.86f)
+                    .testTag("insights_sources_dropdown_menu"),
+                ) {
+                  for (src in completeDownloaded) {
+                    val isChecked = src.editionId in checkedEditionIds
+                    DropdownMenuItem(
+                      text = {
+                        Row(
+                          verticalAlignment = Alignment.CenterVertically,
+                          modifier = Modifier.fillMaxWidth(),
+                        ) {
+                          Checkbox(
+                            checked = isChecked,
+                            onCheckedChange = null,
+                          )
+                          Spacer(Modifier.width(8.dp))
+                          Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                              text = src.nameAr,
+                              style = MaterialTheme.typography.bodyMedium,
+                              color = MaterialTheme.colorScheme.onSurface,
+                              maxLines = 1,
+                              overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                              text = "${src.type.labelAr} • ${src.languageLabelAr}",
+                              style = MaterialTheme.typography.labelSmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                          }
+                        }
+                      },
+                      onClick = {
+                        onToggleSourceChecked(src.editionId, !isChecked)
+                      },
+                      modifier = Modifier.testTag("insights_source_checkbox_${src.slug}"),
+                    )
+                  }
+                  if (completeDownloaded.isNotEmpty()) {
+                    HorizontalDivider()
+                  }
+                  DropdownMenuItem(
+                    text = {
+                      Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                          imageVector = Icons.Filled.CloudDownload,
+                          contentDescription = null,
+                          tint = MaterialTheme.colorScheme.primary,
+                          modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                          text = "المزيد من الترجمات والتفاسير",
+                          style = MaterialTheme.typography.titleSmall,
+                          color = MaterialTheme.colorScheme.primary,
+                          fontWeight = FontWeight.Bold,
+                        )
+                      }
+                    },
+                    onClick = {
+                      sourcesDropdownExpanded = false
+                      onOpenTafsirManager()
+                    },
+                    modifier = Modifier.testTag("insights_more_translations_row"),
+                  )
+                }
+              }
+
+              // Scrollable sequential ayahs & checked source texts
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .weight(1f)
+                  .padding(horizontal = 16.dp)
+                  .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+              ) {
+                if (insights.referenceSummary.isNotBlank()) {
+                  Text(
+                    text = insights.referenceSummary,
+                    style = MaterialTheme.typography.titleMedium.copy(fontFamily = AmiriFontFamily),
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 2.dp),
+                  )
+                }
+
+                if (completeDownloaded.isEmpty()) {
+                  Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                    modifier = Modifier.fillMaxWidth(),
+                  ) {
+                    Column(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                      verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                      Text(
+                        text = "لم تقم بتنزيل أي مصدر تفسير أو ترجمة بعد. يمكنك تنزيلها للقراءة دون اتصال من مدير الترجمات والتفاسير.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                      )
+                      FilledTonalButton(
+                        onClick = onOpenTafsirManager,
+                        modifier = Modifier.testTag("insights_empty_open_manager_button"),
+                      ) {
+                        Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("المزيد من الترجمات والتفاسير")
+                      }
+                    }
+                  }
+                } else if (checkedCount == 0) {
+                  Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth(),
+                  ) {
+                    Text(
+                      text = "حدّد مصدراً واحداً على الأقل من القائمة أعلاه لعرض التفسير أو الترجمة أسفل كل آية.",
+                      style = MaterialTheme.typography.bodyMedium,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      modifier = Modifier.padding(12.dp),
+                    )
+                  }
+                }
+
+                for (section in insights.sections) {
+                  Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .testTag("insights_ayah_section_${section.verseKey}"),
+                  ) {
+                    Column(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                      verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                      // Ayah exact text from official data files
+                      Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.38f),
+                        modifier = Modifier.fillMaxWidth(),
+                      ) {
+                        Column(
+                          modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        ) {
+                          Text(
+                            text = "سورة ${section.surahName} • آية ${toArabicIndicDigitsSheet(section.ayahNumber)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                          )
+                          Spacer(Modifier.height(4.dp))
+                          Text(
+                            text = if (section.exactAyahText.isNotBlank()) {
+                              "${section.exactAyahText} ﴿${toArabicIndicDigitsSheet(section.ayahNumber)}﴾"
+                            } else {
+                              "﴿${toArabicIndicDigitsSheet(section.ayahNumber)}﴾"
+                            },
+                            style = MaterialTheme.typography.titleMedium.copy(
+                              fontFamily = AmiriFontFamily,
+                              lineHeight = 30.sp,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                          )
+                        }
+                      }
+
+                      // Each checked source text for this ayah in order
+                      for (entry in section.sourceEntries) {
+                        Column(
+                          modifier = Modifier.fillMaxWidth(),
+                          verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                          Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                          ) {
+                            Text(
+                              text = entry.sourceTitle,
+                              style = MaterialTheme.typography.labelLarge,
+                              fontWeight = FontWeight.Bold,
+                              color = MaterialTheme.colorScheme.secondary,
+                              modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                              text = "${entry.typeLabelAr} • ${entry.languageLabelAr}",
+                              style = MaterialTheme.typography.labelSmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                          }
+                          val dir = if (entry.isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
+                          CompositionLocalProvider(LocalLayoutDirection provides dir) {
+                            Text(
+                              text = entry.text.ifBlank { "غير متوفر لهذه الآية في هذا المصدر." },
+                              style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
+                              color = MaterialTheme.colorScheme.onSurface,
+                              modifier = Modifier.fillMaxWidth(),
+                            )
+                          }
+                        }
+                        if (entry != section.sourceEntries.last()) {
+                          HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+                        }
+                      }
+                    }
+                  }
+                }
+
+                Spacer(Modifier.height(20.dp))
+              }
+            } else {
+              // PLAY tab
+              val maxSurahAyahs = surahsById[insights.surahId]?.versesCount ?: insights.ayahNumber
+              var quickEndAyah by remember(insights.verseKey, maxSurahAyahs) {
+                mutableIntStateOf(minOf(insights.ayahNumber + 4, maxSurahAyahs))
+              }
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .weight(1f)
+                  .padding(horizontal = 18.dp, vertical = 10.dp)
+                  .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+              ) {
+                Text(
+                  text = insights.referenceSummary.ifBlank {
+                    "سورة ${state.surahName} • الآية ${toArabicIndicDigitsSheet(insights.ayahNumber)}"
+                  },
+                  style = MaterialTheme.typography.titleLarge.copy(fontFamily = AmiriFontFamily),
+                  color = MaterialTheme.colorScheme.primary,
+                )
+
                 Row(
                   modifier = Modifier.fillMaxWidth(),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                  Text(
-                    text = "${tr.languageLabelAr} (${tr.languageCode})",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                  )
-                  Text(
-                    text = tr.translatorName,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                  )
+                  FilledTonalButton(
+                    onClick = {
+                      onPlaySingleAyah(insights.surahId, insights.ayahNumber)
+                      onDismiss()
+                    },
+                    modifier = Modifier
+                      .weight(1f)
+                      .testTag("insights_play_single_ayah"),
+                  ) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("تلاوة هذه الآية")
+                  }
+                  OutlinedButton(
+                    onClick = {
+                      onPlayFromAyah(insights.surahId, insights.ayahNumber)
+                      onDismiss()
+                    },
+                    modifier = Modifier
+                      .weight(1f)
+                      .testTag("insights_play_from_ayah"),
+                  ) {
+                    Icon(Icons.Filled.PlaylistPlay, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("ابدأ التلاوة من هنا")
+                  }
                 }
-                Spacer(Modifier.height(6.dp))
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                  Text(
-                    text = tr.text.ifBlank { "غير متوفر لهذه الآية" },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                  )
+
+                Surface(
+                  shape = RoundedCornerShape(12.dp),
+                  color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                  modifier = Modifier.fillMaxWidth(),
+                ) {
+                  Column(modifier = Modifier.padding(10.dp)) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                      Text(
+                        text = "تلاوة من آية ${toArabicIndicDigitsSheet(insights.ayahNumber)} إلى آية:",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                      )
+                      Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                          onClick = {
+                            quickEndAyah = (quickEndAyah - 1).coerceAtLeast(insights.ayahNumber)
+                          },
+                        ) {
+                          Icon(Icons.Filled.Remove, contentDescription = "إنقاص آية النهاية")
+                        }
+                        Text(
+                          text = toArabicIndicDigitsSheet(quickEndAyah),
+                          style = MaterialTheme.typography.titleMedium,
+                          color = MaterialTheme.colorScheme.primary,
+                        )
+                        IconButton(
+                          onClick = {
+                            quickEndAyah = (quickEndAyah + 1).coerceAtMost(maxSurahAyahs)
+                          },
+                        ) {
+                          Icon(Icons.Filled.Add, contentDescription = "زيادة آية النهاية")
+                        }
+                      }
+                    }
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                      Button(
+                        onClick = {
+                          onPlayAyahRange(
+                            RecitationRange(
+                              startSurah = insights.surahId,
+                              startAyah = insights.ayahNumber,
+                              endSurah = insights.surahId,
+                              endAyah = quickEndAyah,
+                            ),
+                          )
+                          onDismiss()
+                        },
+                        modifier = Modifier.testTag("insights_play_range_button"),
+                      ) {
+                        Text("تشغيل (${toArabicIndicDigitsSheet(insights.ayahNumber)} - ${toArabicIndicDigitsSheet(quickEndAyah)})")
+                      }
+                      TextButton(
+                        onClick = {
+                          onDismiss()
+                          onOpenRangePicker()
+                        },
+                      ) {
+                        Icon(Icons.Filled.Tune, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("نطاق بسورة أخرى")
+                      }
+                    }
+                  }
                 }
               }
             }
           }
 
-          Spacer(Modifier.height(16.dp))
-          HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-          Spacer(Modifier.height(14.dp))
-
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Text(
-              text = "تفسير ابن كثير",
-              style = MaterialTheme.typography.titleMedium,
-              color = MaterialTheme.colorScheme.primary,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              FilterChip(
-                selected = !showEnglishTafsir,
-                onClick = { showEnglishTafsir = false },
-                label = { Text("العربية") },
-              )
-              FilterChip(
-                selected = showEnglishTafsir,
-                onClick = { showEnglishTafsir = true },
-                label = { Text("English") },
-              )
-            }
-          }
-
-          Spacer(Modifier.height(8.dp))
-
-          val tafsirTitle = if (showEnglishTafsir) insights.tafsirEnglishTitle else insights.tafsirArabicTitle
-          val tafsirBody = if (showEnglishTafsir) insights.tafsirEnglishText else insights.tafsirArabicText
-          val tafsirDir = if (showEnglishTafsir) LayoutDirection.Ltr else LayoutDirection.Rtl
-
-          Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-            modifier = Modifier.fillMaxWidth(),
-          ) {
-            CompositionLocalProvider(LocalLayoutDirection provides tafsirDir) {
-              Column(modifier = Modifier.padding(14.dp)) {
-                Text(
-                  text = tafsirTitle,
-                  style = MaterialTheme.typography.labelLarge,
-                  color = MaterialTheme.colorScheme.secondary,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                  text = tafsirBody.ifBlank { "التفسير غير متوفر لهذه الآية حالياً." },
-                  style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 26.sp),
-                  color = MaterialTheme.colorScheme.onSurface,
-                )
-              }
-            }
-          }
-
-          Spacer(Modifier.height(28.dp))
+          VerseInsightsUiState.Hidden -> Unit
         }
-
-        VerseInsightsUiState.Hidden -> Unit
       }
+    }
+  }
+}
+
+@Composable
+private fun SheetTabButton(
+  selected: Boolean,
+  icon: androidx.compose.ui.graphics.vector.ImageVector,
+  label: String,
+  onClick: () -> Unit,
+  testTag: String,
+) {
+  Surface(
+    onClick = onClick,
+    shape = RoundedCornerShape(12.dp),
+    color = if (selected) {
+      MaterialTheme.colorScheme.primaryContainer
+    } else {
+      MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    },
+    border = if (selected) {
+      BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f))
+    } else {
+      null
+    },
+    modifier = Modifier
+      .minimumInteractiveComponentSize()
+      .testTag(testTag),
+  ) {
+    Row(
+      modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+      Icon(
+        imageVector = icon,
+        contentDescription = label,
+        tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.size(18.dp),
+      )
+      Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+      )
     }
   }
 }

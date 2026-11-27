@@ -28,7 +28,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -45,6 +51,8 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -178,6 +186,51 @@ private fun DrawScope.drawActiveRosetteHighlight(
   }
 }
 
+@Immutable
+data class PageSelectionRootRect(
+  val left: Float,
+  val top: Float,
+  val right: Float,
+  val bottom: Float,
+)
+
+private fun findHitWordIndex(
+  boxes: WordHitBoxes,
+  tx: Float,
+  ty: Float,
+): Int {
+  for (i in 0 until boxes.count) {
+    val l = boxes.lefts[i]
+    val t = boxes.tops[i]
+    val r = boxes.rights[i]
+    val b = boxes.bottoms[i]
+    if (tx in (l - 8f)..(r + 8f) && ty in (t - 8f)..(b + 8f)) {
+      return i
+    }
+  }
+  // Narrow inter-word horizontal gap tolerance strictly on the same text line
+  var bestIdx = -1
+  var bestHorizDist = 18f
+  for (i in 0 until boxes.count) {
+    val l = boxes.lefts[i]
+    val t = boxes.tops[i]
+    val r = boxes.rights[i]
+    val b = boxes.bottoms[i]
+    if (ty in (t - 6f)..(b + 6f)) {
+      val dx = when {
+        tx < l -> l - tx
+        tx > r -> tx - r
+        else -> 0f
+      }
+      if (dx <= bestHorizDist) {
+        bestHorizDist = dx
+        bestIdx = i
+      }
+    }
+  }
+  return bestIdx
+}
+
 @Composable
 fun MushafPageFrame(
   pageNumber: Int,
@@ -186,11 +239,13 @@ fun MushafPageFrame(
   isBookmarked: Boolean,
   isDarkTheme: Boolean,
   activePlayingVerseKeyProvider: () -> String?,
-  selectedVerseKeyProvider: () -> String?,
+  selectedVerseKeysProvider: () -> Set<String>,
   onToggleBookmark: () -> Unit,
   onRetry: () -> Unit,
-  onPageTapped: () -> Unit,
-  onVerseLongPressed: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
+  onNonWordTapped: () -> Unit,
+  onWordTapped: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
+  onWordLongPressed: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
+  onSelectionBoundsChanged: (pageNumber: Int, rectInRoot: PageSelectionRootRect?) -> Unit = { _, _ -> },
   modifier: Modifier = Modifier,
   isPdfMode: Boolean = false,
 ) {
@@ -215,12 +270,18 @@ fun MushafPageFrame(
     if (effectiveDark) Color(0xFFFFD54F).copy(alpha = 0.72f) else Color(0xFFC9971C).copy(alpha = 0.72f)
   }
   val selectedFillColor = remember(effectiveDark) {
-    if (effectiveDark) Color(0xFF4DB6AC).copy(alpha = 0.22f) else Color(0xFF12403C).copy(alpha = 0.12f)
+    if (effectiveDark) Color(0xFF42A5F5).copy(alpha = 0.30f) else Color(0xFF2196F3).copy(alpha = 0.22f)
   }
   val selectedStrokeColor = remember(effectiveDark) {
-    if (effectiveDark) Color(0xFF4DB6AC).copy(alpha = 0.48f) else Color(0xFF12403C).copy(alpha = 0.32f)
+    if (effectiveDark) Color(0xFF64B5F6).copy(alpha = 0.65f) else Color(0xFF1976D2).copy(alpha = 0.52f)
   }
   val reusableRosettePath = remember { Path() }
+
+  DisposableEffect(pageNumber) {
+    onDispose {
+      onSelectionBoundsChanged(pageNumber, null)
+    }
+  }
 
   CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
     Box(
@@ -234,8 +295,8 @@ fun MushafPageFrame(
               .fillMaxSize()
               .background(paperColor, RoundedCornerShape(4.dp))
               .border(1.dp, goldColor.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
-              .pointerInput(onPageTapped) {
-                detectTapGestures(onTap = { onPageTapped() })
+              .pointerInput(onNonWordTapped) {
+                detectTapGestures(onTap = { onNonWordTapped() })
               },
             contentAlignment = Alignment.Center,
           ) {
@@ -261,8 +322,8 @@ fun MushafPageFrame(
               .fillMaxSize()
               .background(paperColor, RoundedCornerShape(4.dp))
               .border(1.dp, goldColor.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
-              .pointerInput(onPageTapped) {
-                detectTapGestures(onTap = { onPageTapped() })
+              .pointerInput(onNonWordTapped) {
+                detectTapGestures(onTap = { onNonWordTapped() })
               },
             contentAlignment = Alignment.Center,
           ) {
@@ -314,15 +375,95 @@ fun MushafPageFrame(
               }
             }
 
+            var canvasCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+            val currentSelectedKeys = selectedVerseKeysProvider()
+
+            fun publishBounds(coords: LayoutCoordinates?) {
+              if (coords == null || !coords.isAttached || isPdfMode || pdfContent != null || currentSelectedKeys.isEmpty()) {
+                onSelectionBoundsChanged(pageNumber, null)
+                return
+              }
+              val viewW = coords.size.width.toFloat()
+              val viewH = coords.size.height.toFloat()
+              if (viewW <= 1f || viewH <= 1f) {
+                onSelectionBoundsChanged(pageNumber, null)
+                return
+              }
+              val scaleX = viewW / rendered.widthPx.toFloat().coerceAtLeast(1f)
+              val scaleY = viewH / rendered.heightPx.toFloat().coerceAtLeast(1f)
+              var minL = Float.POSITIVE_INFINITY
+              var minT = Float.POSITIVE_INFINITY
+              var maxR = Float.NEGATIVE_INFINITY
+              var maxB = Float.NEGATIVE_INFINITY
+              var foundAny = false
+              for (vk in currentSelectedKeys) {
+                val rects = rendered.verseHighlightRects[vk] ?: continue
+                var i = 0
+                while (i + 3 < rects.size) {
+                  val l = rects[i] * scaleX
+                  val t = rects[i + 1] * scaleY
+                  val r = rects[i + 2] * scaleX
+                  val b = rects[i + 3] * scaleY
+                  if (l < minL) minL = l
+                  if (t < minT) minT = t
+                  if (r > maxR) maxR = r
+                  if (b > maxB) maxB = b
+                  foundAny = true
+                  i += 4
+                }
+              }
+              if (!foundAny) {
+                onSelectionBoundsChanged(pageNumber, null)
+              } else {
+                val topLeftRoot = coords.localToRoot(Offset(minL, minT))
+                val bottomRightRoot = coords.localToRoot(Offset(maxR, maxB))
+                onSelectionBoundsChanged(
+                  pageNumber,
+                  PageSelectionRootRect(
+                    left = topLeftRoot.x,
+                    top = topLeftRoot.y,
+                    right = bottomRightRoot.x,
+                    bottom = bottomRightRoot.y,
+                  ),
+                )
+              }
+            }
+
+            LaunchedEffect(currentSelectedKeys, rendered, isPdfMode, pdfContent, canvasCoords) {
+              publishBounds(canvasCoords)
+            }
+
             Canvas(
               modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(rendered, isPdfMode, onPageTapped, onVerseLongPressed) {
+                .onGloballyPositioned { coords ->
+                  canvasCoords = coords
+                  publishBounds(coords)
+                }
+                .pointerInput(rendered, isPdfMode, onNonWordTapped, onWordTapped, onWordLongPressed) {
                   if (isPdfMode) {
-                    detectTapGestures(onTap = { onPageTapped() })
+                    detectTapGestures(onTap = { onNonWordTapped() })
                   } else {
                     detectTapGestures(
-                      onTap = { onPageTapped() },
+                      onTap = { tapOffset ->
+                        val viewW = size.width.toFloat().coerceAtLeast(1f)
+                        val viewH = size.height.toFloat().coerceAtLeast(1f)
+                        val sx = rendered.widthPx.toFloat() / viewW
+                        val sy = rendered.heightPx.toFloat() / viewH
+                        val tx = tapOffset.x * sx
+                        val ty = tapOffset.y * sy
+                        val boxes = rendered.wordHitBoxes
+                        val hitIdx = findHitWordIndex(boxes, tx, ty)
+                        if (hitIdx >= 0) {
+                          onWordTapped(
+                            boxes.verseKeys[hitIdx],
+                            rendered.pageNumber,
+                            boxes.codeV2Lines[hitIdx],
+                          )
+                        } else {
+                          onNonWordTapped()
+                        }
+                      },
                       onLongPress = { tapOffset ->
                         val viewW = size.width.toFloat().coerceAtLeast(1f)
                         val viewH = size.height.toFloat().coerceAtLeast(1f)
@@ -331,30 +472,10 @@ fun MushafPageFrame(
                         val tx = tapOffset.x * sx
                         val ty = tapOffset.y * sy
                         val boxes = rendered.wordHitBoxes
-                        var hitIdx = -1
-                        var bestDistSq = Float.POSITIVE_INFINITY
-                        for (i in 0 until boxes.count) {
-                          val l = boxes.lefts[i]
-                          val t = boxes.tops[i]
-                          val r = boxes.rights[i]
-                          val b = boxes.bottoms[i]
-                          if (tx in (l - 10f)..(r + 10f) && ty in (t - 12f)..(b + 12f)) {
-                            hitIdx = i
-                            break
-                          }
-                          val cx = (l + r) * 0.5f
-                          val cy = (t + b) * 0.5f
-                          val dx = tx - cx
-                          val dy = ty - cy
-                          val dSq = dx * dx + dy * dy * 4f
-                          if (dSq < bestDistSq) {
-                            bestDistSq = dSq
-                            hitIdx = i
-                          }
-                        }
+                        val hitIdx = findHitWordIndex(boxes, tx, ty)
                         if (hitIdx >= 0) {
                           haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                          onVerseLongPressed(
+                          onWordLongPressed(
                             boxes.verseKeys[hitIdx],
                             rendered.pageNumber,
                             boxes.codeV2Lines[hitIdx],
@@ -448,8 +569,8 @@ fun MushafPageFrame(
 
               if (isPdfMode || pdfContent != null) return@Canvas
               val activeKey = activePlayingVerseKeyProvider()
-              val selectedKey = selectedVerseKeyProvider()
-              if (activeKey == null && selectedKey == null) return@Canvas
+              val selectedKeys = selectedVerseKeysProvider()
+              if (activeKey == null && selectedKeys.isEmpty()) return@Canvas
 
               val scaleX = size.width / rendered.widthPx.toFloat().coerceAtLeast(1f)
               val scaleY = size.height / rendered.heightPx.toFloat().coerceAtLeast(1f)
@@ -458,7 +579,8 @@ fun MushafPageFrame(
               val corner = CornerRadius(6.dp.toPx(), 6.dp.toPx())
               val highlightStroke = Stroke(width = 1.dp.toPx())
 
-              if (selectedKey != null && selectedKey != activeKey) {
+              for (selectedKey in selectedKeys) {
+                if (selectedKey == activeKey) continue
                 rendered.verseHighlightRects[selectedKey]?.let { rects ->
                   drawHighlightRects(
                     coords = rects,

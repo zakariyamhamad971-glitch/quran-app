@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "supported_types": [
+    "tafsir",
+    "translation",
+    "irab",
+    "word-meanings"
+  ],
+  "sources": [
+    {
+      "id": "spa5k_tafsir_api",
+      "name_ar": "مكتبة التفاسير والترجمات (spa5k/tafsir_api)",
+      "language": "multi",
+      "type": "tafsir",
+      "editions_url": "https://cdn.jsdelivr.net/gh/spa5k/tafsir_api@main/tafsir/editions.json",
+      "url_pattern": "https://cdn.jsdelivr.net/gh/spa5k/tafsir_api@main/tafsir/{edition}/{surah}.json",
+      "version": "1.0.0",
+      "license": "MIT / البيانات النصية تابعة لجهات النشر والمؤلفين الأصليين مع حفظ الأمانة العلمية",
+      "attribution": "مشروع spa5k/tafsir_api المفتوح المصدر المستضاف عبر jsDelivr CDN"
+    }
+  ]
+}

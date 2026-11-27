@@ -65,6 +65,17 @@ enum class ReciterMatchStatus {
 }
 
 @Immutable
+data class ReciterMoshafStyle(
+  val moshafId: Int,
+  val moshafName: String,
+  val serverUrl: String,
+  val availableSurahs: Set<Int>,
+  val hasAyahTiming: Boolean = false,
+  val riwayaId: Int? = null,
+  val riwayaName: String = "",
+)
+
+@Immutable
 data class VerifiedReciter(
   val orderIndex: Int,
   val requestedName: String,
@@ -81,9 +92,34 @@ data class VerifiedReciter(
   val riwayaName: String = "",
   val hasAyahTiming: Boolean = false,
   val isPdfModeReciter: Boolean = false,
+  val availableStyles: List<ReciterMoshafStyle> = emptyList(),
 ) {
   val key: String get() = "${reciterId ?: -orderIndex}_${moshafId ?: 0}"
   val isPlayable: Boolean get() = status == ReciterMatchStatus.VERIFIED && !serverUrl.isNullOrBlank()
+
+  fun withSelectedStyle(style: ReciterMoshafStyle): VerifiedReciter {
+    val resolvedRiwayaName = style.riwayaName.ifBlank { riwayaName }
+    val newNote = if (isPdfModeReciter) {
+      val timingText = if (style.hasAyahTiming) "له توقيت" else "تلاوة سورة كاملة (بدون تحديد آيات)"
+      listOfNotNull(
+        resolvedRiwayaName.takeIf { it.isNotBlank() },
+        "${style.availableSurahs.size} سورة",
+        timingText,
+      ).joinToString(" • ")
+    } else {
+      "متوفر (${style.availableSurahs.size} سورة)"
+    }
+    return copy(
+      moshafId = style.moshafId,
+      moshafName = style.moshafName,
+      serverUrl = style.serverUrl,
+      availableSurahs = style.availableSurahs,
+      hasAyahTiming = style.hasAyahTiming,
+      riwayaId = style.riwayaId ?: riwayaId,
+      riwayaName = resolvedRiwayaName,
+      statusNote = newNote,
+    )
+  }
 }
 
 data class SurahUrlAudit(

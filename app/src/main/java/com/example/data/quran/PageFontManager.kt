@@ -1,6 +1,11 @@
 package com.example.data.quran
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.Build
 import android.util.LruCache
 import com.example.data.integrity.VerifiedDiskCache
 import kotlinx.coroutines.CompletableDeferred
@@ -9,6 +14,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.max
+import kotlin.math.min
+
+enum class TajweedRenderPath(val displayAr: String) {
+  QCF_V4_COLR("خط مصحف التجويد الملوّن (QCF V4 COLR)"),
+  TAG_FALLBACK_COLR_UNSUPPORTED("التلوين بالوسوم (الجهاز لا يدعم ألوان QCF V4)"),
+  TAG_FALLBACK_FONT_LOAD_FAILED("التلوين بالوسوم (تعذر تحميل خط QCF V4)"),
+}
 
 class PageFontManager(
   private val diskCache: VerifiedDiskCache,
@@ -16,6 +29,97 @@ class PageFontManager(
   // Keeps active, +-2 prefetch window, and p1 Basmalah fonts in memory without thrashing
   private val memoryCache = LruCache<String, Typeface>(10)
   private val inFlightLoads = ConcurrentHashMap<String, Deferred<Typeface?>>()
+
+  @Volatile
+  private var cachedTajweedRenderPath: TajweedRenderPath? = null
+
+  fun peekCachedTajweedRenderPath(): TajweedRenderPath? = cachedTajweedRenderPath
+
+  fun currentTajweedRenderPathOrDefault(): TajweedRenderPath =
+    cachedTajweedRenderPath ?: if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+      TajweedRenderPath.TAG_FALLBACK_COLR_UNSUPPORTED
+    } else {
+      TajweedRenderPath.QCF_V4_COLR
+    }
+
+  suspend fun resolveTajweedRenderPath(allowNetworkFetch: Boolean = true): TajweedRenderPath {
+    val existing = cachedTajweedRenderPath
+    if (existing == TajweedRenderPath.QCF_V4_COLR ||
+      existing == TajweedRenderPath.TAG_FALLBACK_COLR_UNSUPPORTED
+    ) {
+      return existing
+    }
+
+    val p1Typeface = if (allowNetworkFetch) {
+      loadPageFontForMeasurement(1, MushafEdition.TAJWEED_V4, useWhiteInk = false)
+    } else {
+      withContext(Dispatchers.IO) {
+        val file = diskCache.getVerifiedFile(relativeDiskPath(1, MushafEdition.TAJWEED_V4, useWhiteInk = false))
+        if (file != null) runCatching { Typeface.createFromFile(file) }.getOrNull() else null
+      }
+    }
+
+    if (p1Typeface == null) {
+      if (allowNetworkFetch) {
+        cachedTajweedRenderPath = TajweedRenderPath.TAG_FALLBACK_FONT_LOAD_FAILED
+      }
+      return TajweedRenderPath.TAG_FALLBACK_FONT_LOAD_FAILED
+    }
+
+    val colrWorks = withContext(Dispatchers.Default) {
+      hasChromaticColrRendering(p1Typeface)
+    }
+    val resolved = if (colrWorks) {
+      TajweedRenderPath.QCF_V4_COLR
+    } else {
+      TajweedRenderPath.TAG_FALLBACK_COLR_UNSUPPORTED
+    }
+    cachedTajweedRenderPath = resolved
+    return resolved
+  }
+
+  /**
+   * Draws real QCF V4 glyphs (`\uFC63` = الضالين, `\uFC43` = الرحمن) onto an ARGB_8888 bitmap
+   * and verifies that Android Skia/FreeType actually renders chromatic COLR/CPAL layers rather than
+   * monochrome black fallback outlines.
+   */
+  internal fun hasChromaticColrRendering(p1Typeface: Typeface): Boolean {
+    val size = 96
+    val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    return try {
+      val canvas = Canvas(bmp)
+      val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = p1Typeface
+        textSize = 40f
+        color = Color.BLACK
+        textAlign = Paint.Align.CENTER
+      }
+      // Page 1 QCF V4 glyphs containing chromatic Tajweed CPAL entries (blue, red, gray)
+      canvas.drawText("\uFC63", size * 0.5f, 44f, paint)
+      canvas.drawText("\uFC43", size * 0.5f, 84f, paint)
+
+      val pixels = IntArray(size * size)
+      bmp.getPixels(pixels, 0, size, 0, 0, size, size)
+      var chromaticPixels = 0
+      for (px in pixels) {
+        val a = (px ushr 24) and 0xFF
+        if (a <= 20) continue
+        val r = (px ushr 16) and 0xFF
+        val g = (px ushr 8) and 0xFF
+        val b = px and 0xFF
+        val chromaDelta = max(r, max(g, b)) - min(r, min(g, b))
+        if (chromaDelta >= 24) {
+          chromaticPixels++
+          if (chromaticPixels >= 6) return true
+        }
+      }
+      false
+    } catch (_: Throwable) {
+      false
+    } finally {
+      bmp.recycle()
+    }
+  }
 
   private fun cacheKey(page: Int, edition: MushafEdition, useWhiteInk: Boolean): String =
     when (edition) {

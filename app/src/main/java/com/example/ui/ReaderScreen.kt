@@ -3,15 +3,19 @@ package com.example.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import com.example.ui.components.FullReciterManagerScreen
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -26,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -36,11 +41,16 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Brightness7
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -56,21 +66,31 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -81,7 +101,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.audio.RecitationRange
+import com.example.data.audio.ReciterMoshafStyle
 import com.example.data.audio.VerifiedReciter
+import com.example.data.prayer.PrayerType
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.PageViewMode
 import com.example.data.quran.MushafDownloadState
@@ -89,6 +111,7 @@ import com.example.data.quran.MushafEdition
 import com.example.data.quran.MushafRegistry
 import com.example.data.quran.SurahMeta
 import com.example.player.AudioPlaybackUiState
+import com.example.ui.components.AdhanAlarmsManagementSheet
 import com.example.ui.components.AudioPickerSheetMode
 import com.example.ui.components.CompactDockedAudioPlayer
 import com.example.ui.components.CompactRecitersPopup
@@ -97,12 +120,15 @@ import com.example.ui.components.FullScreenQuranIndex
 import com.example.ui.components.MushafPageFrame
 import com.example.ui.components.MushafSelectorScreen
 import com.example.ui.components.MushafsManagerScreen
+import com.example.ui.components.PageSelectionRootRect
 import com.example.ui.components.PlaybackControlSheet
 import com.example.ui.components.PrayerHomeScreen
+import com.example.ui.components.PrayerSoundConfigSheet
 import com.example.ui.components.ReaderBottomAudioButtons
 import com.example.ui.components.ReciterDownloadsScreen
 import com.example.ui.components.ReciterPickerSheet
 import com.example.ui.components.SettingsSheet
+import com.example.ui.components.TafsirTranslationsManagerScreen
 import com.example.ui.components.TajweedLegendSheet
 import com.example.ui.components.VerseInsightsSheet
 import com.example.ui.components.rememberNotificationPermissionRequester
@@ -116,6 +142,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private const val MUSHAF_PAGE_ASPECT_RATIO = 0.62f
 
@@ -158,13 +186,21 @@ private fun ReaderScreenContent(
   val downloadedKeys by viewModel.downloadedAudioKeys.collectAsStateWithLifecycle()
   val downloadProgress by viewModel.audioDownloadProgress.collectAsStateWithLifecycle()
   val activeVerseState: State<String?> = viewModel.activePlayingVerseKeyFlow.collectAsStateWithLifecycle()
-  val selectedVerseState: State<String?> = viewModel.selectedVerseKeyFlow.collectAsStateWithLifecycle()
+  val selectedVerseKeysState: State<Set<String>> = viewModel.selectedVerseKeysFlow.collectAsStateWithLifecycle()
+  val insightsState by viewModel.verseInsightsState.collectAsStateWithLifecycle()
+  val isInsightsOpen = insightsState !is VerseInsightsUiState.Hidden
   val activePlayingVerseKeyProvider = remember(activeVerseState) { { activeVerseState.value } }
-  val selectedVerseKeyProvider = remember(selectedVerseState) { { selectedVerseState.value } }
+  val selectedVerseKeysProvider = remember(selectedVerseKeysState) { { selectedVerseKeysState.value } }
+  val selectedVerseKeys = selectedVerseKeysState.value
 
+  val context = LocalContext.current
+  val coroutineScope = rememberCoroutineScope()
   val isDarkTheme = uiState.isDarkMode
   val surahsById = remember(uiState.surahs) { uiState.surahs.associateBy { it.id } }
   val bookmarkSet = remember(uiState.bookmarks) { uiState.bookmarks.toHashSet() }
+  val ayahBookmarkKeySet = remember(uiState.ayahBookmarks) {
+    uiState.ayahBookmarks.mapTo(HashSet()) { it.verseKey }
+  }
 
   var isHomeOpen by rememberSaveable { mutableStateOf(true) }
   var isIndexOpen by rememberSaveable { mutableStateOf(false) }
@@ -176,10 +212,22 @@ private fun ReaderScreenContent(
   var showSettingsSheet by remember { mutableStateOf(false) }
   var showMushafsManager by rememberSaveable { mutableStateOf(false) }
   var showRecitersManager by rememberSaveable { mutableStateOf(false) }
+  var showTafsirManager by rememberSaveable { mutableStateOf(false) }
+  var showAdhanSettingsSheet by rememberSaveable { mutableStateOf(false) }
+  var editingAdhanPrayer by rememberSaveable { mutableStateOf<PrayerType?>(null) }
   var downloadReciterKey by rememberSaveable { mutableStateOf<String?>(null) }
   var showTajweedLegend by remember { mutableStateOf(false) }
   var showCreditsDialog by remember { mutableStateOf(false) }
   val requestNotifPermissionIfNeeded = rememberNotificationPermissionRequester()
+
+  var rootOriginInWindow by remember { mutableStateOf(Offset.Zero) }
+  var sheetTopInRootWindow by remember { mutableStateOf<Float?>(null) }
+  val pageSelectionBoundsMap = remember { mutableStateMapOf<Int, PageSelectionRootRect>() }
+  LaunchedEffect(selectedVerseKeys) {
+    if (selectedVerseKeys.isEmpty()) {
+      pageSelectionBoundsMap.clear()
+    }
+  }
 
   val isAudioPlaying by viewModel.isAudioPlayingFlow.collectAsStateWithLifecycle()
   LaunchedEffect(isAudioPlaying) {
@@ -201,13 +249,33 @@ private fun ReaderScreenContent(
       viewModel.playbackController.setSpeed(nextSpeed)
     }
   }
-  val onVerseLongPressed: (String, Int, String) -> Unit = remember(viewModel) {
-    { key, p, glyphs -> viewModel.onVerseTapped(key, p, glyphs) }
+  val onWordTapped: (String, Int, String) -> Unit = remember(viewModel) {
+    { key, p, glyphs -> viewModel.onWordTapped(key, p, glyphs) }
+  }
+  val onWordLongPressed: (String, Int, String) -> Unit = remember(viewModel) {
+    { key, p, glyphs -> viewModel.onWordLongPressed(key, p, glyphs) }
   }
   val onToggleBookmark: (Int) -> Unit = remember(viewModel) { { p -> viewModel.toggleBookmark(p) } }
   val onRetryPage: (Int) -> Unit = remember(viewModel) { { p -> viewModel.retryPage(p) } }
   val onPageChangedCallback: (Int) -> Unit = remember(viewModel) { { p -> viewModel.onPageChanged(p) } }
-  val onToggleChrome: () -> Unit = remember { { isChromeVisible = !isChromeVisible } }
+  val onNonWordTapped: () -> Unit = remember(viewModel) {
+    {
+      if (viewModel.uiState.value.selectedVerseKeys.isNotEmpty()) {
+        viewModel.clearVerseSelection()
+      } else {
+        isChromeVisible = !isChromeVisible
+      }
+    }
+  }
+  val onSelectionBoundsChanged: (Int, PageSelectionRootRect?) -> Unit = remember {
+    { pageNum, rect ->
+      if (rect == null) {
+        pageSelectionBoundsMap.remove(pageNum)
+      } else {
+        pageSelectionBoundsMap[pageNum] = rect
+      }
+    }
+  }
   val view = LocalView.current
 
   LaunchedEffect(isChromeVisible, isIndexOpen, isHomeOpen) {
@@ -230,20 +298,33 @@ private fun ReaderScreenContent(
   }
 
   BackHandler(enabled = !isHomeOpen) {
-    if (isIndexOpen) {
-      isIndexOpen = false
-      isHomeOpen = true
-    } else {
-      isChromeVisible = true
-      isIndexOpen = true
+    when {
+      isInsightsOpen -> viewModel.dismissVerseInsights()
+      selectedVerseKeys.isNotEmpty() -> viewModel.clearVerseSelection()
+      isIndexOpen -> {
+        isIndexOpen = false
+        isHomeOpen = true
+      }
+      else -> {
+        isChromeVisible = true
+        isIndexOpen = true
+      }
     }
   }
 
   BoxWithConstraints(
     modifier = Modifier
       .fillMaxSize()
-      .background(MaterialTheme.colorScheme.background),
+      .background(MaterialTheme.colorScheme.background)
+      .onGloballyPositioned { coords ->
+        if (coords.isAttached) {
+          rootOriginInWindow = coords.localToRoot(Offset.Zero)
+        }
+      },
   ) {
+    val density = LocalDensity.current
+    val rootWidthPx = with(density) { maxWidth.toPx() }
+    val rootHeightPx = with(density) { maxHeight.toPx() }
     val isLandscape = maxWidth > maxHeight
     val effectiveTwoPageMode = when (uiState.pageViewMode) {
       PageViewMode.AUTO -> isLandscape
@@ -251,7 +332,68 @@ private fun ReaderScreenContent(
       PageViewMode.TWO_PAGES -> true
     }
 
-    // Main Mushaf page area stays strictly fixed in size and position; top & bottom bars slide over it as overlays
+    val visiblePagesSet = remember(uiState.currentPage, effectiveTwoPageMode) {
+      if (effectiveTwoPageMode) {
+        val rightPage = (((uiState.currentPage - 1) / 2) * 2 + 1).coerceIn(1, 604)
+        val leftPage = (rightPage + 1).coerceAtMost(604)
+        setOf(rightPage, leftPage)
+      } else {
+        setOf(uiState.currentPage)
+      }
+    }
+
+    val activeSelectionRectLocal = remember(
+      selectedVerseKeys,
+      visiblePagesSet,
+      pageSelectionBoundsMap.toMap(),
+      rootOriginInWindow,
+    ) {
+      if (selectedVerseKeys.isEmpty()) {
+        null
+      } else {
+        var minL = Float.POSITIVE_INFINITY
+        var minT = Float.POSITIVE_INFINITY
+        var maxR = Float.NEGATIVE_INFINITY
+        var maxB = Float.NEGATIVE_INFINITY
+        var any = false
+        for ((pageNum, rect) in pageSelectionBoundsMap) {
+          if (pageNum !in visiblePagesSet) continue
+          if (rect.left < minL) minL = rect.left
+          if (rect.top < minT) minT = rect.top
+          if (rect.right > maxR) maxR = rect.right
+          if (rect.bottom > maxB) maxB = rect.bottom
+          any = true
+        }
+        if (!any) {
+          null
+        } else {
+          PageSelectionRootRect(
+            left = minL - rootOriginInWindow.x,
+            top = minT - rootOriginInWindow.y,
+            right = maxR - rootOriginInWindow.x,
+            bottom = maxB - rootOriginInWindow.y,
+          )
+        }
+      }
+    }
+
+    val targetPageShiftPx = if (isInsightsOpen && activeSelectionRectLocal != null && sheetTopInRootWindow != null) {
+      val sheetTopLocal = sheetTopInRootWindow!! - rootOriginInWindow.y
+      val marginPx = with(density) { 14.dp.toPx() }
+      val desiredShift = (activeSelectionRectLocal.bottom + marginPx - sheetTopLocal).coerceAtLeast(0f)
+      val safeTopPx = with(density) { 12.dp.toPx() }
+      val maxSafeShift = (activeSelectionRectLocal.top - safeTopPx).coerceAtLeast(0f)
+      minOf(desiredShift, maxSafeShift)
+    } else {
+      0f
+    }
+    val animatedPageShiftPx by animateFloatAsState(
+      targetValue = targetPageShiftPx,
+      animationSpec = tween(durationMillis = 220),
+      label = "mushaf_sheet_scroll_shift",
+    )
+
+    // Main Mushaf page area stays fixed unless shifted upward to keep selected ayahs visible above insights sheet
     if ((!isHomeOpen && !isIndexOpen) || hasSelectedSurah) {
       ReaderPagerHost(
         currentPage = uiState.currentPage,
@@ -264,14 +406,19 @@ private fun ReaderScreenContent(
         settledAvailHeightDp = maxHeight.coerceAtLeast(1.dp),
         pagesStateFlow = viewModel.pagesState,
         activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
-        selectedVerseKeyProvider = selectedVerseKeyProvider,
+        selectedVerseKeysProvider = selectedVerseKeysProvider,
         onUpdateRenderSpec = remember(viewModel) { { w, h, d, fs, twoPage -> viewModel.updatePageRenderSpec(w, h, d, fs, twoPage) } },
         onPageChanged = onPageChangedCallback,
         onToggleBookmark = onToggleBookmark,
         onRetry = onRetryPage,
-        onToggleChrome = onToggleChrome,
-        onVerseLongPressed = onVerseLongPressed,
-        modifier = Modifier.fillMaxSize(),
+        onNonWordTapped = onNonWordTapped,
+        onWordTapped = onWordTapped,
+        onWordLongPressed = onWordLongPressed,
+        onSelectionBoundsChanged = onSelectionBoundsChanged,
+        modifier = Modifier
+          .fillMaxSize()
+          .clipToBounds()
+          .graphicsLayer { translationY = -animatedPageShiftPx },
       )
 
       // Top overlay bar (slides down from top without shifting the page)
@@ -336,6 +483,7 @@ private fun ReaderScreenContent(
                 isPdfMode = uiState.activeMushafIsPdf,
                 onRetryLoad = remember(viewModel) { { viewModel.retryLoadReciters() } },
                 onSelectReciter = remember(viewModel) { { reciter -> viewModel.selectReciter(reciter) } },
+                onSelectReciterStyle = remember(viewModel) { { reciter, style -> viewModel.selectReciterStyle(reciter, style) } },
                 onDismiss = remember { { showCompactReciterPopup = false } },
               )
             }
@@ -403,6 +551,7 @@ private fun ReaderScreenContent(
         juzs = uiState.juzs,
         juzsLoading = uiState.juzsLoading,
         bookmarks = uiState.bookmarks,
+        ayahBookmarks = uiState.ayahBookmarks,
         currentPage = uiState.currentPage,
         isDarkTheme = isDarkTheme,
         activeReciterFlow = viewModel.activeReciterFlow,
@@ -449,6 +598,7 @@ private fun ReaderScreenContent(
         },
         onDeleteDownloadedSurah = { surahId -> viewModel.deleteDownloadedSurahAudio(surahId) },
         onRemoveBookmark = { page -> viewModel.removeBookmark(page) },
+        onRemoveAyahBookmark = { surahId, ayahNum -> viewModel.removeAyahBookmark(surahId, ayahNum) },
         onOpenReader = {
           hasSelectedSurah = true
           isHomeOpen = false
@@ -489,6 +639,7 @@ private fun ReaderScreenContent(
           isPdfMode = uiState.activeMushafIsPdf,
           onRetryLoad = { viewModel.retryLoadReciters() },
           onSelectReciter = { reciter -> viewModel.selectReciter(reciter) },
+          onSelectReciterStyle = { reciter, style -> viewModel.selectReciterStyle(reciter, style) },
           onPlayFromAyah = { surahId, ayahNum ->
             hasSelectedSurah = true
             isIndexOpen = false
@@ -556,6 +707,11 @@ private fun ReaderScreenContent(
           viewModel.ensureAllDownloadableRecitersLoaded()
           showRecitersManager = true
         },
+        onOpenTafsirManager = {
+          viewModel.ensureTafsirCatalogLoaded()
+          showTafsirManager = true
+        },
+        onOpenAdhanSettings = { showAdhanSettingsSheet = true },
         onOpenMushafsManager = {
           viewModel.loadPdfManifest()
           showMushafsManager = true
@@ -569,6 +725,39 @@ private fun ReaderScreenContent(
           showCreditsDialog = true
         },
         onDismiss = { showSettingsSheet = false },
+      )
+    }
+
+    if (showAdhanSettingsSheet) {
+      val prayerUiState by prayerViewModel.uiState.collectAsStateWithLifecycle()
+      AdhanAlarmsManagementSheet(
+        adhanSettings = prayerUiState.adhanSettings,
+        isTestPlaying = prayerUiState.isTestAdhanPlaying,
+        onToggleAlarmsEnabled = prayerViewModel::setAdhanAlarmsEnabled,
+        onTogglePersistentCountdown = prayerViewModel::setPersistentCountdownEnabled,
+        onEditPrayerSound = { editingAdhanPrayer = it },
+        onTestAdhanNow = { prayerViewModel.startTestAdhan10s() },
+        onStopTestAdhan = { prayerViewModel.stopTestAdhan() },
+        onDismiss = {
+          showAdhanSettingsSheet = false
+          prayerViewModel.refreshAlarmsAndNotification()
+        },
+      )
+    }
+
+    editingAdhanPrayer?.let { targetPrayer ->
+      val prayerUiState by prayerViewModel.uiState.collectAsStateWithLifecycle()
+      PrayerSoundConfigSheet(
+        prayerType = targetPrayer,
+        currentConfig = prayerUiState.adhanSettings.configFor(targetPrayer),
+        isTestPlaying = prayerUiState.isTestAdhanPlaying,
+        onSaveConfig = { cfg -> prayerViewModel.updatePrayerAlarmConfig(targetPrayer, cfg) },
+        onApplyToAllPrayers = { cfg -> prayerViewModel.applyAlarmConfigToAllPrayers(cfg) },
+        onTestAdhanNow = { cfg ->
+          prayerViewModel.startTestAdhan10s(prayerType = targetPrayer, configOverride = cfg)
+        },
+        onStopTestAdhan = { prayerViewModel.stopTestAdhan() },
+        onDismiss = { editingAdhanPrayer = null },
       )
     }
 
@@ -620,21 +809,195 @@ private fun ReaderScreenContent(
       CreditsAndIntegrityDialog(
         credits = uiState.credits,
         assetHashes = uiState.assetHashes,
+        tajweedRenderPathLabel = uiState.tajweedRenderPathLabel,
+        androidApiLevelText = uiState.androidApiLevelText,
         onDismiss = { showCreditsDialog = false },
+      )
+    }
+
+    if (selectedVerseKeys.isNotEmpty() && !isInsightsOpen && !isIndexOpen && !isHomeOpen && !uiState.activeMushafIsPdf) {
+      val allSelectedBookmarked = selectedVerseKeys.all { ayahBookmarkKeySet.contains(it) }
+      AyahSelectionActionBar(
+        selectionRect = activeSelectionRectLocal,
+        rootWidthPx = rootWidthPx,
+        rootHeightPx = rootHeightPx,
+        isTopChromeVisible = isChromeVisible,
+        isBookmarked = allSelectedBookmarked,
+        onPlay = {
+          viewModel.playFromSelectedAyahs()
+          isCompactPlayerDocked = true
+        },
+        onOpenInsights = { viewModel.openInsightsForSelectedAyahs() },
+        onShare = {
+          coroutineScope.launch {
+            viewModel.buildSharePayloadForSelectedAyahs()
+              .onSuccess { (shareText, _) ->
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                  type = "text/plain"
+                  putExtra(Intent.EXTRA_TEXT, shareText)
+                }
+                context.startActivity(Intent.createChooser(sendIntent, "مشاركة الآية"))
+              }
+              .onFailure {
+                Toast.makeText(context, "تعذر تجهيز نص الآية للمشاركة", Toast.LENGTH_SHORT).show()
+              }
+          }
+        },
+        onBookmark = {
+          coroutineScope.launch {
+            val (added, _) = viewModel.toggleBookmarkForSelectedAyahs()
+            Toast.makeText(
+              context,
+              if (added) "تمت إضافة المرجعية" else "تمت إزالة المرجعية",
+              Toast.LENGTH_SHORT,
+            ).show()
+          }
+        },
       )
     }
 
     ReaderVerseInsightsHost(
       verseInsightsStateFlow = viewModel.verseInsightsState,
+      tafsirCatalogStateFlow = viewModel.tafsirCatalogState,
+      checkedTafsirIdsFlow = viewModel.checkedTafsirEditionIdsState,
       surahsById = surahsById,
+      onToggleSourceChecked = remember(viewModel) { { id, checked -> viewModel.toggleTafsirSourceChecked(id, checked) } },
+      onOpenTafsirManager = remember(viewModel) {
+        {
+          viewModel.ensureTafsirCatalogLoaded()
+          showTafsirManager = true
+        }
+      },
       onPlaySingleAyah = remember(viewModel) { { surahId, ayahNum -> viewModel.playSingleAyah(surahId, ayahNum) } },
       onPlayFromAyah = remember(viewModel) { { surahId, ayahNum -> viewModel.playFromAyah(surahId, ayahNum) } },
       onPlayAyahRange = remember(viewModel) { { range -> viewModel.playAyahRange(range) } },
       onOpenRangePicker = remember { { activeAudioSheet = ReaderAudioSheet.PLAYBACK } },
       onDismiss = remember(viewModel) { { viewModel.dismissVerseInsights() } },
+      onSheetTopInRootChanged = remember { { top -> sheetTopInRootWindow = top } },
+      modifier = Modifier.align(Alignment.BottomCenter),
     )
 
+    if (showTafsirManager) {
+      ReaderTafsirManagerHost(
+        viewModel = viewModel,
+        onClose = { showTafsirManager = false },
+      )
+    }
+
     AppUpdateDialogHost(viewModel = viewModel)
+  }
+}
+
+@Composable
+private fun AyahSelectionActionBar(
+  selectionRect: PageSelectionRootRect?,
+  rootWidthPx: Float,
+  rootHeightPx: Float,
+  isTopChromeVisible: Boolean,
+  isBookmarked: Boolean,
+  onPlay: () -> Unit,
+  onOpenInsights: () -> Unit,
+  onShare: () -> Unit,
+  onBookmark: () -> Unit,
+) {
+  val density = LocalDensity.current
+  var barSize by remember { mutableStateOf(IntSize.Zero) }
+  val edgePadPx = with(density) { 10.dp.roundToPx() }
+  val gapPx = with(density) { 8.dp.roundToPx() }
+  val minTopPx = with(density) { if (isTopChromeVisible) 88.dp.roundToPx() else 18.dp.roundToPx() }
+  val bottomFallbackPx = with(density) { 86.dp.roundToPx() }
+
+  val offset = if (barSize.width > 0 && barSize.height > 0 && rootWidthPx > 0f && rootHeightPx > 0f) {
+    val maxX = (rootWidthPx.roundToInt() - barSize.width - edgePadPx).coerceAtLeast(edgePadPx)
+    val maxY = (rootHeightPx.roundToInt() - barSize.height - edgePadPx).coerceAtLeast(minTopPx)
+    if (selectionRect != null) {
+      val centerX = ((selectionRect.left + selectionRect.right) * 0.5f).roundToInt()
+      val x = (centerX - barSize.width / 2).coerceIn(edgePadPx, maxX)
+      val aboveY = (selectionRect.top - barSize.height - gapPx).roundToInt()
+      val y = if (aboveY >= minTopPx) {
+        aboveY.coerceAtMost(maxY)
+      } else {
+        (selectionRect.bottom + gapPx).roundToInt().coerceIn(minTopPx, maxY)
+      }
+      IntOffset(x, y)
+    } else {
+      val x = ((rootWidthPx.roundToInt() - barSize.width) / 2).coerceIn(edgePadPx, maxX)
+      val y = (rootHeightPx.roundToInt() - barSize.height - bottomFallbackPx).coerceIn(minTopPx, maxY)
+      IntOffset(x, y)
+    }
+  } else {
+    IntOffset(edgePadPx, minTopPx)
+  }
+
+  Surface(
+    shape = RoundedCornerShape(24.dp),
+    color = MaterialTheme.colorScheme.surface,
+    tonalElevation = 6.dp,
+    shadowElevation = 10.dp,
+    modifier = Modifier
+      .offset { offset }
+      .onSizeChanged { barSize = it }
+      .border(
+        width = 1.dp,
+        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+        shape = RoundedCornerShape(24.dp),
+      )
+      .testTag("ayah_selection_action_bar"),
+  ) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(2.dp),
+      modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+      IconButton(
+        onClick = onPlay,
+        modifier = Modifier
+          .minimumInteractiveComponentSize()
+          .testTag("selection_action_play"),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.PlayArrow,
+          contentDescription = "تشغيل التلاوة",
+          tint = MaterialTheme.colorScheme.primary,
+        )
+      }
+      IconButton(
+        onClick = onOpenInsights,
+        modifier = Modifier
+          .minimumInteractiveComponentSize()
+          .testTag("selection_action_globe"),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Language,
+          contentDescription = "الترجمة والتفسير",
+          tint = MaterialTheme.colorScheme.primary,
+        )
+      }
+      IconButton(
+        onClick = onShare,
+        modifier = Modifier
+          .minimumInteractiveComponentSize()
+          .testTag("selection_action_share"),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Share,
+          contentDescription = "مشاركة الآية",
+          tint = MaterialTheme.colorScheme.primary,
+        )
+      }
+      IconButton(
+        onClick = onBookmark,
+        modifier = Modifier
+          .minimumInteractiveComponentSize()
+          .testTag("selection_action_bookmark"),
+      ) {
+        Icon(
+          imageVector = if (isBookmarked) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
+          contentDescription = "إضافة علامة مرجعية",
+          tint = if (isBookmarked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+        )
+      }
+    }
   }
 }
 
@@ -650,13 +1013,15 @@ private fun ReaderPagerHost(
   settledAvailHeightDp: Dp,
   pagesStateFlow: StateFlow<Map<Int, PageLoadState>>,
   activePlayingVerseKeyProvider: () -> String?,
-  selectedVerseKeyProvider: () -> String?,
+  selectedVerseKeysProvider: () -> Set<String>,
   onUpdateRenderSpec: (widthPx: Int, heightPx: Int, density: Float, fontScale: Float, isTwoPageMode: Boolean) -> Unit,
   onPageChanged: (Int) -> Unit,
   onToggleBookmark: (Int) -> Unit,
   onRetry: (Int) -> Unit,
-  onToggleChrome: () -> Unit,
-  onVerseLongPressed: (String, Int, String) -> Unit,
+  onNonWordTapped: () -> Unit,
+  onWordTapped: (String, Int, String) -> Unit,
+  onWordLongPressed: (String, Int, String) -> Unit,
+  onSelectionBoundsChanged: (Int, PageSelectionRootRect?) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val pages by pagesStateFlow.collectAsStateWithLifecycle()
@@ -708,10 +1073,10 @@ private fun ReaderPagerHost(
           }
       }
 
-      val toggleChromeIfNotSwiping: () -> Unit = remember(spreadPagerState, onToggleChrome) {
+      val onEmptyAreaTapIfNotSwiping: () -> Unit = remember(spreadPagerState, onNonWordTapped) {
         {
           if (!spreadPagerState.isScrollInProgress) {
-            onToggleChrome()
+            onNonWordTapped()
           }
         }
       }
@@ -732,8 +1097,8 @@ private fun ReaderPagerHost(
           Row(
             modifier = Modifier
               .fillMaxSize()
-              .pointerInput(toggleChromeIfNotSwiping) {
-                detectTapGestures(onTap = { toggleChromeIfNotSwiping() })
+              .pointerInput(onEmptyAreaTapIfNotSwiping) {
+                detectTapGestures(onTap = { onEmptyAreaTapIfNotSwiping() })
               },
           ) {
             MushafPageFrame(
@@ -743,11 +1108,13 @@ private fun ReaderPagerHost(
               isBookmarked = bookmarkSet.contains(rightPage),
               isDarkTheme = isDarkTheme,
               activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
-              selectedVerseKeyProvider = selectedVerseKeyProvider,
+              selectedVerseKeysProvider = selectedVerseKeysProvider,
               onToggleBookmark = remember(onToggleBookmark, rightPage) { { onToggleBookmark(rightPage) } },
               onRetry = remember(onRetry, rightPage) { { onRetry(rightPage) } },
-              onPageTapped = toggleChromeIfNotSwiping,
-              onVerseLongPressed = onVerseLongPressed,
+              onNonWordTapped = onEmptyAreaTapIfNotSwiping,
+              onWordTapped = onWordTapped,
+              onWordLongPressed = onWordLongPressed,
+              onSelectionBoundsChanged = onSelectionBoundsChanged,
               isPdfMode = isPdfMode,
               modifier = Modifier
                 .weight(1f)
@@ -761,11 +1128,13 @@ private fun ReaderPagerHost(
                 isBookmarked = bookmarkSet.contains(leftPage),
                 isDarkTheme = isDarkTheme,
                 activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
-                selectedVerseKeyProvider = selectedVerseKeyProvider,
+                selectedVerseKeysProvider = selectedVerseKeysProvider,
                 onToggleBookmark = remember(onToggleBookmark, leftPage) { { onToggleBookmark(leftPage) } },
                 onRetry = remember(onRetry, leftPage) { { onRetry(leftPage) } },
-                onPageTapped = toggleChromeIfNotSwiping,
-                onVerseLongPressed = onVerseLongPressed,
+                onNonWordTapped = onEmptyAreaTapIfNotSwiping,
+                onWordTapped = onWordTapped,
+                onWordLongPressed = onWordLongPressed,
+                onSelectionBoundsChanged = onSelectionBoundsChanged,
                 isPdfMode = isPdfMode,
                 modifier = Modifier
                   .weight(1f)
@@ -796,10 +1165,10 @@ private fun ReaderPagerHost(
           }
       }
 
-      val toggleChromeIfNotSwiping: () -> Unit = remember(singlePagerState, onToggleChrome) {
+      val onEmptyAreaTapIfNotSwiping: () -> Unit = remember(singlePagerState, onNonWordTapped) {
         {
           if (!singlePagerState.isScrollInProgress) {
-            onToggleChrome()
+            onNonWordTapped()
           }
         }
       }
@@ -826,8 +1195,8 @@ private fun ReaderPagerHost(
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .pointerInput(toggleChromeIfNotSwiping) {
-                detectTapGestures(onTap = { toggleChromeIfNotSwiping() })
+              .pointerInput(onEmptyAreaTapIfNotSwiping) {
+                detectTapGestures(onTap = { onEmptyAreaTapIfNotSwiping() })
               },
             contentAlignment = Alignment.Center,
           ) {
@@ -838,11 +1207,13 @@ private fun ReaderPagerHost(
               isBookmarked = bookmarkSet.contains(pageNum),
               isDarkTheme = isDarkTheme,
               activePlayingVerseKeyProvider = activePlayingVerseKeyProvider,
-              selectedVerseKeyProvider = selectedVerseKeyProvider,
+              selectedVerseKeysProvider = selectedVerseKeysProvider,
               onToggleBookmark = remember(onToggleBookmark, pageNum) { { onToggleBookmark(pageNum) } },
               onRetry = remember(onRetry, pageNum) { { onRetry(pageNum) } },
-              onPageTapped = toggleChromeIfNotSwiping,
-              onVerseLongPressed = onVerseLongPressed,
+              onNonWordTapped = onEmptyAreaTapIfNotSwiping,
+              onWordTapped = onWordTapped,
+              onWordLongPressed = onWordLongPressed,
+              onSelectionBoundsChanged = onSelectionBoundsChanged,
               isPdfMode = isPdfMode,
               modifier = Modifier.size(width = pageWidth, height = pageHeight),
             )
@@ -856,22 +1227,60 @@ private fun ReaderPagerHost(
 @Composable
 private fun ReaderVerseInsightsHost(
   verseInsightsStateFlow: StateFlow<VerseInsightsUiState>,
+  tafsirCatalogStateFlow: StateFlow<com.example.data.quran.TafsirCatalogUiState>,
+  checkedTafsirIdsFlow: StateFlow<Set<String>>,
   surahsById: Map<Int, SurahMeta>,
+  onToggleSourceChecked: (String, Boolean) -> Unit,
+  onOpenTafsirManager: () -> Unit,
   onPlaySingleAyah: (Int, Int) -> Unit,
   onPlayFromAyah: (Int, Int) -> Unit,
   onPlayAyahRange: (RecitationRange) -> Unit,
   onOpenRangePicker: () -> Unit,
   onDismiss: () -> Unit,
+  onSheetTopInRootChanged: (Float?) -> Unit,
+  modifier: Modifier = Modifier,
 ) {
   val state by verseInsightsStateFlow.collectAsStateWithLifecycle()
+  val catalog by tafsirCatalogStateFlow.collectAsStateWithLifecycle()
+  val checkedIds by checkedTafsirIdsFlow.collectAsStateWithLifecycle()
   VerseInsightsSheet(
     state = state,
     surahsById = surahsById,
+    downloadedSources = catalog.downloadedEditions,
+    checkedEditionIds = checkedIds,
+    onToggleSourceChecked = onToggleSourceChecked,
+    onOpenTafsirManager = onOpenTafsirManager,
     onPlaySingleAyah = onPlaySingleAyah,
     onPlayFromAyah = onPlayFromAyah,
     onPlayAyahRange = onPlayAyahRange,
     onOpenRangePicker = onOpenRangePicker,
     onDismiss = onDismiss,
+    onSheetTopInRootChanged = onSheetTopInRootChanged,
+    modifier = modifier,
+  )
+}
+
+@Composable
+private fun ReaderTafsirManagerHost(
+  viewModel: QabasatViewModel,
+  onClose: () -> Unit,
+) {
+  val catalogState by viewModel.tafsirCatalogState.collectAsStateWithLifecycle()
+  val downloadStates by viewModel.tafsirDownloadStates.collectAsStateWithLifecycle()
+
+  LaunchedEffect(Unit) {
+    viewModel.ensureTafsirCatalogLoaded(forceRefresh = false)
+  }
+
+  TafsirTranslationsManagerScreen(
+    catalogState = catalogState,
+    downloadStates = downloadStates,
+    onRetryLoadCatalog = { viewModel.ensureTafsirCatalogLoaded(forceRefresh = true) },
+    onStartOrResumeDownload = { edition -> viewModel.startOrResumeTafsirDownload(edition) },
+    onCancelDownload = { editionId -> viewModel.cancelTafsirDownload(editionId) },
+    onUpdateDownloaded = { dl -> viewModel.updateDownloadedTafsir(dl) },
+    onDeleteDownloaded = { editionId -> viewModel.deleteDownloadedTafsir(editionId) },
+    onClose = onClose,
   )
 }
 
@@ -886,6 +1295,8 @@ private fun ReaderSettingsHost(
   activePdfMushafLabel: String?,
   onOpenReciterDownloads: (VerifiedReciter) -> Unit,
   onOpenReciterManager: () -> Unit,
+  onOpenTafsirManager: () -> Unit,
+  onOpenAdhanSettings: () -> Unit,
   onOpenMushafsManager: () -> Unit,
   onOpenTajweedLegend: () -> Unit,
   onOpenCredits: () -> Unit,
@@ -940,6 +1351,8 @@ private fun ReaderSettingsHost(
     onRetryLoadDownloadableReciters = { viewModel.ensureAllDownloadableRecitersLoaded(forceRefresh = true) },
     onOpenReciterDownloads = onOpenReciterDownloads,
     onOpenReciterManager = onOpenReciterManager,
+    onOpenTafsirManager = onOpenTafsirManager,
+    onOpenAdhanSettings = onOpenAdhanSettings,
     onOpenMushafsManager = onOpenMushafsManager,
     onToggleDarkMode = { viewModel.toggleDarkMode() },
     onSelectBackgroundTheme = { theme -> viewModel.setBackgroundTheme(theme) },
@@ -1310,6 +1723,7 @@ private fun CompactRecitersPopupHost(
   isPdfMode: Boolean,
   onRetryLoad: () -> Unit,
   onSelectReciter: (VerifiedReciter) -> Unit,
+  onSelectReciterStyle: (VerifiedReciter, ReciterMoshafStyle) -> Unit,
   onDismiss: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -1328,6 +1742,7 @@ private fun CompactRecitersPopupHost(
     onSelectReciter = onSelectReciter,
     onDismiss = onDismiss,
     modifier = modifier,
+    onSelectReciterStyle = onSelectReciterStyle,
   )
 }
 
@@ -1381,6 +1796,7 @@ private fun ReaderReciterPickerHost(
   isPdfMode: Boolean,
   onRetryLoad: () -> Unit,
   onSelectReciter: (VerifiedReciter) -> Unit,
+  onSelectReciterStyle: (VerifiedReciter, ReciterMoshafStyle) -> Unit,
   onPlayFromAyah: (Int, Int) -> Unit,
   onPlayRange: (RecitationRange) -> Unit,
   onClearRange: () -> Unit,
@@ -1404,6 +1820,7 @@ private fun ReaderReciterPickerHost(
     mode = mode,
     isPdfMode = isPdfMode,
     onRetryLoad = onRetryLoad,
+    onSelectReciterStyle = onSelectReciterStyle,
   )
 }
 

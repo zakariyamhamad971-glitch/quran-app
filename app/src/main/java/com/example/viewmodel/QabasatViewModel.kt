@@ -11,6 +11,7 @@ import com.example.data.audio.AudioBatchUiSummary
 import com.example.data.audio.AudioDownloadManager
 import com.example.data.audio.AudioRepository
 import com.example.data.audio.RecitationRange
+import com.example.data.audio.ReciterMoshafStyle
 import com.example.data.audio.ReciterStorageSummary
 import com.example.data.audio.SurahTransferState
 import com.example.data.audio.VerifiedReciter
@@ -22,12 +23,15 @@ import com.example.data.pdf.PdfMushafRepository
 import com.example.data.pdf.PdfMushafTransferState
 import com.example.data.pdf.PdfRendererBridge
 import com.example.data.pdf.RiwayaColorGuideSection
+import com.example.data.prayer.AdhanSoundRepository
+import com.example.data.prefs.AyahBookmark
 import com.example.data.prefs.BackgroundTheme
 import com.example.data.prefs.CachedGlobalFontSizes
 import com.example.data.prefs.PageViewMode
 import com.example.data.prefs.PersistedReaderState
 import com.example.data.prefs.ReaderPreferences
 import com.example.data.quran.CreditSourceInfo
+import com.example.data.quran.DownloadedTafsirEdition
 import com.example.data.quran.GlobalFontSizingProgress
 import com.example.data.quran.GlobalMushafFontSizer
 import com.example.data.quran.JuzMeta
@@ -42,6 +46,11 @@ import com.example.data.quran.QuranRepository
 import com.example.data.quran.QuranWordSearchNormalizer
 import com.example.data.quran.QuranWordSearchResult
 import com.example.data.quran.SurahMeta
+import com.example.data.quran.TafsirCatalogUiState
+import com.example.data.quran.TafsirDownloadState
+import com.example.data.quran.TafsirEditionInfo
+import com.example.data.quran.TafsirRegistryRepository
+import com.example.data.quran.TajweedRenderPath
 import com.example.data.quran.TajweedRuleInfo
 import com.example.data.quran.VerseInsightsData
 import com.example.data.quran.VerseInsightsRepository
@@ -112,6 +121,7 @@ data class ReaderUiState(
   val backgroundTheme: BackgroundTheme = BackgroundTheme.WHITE,
   val pageViewMode: PageViewMode = PageViewMode.AUTO,
   val bookmarks: List<Int> = emptyList(),
+  val ayahBookmarks: List<AyahBookmark> = emptyList(),
   val surahs: List<SurahMeta> = emptyList(),
   val juzs: List<JuzMeta> = emptyList(),
   val juzsLoading: Boolean = false,
@@ -125,13 +135,16 @@ data class ReaderUiState(
   val colorsGuideError: String? = null,
   val credits: List<CreditSourceInfo> = emptyList(),
   val assetHashes: List<AssetHashStatus> = emptyList(),
-  val selectedVerseKey: String? = null,
+  val selectedVerseKeys: List<String> = emptyList(),
+  val lastSelectedVerseKey: String? = null,
   val metadataError: String? = null,
   val activeMushafIsPdf: Boolean = false,
   val activePdfMushafId: String? = null,
   val pdfMushafs: List<PdfMushafEntry> = emptyList(),
   val pdfManifestLoading: Boolean = false,
   val pdfManifestError: String? = null,
+  val tajweedRenderPathLabel: String = TajweedRenderPath.QCF_V4_COLR.displayAr,
+  val androidApiLevelText: String = "API ${Build.VERSION.SDK_INT} (Android ${Build.VERSION.RELEASE})",
 )
 
 @Immutable
@@ -172,6 +185,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private val globalFontSizer = GlobalMushafFontSizer(quranRepository, fontManager, pageBitmapRenderer)
   private val pdfMushafRepository = PdfMushafRepository(application, viewModelScope)
   private val pdfRendererBridge = PdfRendererBridge()
+  private val tafsirRegistryRepository = TafsirRegistryRepository(application, viewModelScope)
 
   val playbackController = PlaybackController(
     context = application,
@@ -198,6 +212,13 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     fontManager = fontManager,
     scope = viewModelScope,
   )
+
+  val tafsirCatalogState: StateFlow<TafsirCatalogUiState> = tafsirRegistryRepository.catalogState
+  val tafsirDownloadStates: StateFlow<Map<String, TafsirDownloadState>> = tafsirRegistryRepository.downloadStates
+  val checkedTafsirEditionIdsState: StateFlow<Set<String>> = preferences.stateFlow
+    .map { it.checkedTafsirEditionIds }
+    .distinctUntilChanged()
+    .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
   val downloadedMushafIdsState: StateFlow<Set<String>> = preferences.stateFlow
     .map { it.downloadedMushafIds }
@@ -253,10 +274,13 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     .distinctUntilChanged()
     .stateIn(viewModelScope, SharingStarted.Eagerly, BackgroundTheme.WHITE to false)
 
-  val selectedVerseKeyFlow: StateFlow<String?> = _uiState
-    .map { it.selectedVerseKey }
+  val selectedVerseKeysFlow: StateFlow<Set<String>> = _uiState
+    .map { it.selectedVerseKeys.toSet() }
     .distinctUntilChanged()
-    .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+  private val versePageHints = java.util.concurrent.ConcurrentHashMap<String, Int>()
+  private val verseCodeV2Hints = java.util.concurrent.ConcurrentHashMap<String, String>()
 
   val updateState: StateFlow<AppUpdateState> = appUpdateManager.state
   val audioState: StateFlow<AudioPlaybackUiState> = playbackController.uiState
@@ -393,7 +417,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   private fun computeGlobalFontCacheKey(spec: PageRenderSpec): Pair<String, Boolean>? {
     if (spec.isPdfMode || !spec.isValid) return null
     val needsTagFallback =
-      spec.edition == MushafEdition.TAJWEED_V4 && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+      spec.edition == MushafEdition.TAJWEED_V4 &&
+        fontManager.currentTajweedRenderPathOrDefault() != TajweedRenderPath.QCF_V4_COLR
     val sizingEdition = if (spec.edition == MushafEdition.TAJWEED_V4 && !needsTagFallback) {
       MushafEdition.MADINAH_1421
     } else {
@@ -587,10 +612,12 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           backgroundTheme = saved.backgroundTheme,
           pageViewMode = saved.pageViewMode,
           bookmarks = saved.bookmarks,
+          ayahBookmarks = saved.ayahBookmarks,
           activeMushafIsPdf = saved.activeMushafIsPdf,
           activePdfMushafId = saved.activePdfMushafId,
           pdfMushafs = cachedManifest,
           colorsGuideSections = orderedCachedSections,
+          tajweedRenderPathLabel = fontManager.currentTajweedRenderPathOrDefault().displayAr,
         )
       }
       val bootSpec = rebuildRenderSpec()
@@ -599,6 +626,19 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       } else {
         activeRenderSpec = bootSpec
         ensureGlobalFontSizesIfNeeded(bootSpec)
+      }
+
+      // Probe real COLRv1/COLR color support in background without blocking startup
+      viewModelScope.launch {
+        val detectedPath = fontManager.resolveTajweedRenderPath(allowNetworkFetch = true)
+        _uiState.update { it.copy(tajweedRenderPathLabel = detectedPath.displayAr) }
+        val stNow = _uiState.value
+        if (!stNow.activeMushafIsPdf && stNow.mushafEdition == MushafEdition.TAJWEED_V4) {
+          val refreshedSpec = rebuildRenderSpec()
+          if (refreshedSpec != activeRenderSpec || detectedPath != TajweedRenderPath.QCF_V4_COLR) {
+            onRenderSpecUpdated(refreshedSpec)
+          }
+        }
       }
 
       launch {
@@ -612,6 +652,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           _uiState.update {
             it.copy(
               bookmarks = pref.bookmarks,
+              ayahBookmarks = pref.ayahBookmarks,
               isDarkMode = pref.isDarkMode,
               backgroundTheme = pref.backgroundTheme,
               pageViewMode = pref.pageViewMode,
@@ -876,7 +917,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun selectPdfMushaf(entry: PdfMushafEntry) {
-    dismissVerseInsights()
+    clearVerseSelection()
     val currentReciter = audioState.value.currentReciter
     val compatible = currentReciter != null &&
       currentReciter.isPdfModeReciter &&
@@ -1006,14 +1047,19 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
-  fun ensureCreditsLoaded() {
-    if (creditsLoaded || creditsJob?.isActive == true) return
+  fun ensureCreditsLoaded(forceRefresh: Boolean = false) {
+    if (!forceRefresh && (creditsLoaded || creditsJob?.isActive == true)) return
+    creditsJob?.cancel()
     creditsJob = viewModelScope.launch {
       coroutineScope {
         val hashesDeferred = async { quranRepository.verifyBundledAssets() }
         val creditsDeferred = async { quranRepository.loadCredits() }
+        val tafsirCreditsDeferred = async { tafsirRegistryRepository.loadCreditsForAbout() }
+        val adhanCreditsDeferred = async { AdhanSoundRepository(getApplication()).loadAdhanCredits() }
         val hashes = hashesDeferred.await()
-        val credits = creditsDeferred.await()
+        val credits = creditsDeferred.await() +
+          tafsirCreditsDeferred.await() +
+          adhanCreditsDeferred.await()
         creditsLoaded = true
         _uiState.update {
           it.copy(
@@ -1052,6 +1098,37 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     reloadRecitersForCurrentState(forceRefresh = true)
   }
 
+  private fun applyPreferredStyles(
+    reciters: List<VerifiedReciter>,
+    preferredByReciterId: Map<Int, Int>,
+  ): List<VerifiedReciter> {
+    if (preferredByReciterId.isEmpty()) return reciters
+    return reciters.map { rec ->
+      val rId = rec.reciterId ?: return@map rec
+      val prefMoshafId = preferredByReciterId[rId] ?: return@map rec
+      val matchingStyle = rec.availableStyles.firstOrNull { it.moshafId == prefMoshafId }
+      if (matchingStyle != null && matchingStyle.moshafId != rec.moshafId) {
+        rec.withSelectedStyle(matchingStyle)
+      } else {
+        rec
+      }
+    }
+  }
+
+  private fun findRestoredReciter(
+    allPlayable: List<VerifiedReciter>,
+    selectedReciterKey: String?,
+  ): VerifiedReciter? {
+    if (selectedReciterKey != null) {
+      allPlayable.firstOrNull { it.key == selectedReciterKey }?.let { return it }
+      val reciterIdFromKey = selectedReciterKey.substringBefore("_").toIntOrNull()
+      if (reciterIdFromKey != null) {
+        allPlayable.firstOrNull { it.reciterId == reciterIdFromKey }?.let { return it }
+      }
+    }
+    return allPlayable.firstOrNull()
+  }
+
   private fun loadRecitersForCurrentMode(
     selectedReciterKey: String?,
     lastSurahId: Int,
@@ -1061,6 +1138,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   ) {
     recitersJob?.cancel()
     recitersJob = viewModelScope.launch {
+      val preferredByReciterId = preferences.stateFlow.first().reciterPreferredMoshafIds
       val snapshot = _uiState.value
       if (snapshot.activeMushafIsPdf) {
         val targetPdfId = snapshot.activePdfMushafId
@@ -1093,7 +1171,8 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         if (_uiState.value.activeMushafIsPdf != true || _uiState.value.activePdfMushafId != targetPdfId) {
           return@launch
         }
-        res.onSuccess { list ->
+        res.onSuccess { rawList ->
+          val list = applyPreferredStyles(rawList, preferredByReciterId)
           _uiState.update {
             it.copy(
               primaryReciters = list,
@@ -1103,9 +1182,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
             )
           }
           val allPlayable = list.filter { it.isPlayable }
-          val restored = selectedReciterKey?.let { key ->
-            allPlayable.firstOrNull { it.key == key }
-          } ?: allPlayable.firstOrNull()
+          val restored = findRestoredReciter(allPlayable, selectedReciterKey)
           val current = audioState.value.currentReciter
           if (restored != null) {
             if (current?.key != restored.key || current.riwayaId != restored.riwayaId || current.hasAyahTiming != restored.hasAyahTiming) {
@@ -1133,7 +1210,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(recitersLoading = true, recitersError = null) }
         val res = audioRepository.getVerifiedRecitersCatalog()
         if (_uiState.value.activeMushafIsPdf) return@launch
-        res.onSuccess { (primary, additional) ->
+        res.onSuccess { (rawPrimary, rawAdditional) ->
+          val primary = applyPreferredStyles(rawPrimary, preferredByReciterId)
+          val additional = applyPreferredStyles(rawAdditional, preferredByReciterId)
           _uiState.update {
             it.copy(
               primaryReciters = primary,
@@ -1143,9 +1222,7 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
             )
           }
           val allPlayable = (primary + additional).filter { it.isPlayable }
-          val restored = selectedReciterKey?.let { key ->
-            allPlayable.firstOrNull { it.key == key }
-          } ?: allPlayable.firstOrNull()
+          val restored = findRestoredReciter(allPlayable, selectedReciterKey)
           if (restored != null) {
             val current = audioState.value.currentReciter
             if (current == null || current.isPdfModeReciter || current.key != restored.key) {
@@ -1208,7 +1285,13 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun jumpToVerse(verseKey: String, pageNumber: Int) {
-    _uiState.update { it.copy(selectedVerseKey = verseKey) }
+    versePageHints[verseKey] = pageNumber
+    _uiState.update {
+      it.copy(
+        selectedVerseKeys = listOf(verseKey),
+        lastSelectedVerseKey = verseKey,
+      )
+    }
     jumpToPage(pageNumber)
   }
 
@@ -1276,6 +1359,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
   fun removeBookmark(page: Int) {
     viewModelScope.launch { preferences.removeBookmark(page) }
+  }
+
+  fun removeAyahBookmark(surahId: Int, ayahNumber: Int) {
+    viewModelScope.launch { preferences.removeAyahBookmark(surahId, ayahNumber) }
   }
 
   fun retryPage(page: Int) {
@@ -1850,10 +1937,15 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
 
       val edition = spec.edition
       val useWhiteInk = spec.effectiveDark
-      val needsTagFallbackTajweed =
-        edition == MushafEdition.TAJWEED_V4 && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+      val resolvedPath = if (edition == MushafEdition.TAJWEED_V4) {
+        fontManager.resolveTajweedRenderPath(allowNetworkFetch = true)
+      } else {
+        TajweedRenderPath.QCF_V4_COLR
+      }
+      var needsTagFallbackTajweed =
+        edition == MushafEdition.TAJWEED_V4 && resolvedPath != TajweedRenderPath.QCF_V4_COLR
 
-      val pageRes = quranRepository.getPage(
+      var pageRes = quranRepository.getPage(
         pageNumber = page,
         edition = edition,
         includeTajweedFallback = needsTagFallbackTajweed,
@@ -1865,9 +1957,9 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         return@launch
       }
 
-      val pageData = pageRes.getOrThrow()
+      var pageData = pageRes.getOrThrow()
       val fontEdition = if (needsTagFallbackTajweed) MushafEdition.MADINAH_1421 else edition
-      val (pageTypeface, basmalahTypeface, endMarkerTypeface) = coroutineScope {
+      var (pageTypeface, basmalahTypeface, endMarkerTypeface) = coroutineScope {
         val pageFontDeferred = async { fontManager.loadPageFont(page, fontEdition, useWhiteInk = useWhiteInk) }
         val basmalahFontDeferred = async { fontManager.loadBasmalahFont(fontEdition, useWhiteInk = useWhiteInk) }
         val endMarkerFontDeferred = if (edition == MushafEdition.TAJWEED_V4) {
@@ -1889,11 +1981,31 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       if (activeRenderSpec != spec) return@launch
       if (!pageLruOrder.contains(page)) return@launch
 
-      if (pageTypeface == null && !needsTagFallbackTajweed) {
+      var effectiveRenderPath = resolvedPath
+      if (edition == MushafEdition.TAJWEED_V4 && !needsTagFallbackTajweed && pageTypeface == null) {
+        // Fallback seamlessly to tag-based Tajweed coloring instead of failing or rendering plain black
+        needsTagFallbackTajweed = true
+        effectiveRenderPath = TajweedRenderPath.TAG_FALLBACK_FONT_LOAD_FAILED
+        pageRes = quranRepository.getPage(
+          pageNumber = page,
+          edition = edition,
+          includeTajweedFallback = true,
+        )
+        if (pageRes.isSuccess) {
+          pageData = pageRes.getOrThrow()
+        }
+        if (endMarkerTypeface == null) {
+          endMarkerTypeface = fontManager.loadPageFont(page, MushafEdition.MADINAH_1421, useWhiteInk = false)
+        }
+      } else if (pageTypeface == null && !needsTagFallbackTajweed) {
         _pagesState.update {
           it + (page to PageLoadState.Error("تعذر تحميل خط الصفحة العثماني"))
         }
         return@launch
+      }
+
+      if (edition == MushafEdition.TAJWEED_V4 && _uiState.value.tajweedRenderPathLabel != effectiveRenderPath.displayAr) {
+        _uiState.update { it.copy(tajweedRenderPathLabel = effectiveRenderPath.displayAr) }
       }
 
       val surahsMap = cachedSurahsById.ifEmpty {
@@ -1927,25 +2039,204 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     return job
   }
 
-  fun onVerseTapped(verseKey: String, pageNumber: Int, verseCodeV2Line: String) {
-    if (_uiState.value.activeMushafIsPdf) return
+  private fun parseVerseKeyPair(verseKey: String): Pair<Int, Int>? {
     val parts = verseKey.split(":")
-    val surahId = parts.getOrNull(0)?.toIntOrNull() ?: 1
-    val ayahNumber = parts.getOrNull(1)?.toIntOrNull() ?: 1
-    val surahName = _uiState.value.surahs.firstOrNull { it.id == surahId }?.nameArabic.orEmpty()
-    val edition = _uiState.value.mushafEdition
-    val useWhiteInk = _uiState.value.isDarkMode
+    val surah = parts.getOrNull(0)?.toIntOrNull() ?: return null
+    val ayah = parts.getOrNull(1)?.toIntOrNull() ?: return null
+    return surah to ayah
+  }
 
-    _uiState.update { it.copy(selectedVerseKey = verseKey) }
-    _verseInsightsState.value = VerseInsightsUiState.Loading(verseKey, surahName, ayahNumber)
+  private fun sortVerseKeys(keys: Collection<String>): List<String> {
+    return keys.distinct()
+      .sortedWith(
+        compareBy<String>(
+          { parseVerseKeyPair(it)?.first ?: Int.MAX_VALUE },
+          { parseVerseKeyPair(it)?.second ?: Int.MAX_VALUE },
+        ),
+      )
+  }
+
+  private fun enumerateVerseRangeInclusive(
+    anchorKey: String,
+    targetKey: String,
+    surahsById: Map<Int, SurahMeta>,
+  ): List<String> {
+    val a = parseVerseKeyPair(anchorKey) ?: return listOf(targetKey)
+    val b = parseVerseKeyPair(targetKey) ?: return listOf(targetKey)
+    val (startPair, endPair) = if (a.first < b.first || (a.first == b.first && a.second <= b.second)) {
+      a to b
+    } else {
+      b to a
+    }
+    val out = ArrayList<String>()
+    for (surah in startPair.first..endPair.first) {
+      val fromAyah = if (surah == startPair.first) startPair.second else 1
+      val maxAyahInSurah = surahsById[surah]?.versesCount
+        ?: if (surah == endPair.first) endPair.second else fromAyah
+      val toAyah = if (surah == endPair.first) endPair.second else maxAyahInSurah
+      for (ayah in fromAyah..toAyah) {
+        out.add("$surah:$ayah")
+        if (out.size >= 500) return out
+      }
+    }
+    return out
+  }
+
+  fun onWordTapped(verseKey: String, pageNumber: Int, verseCodeV2Line: String) {
+    if (_uiState.value.activeMushafIsPdf) return
+    versePageHints[verseKey] = pageNumber
+    if (verseCodeV2Line.isNotBlank()) {
+      verseCodeV2Hints[verseKey] = verseCodeV2Line
+    }
+    var updatedKeys: List<String> = emptyList()
+    _uiState.update { st ->
+      val current = st.selectedVerseKeys
+      val next = if (current.contains(verseKey)) {
+        current.filterNot { it == verseKey }
+      } else {
+        sortVerseKeys(current + verseKey)
+      }
+      val nextAnchor = if (next.contains(verseKey)) verseKey else next.lastOrNull()
+      updatedKeys = next
+      st.copy(selectedVerseKeys = next, lastSelectedVerseKey = nextAnchor)
+    }
+    if (updatedKeys.isEmpty()) {
+      _verseInsightsState.value = VerseInsightsUiState.Hidden
+    } else if (_verseInsightsState.value !is VerseInsightsUiState.Hidden) {
+      openInsightsForSelectedAyahs()
+    }
+  }
+
+  fun onWordLongPressed(verseKey: String, pageNumber: Int, verseCodeV2Line: String) {
+    if (_uiState.value.activeMushafIsPdf) return
+    versePageHints[verseKey] = pageNumber
+    if (verseCodeV2Line.isNotBlank()) {
+      verseCodeV2Hints[verseKey] = verseCodeV2Line
+    }
+    viewModelScope.launch {
+      val surahsMap = cachedSurahsById.ifEmpty {
+        quranRepository.getSurahs().getOrDefault(emptyList()).associateBy { it.id }.also {
+          if (it.isNotEmpty()) cachedSurahsById = it
+        }
+      }
+      val snapshot = _uiState.value
+      val anchor = snapshot.lastSelectedVerseKey ?: snapshot.selectedVerseKeys.lastOrNull() ?: verseKey
+      val rangeKeys = enumerateVerseRangeInclusive(anchor, verseKey, surahsMap)
+      var updatedKeys: List<String> = emptyList()
+      _uiState.update { st ->
+        val next = sortVerseKeys(st.selectedVerseKeys + rangeKeys)
+        updatedKeys = next
+        st.copy(selectedVerseKeys = next, lastSelectedVerseKey = verseKey)
+      }
+      if (updatedKeys.isNotEmpty() && _verseInsightsState.value !is VerseInsightsUiState.Hidden) {
+        openInsightsForSelectedAyahs()
+      }
+    }
+  }
+
+  fun clearVerseSelection() {
+    _uiState.update { it.copy(selectedVerseKeys = emptyList(), lastSelectedVerseKey = null) }
+    _verseInsightsState.value = VerseInsightsUiState.Hidden
+  }
+
+  fun ensureTafsirCatalogLoaded(forceRefresh: Boolean = false) {
+    viewModelScope.launch {
+      tafsirRegistryRepository.ensureCatalogLoaded(forceRefresh = forceRefresh)
+    }
+  }
+
+  fun startOrResumeTafsirDownload(edition: TafsirEditionInfo) {
+    tafsirRegistryRepository.startOrResumeDownload(edition) {
+      preferences.setTafsirEditionChecked(edition.id, true)
+      if (_verseInsightsState.value !is VerseInsightsUiState.Hidden) {
+        openInsightsForSelectedAyahs()
+      }
+      if (creditsLoaded) {
+        ensureCreditsLoaded(forceRefresh = true)
+      }
+    }
+  }
+
+  fun cancelTafsirDownload(editionId: String) {
+    tafsirRegistryRepository.cancelDownload(editionId)
+  }
+
+  fun updateDownloadedTafsir(downloaded: DownloadedTafsirEdition) {
+    tafsirRegistryRepository.updateDownloadedEdition(downloaded) {
+      if (_verseInsightsState.value !is VerseInsightsUiState.Hidden) {
+        openInsightsForSelectedAyahs()
+      }
+      if (creditsLoaded) {
+        ensureCreditsLoaded(forceRefresh = true)
+      }
+    }
+  }
+
+  fun deleteDownloadedTafsir(editionId: String) {
+    viewModelScope.launch {
+      tafsirRegistryRepository.deleteDownloadedEdition(editionId)
+      preferences.setTafsirEditionChecked(editionId, false)
+      if (_verseInsightsState.value !is VerseInsightsUiState.Hidden) {
+        openInsightsForSelectedAyahs()
+      }
+      if (creditsLoaded) {
+        ensureCreditsLoaded(forceRefresh = true)
+      }
+    }
+  }
+
+  fun toggleTafsirSourceChecked(editionId: String, checked: Boolean) {
+    viewModelScope.launch {
+      preferences.setTafsirEditionChecked(editionId, checked)
+      if (_verseInsightsState.value !is VerseInsightsUiState.Hidden) {
+        openInsightsForSelectedAyahs(overrideCheckedIds = if (checked) {
+          checkedTafsirEditionIdsState.value + editionId
+        } else {
+          checkedTafsirEditionIdsState.value - editionId
+        })
+      }
+    }
+  }
+
+  fun openInsightsForSelectedAyahs(overrideCheckedIds: Set<String>? = null) {
+    val snapshot = _uiState.value
+    if (snapshot.activeMushafIsPdf) return
+    val orderedKeys = snapshot.selectedVerseKeys
+    val primaryKey = orderedKeys.firstOrNull() ?: return
+    val parts = parseVerseKeyPair(primaryKey) ?: return
+    val surahId = parts.first
+    val ayahNumber = parts.second
+    val pageNumber = versePageHints[primaryKey] ?: snapshot.currentPage
+    val surahName = snapshot.surahs.firstOrNull { it.id == surahId }?.nameArabic.orEmpty()
+    val edition = snapshot.mushafEdition
+    val useWhiteInk = snapshot.isDarkMode
+
+    if (_verseInsightsState.value is VerseInsightsUiState.Hidden) {
+      _verseInsightsState.value = VerseInsightsUiState.Loading(primaryKey, surahName, ayahNumber)
+    }
 
     viewModelScope.launch {
+      tafsirRegistryRepository.refreshLocalDownloadsSnapshot()
+      val surahsMap = cachedSurahsById.ifEmpty {
+        quranRepository.getSurahs().getOrDefault(emptyList()).associateBy { it.id }.also {
+          if (it.isNotEmpty()) cachedSurahsById = it
+        }
+      }
       val pageFont = fontManager.loadPageFont(pageNumber, edition, useWhiteInk = useWhiteInk)
         ?: fontManager.loadPageFont(pageNumber, MushafEdition.MADINAH_1421, useWhiteInk = false)
-      val res = verseInsightsRepository.getVerseInsights(
-        verseKey = verseKey,
-        pageNumber = pageNumber,
-        codeV2Line = verseCodeV2Line,
+      val downloaded = tafsirRegistryRepository.catalogState.value.downloadedEditions
+      val checkedIds = overrideCheckedIds ?: preferences.stateFlow.first().checkedTafsirEditionIds
+      val checkedEditions = downloaded.filter { it.editionId in checkedIds }
+
+      val res = verseInsightsRepository.getMultiVerseInsights(
+        orderedVerseKeys = orderedKeys,
+        primaryPageNumber = pageNumber,
+        surahsById = surahsMap,
+        pageHints = versePageHints,
+        codeV2Hints = verseCodeV2Hints,
+        quranRepository = quranRepository,
+        tafsirRegistryRepository = tafsirRegistryRepository,
+        checkedEditions = checkedEditions,
       )
       res.onSuccess { insights ->
         _verseInsightsState.value = VerseInsightsUiState.Ready(
@@ -1955,20 +2246,59 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         )
       }.onFailure {
         _verseInsightsState.value = VerseInsightsUiState.Error(
-          verseKey = verseKey,
+          verseKey = primaryKey,
           message = "تعذر تحميل التفسير والترجمات",
         )
       }
     }
   }
 
+  fun playFromSelectedAyahs() {
+    val firstKey = _uiState.value.selectedVerseKeys.firstOrNull() ?: return
+    val (surahId, ayahNumber) = parseVerseKeyPair(firstKey) ?: return
+    playFromAyah(surahId, ayahNumber)
+  }
+
+  suspend fun toggleBookmarkForSelectedAyahs(): Pair<Boolean, Int> {
+    val keys = _uiState.value.selectedVerseKeys
+    if (keys.isEmpty()) return false to 0
+    val fallbackPage = _uiState.value.currentPage
+    val loadedPages = _pagesState.value
+    val items = keys.mapNotNull { vk ->
+      val (surahId, ayahNum) = parseVerseKeyPair(vk) ?: return@mapNotNull null
+      val pageFromLoaded = loadedPages.entries.firstOrNull { (_, state) ->
+        state is PageLoadState.Ready && state.renderedPage.verseHighlightRects.containsKey(vk)
+      }?.key
+      val pageNum = versePageHints[vk]
+        ?: pageFromLoaded
+        ?: quranRepository.getVersePageNumber(vk)
+        ?: fallbackPage
+      AyahBookmark(surahId = surahId, ayahNumber = ayahNum, pageNumber = pageNum)
+    }
+    if (items.isEmpty()) return false to 0
+    val added = preferences.toggleAyahBookmarks(items)
+    return added to items.size
+  }
+
+  suspend fun buildSharePayloadForSelectedAyahs(): Result<Pair<String, String>> {
+    val keys = _uiState.value.selectedVerseKeys
+    return quranRepository.getExactVersesForShare(
+      orderedVerseKeys = keys,
+      pageHints = versePageHints,
+    )
+  }
+
   fun dismissVerseInsights() {
-    _uiState.update { it.copy(selectedVerseKey = null) }
     _verseInsightsState.value = VerseInsightsUiState.Hidden
   }
 
   fun selectReciter(reciter: VerifiedReciter) {
     if (!reciter.isPlayable) return
+    val rId = reciter.reciterId
+    val mId = reciter.moshafId
+    if (rId != null && mId != null) {
+      viewModelScope.launch { preferences.saveReciterPreferredMoshaf(rId, mId) }
+    }
     ensurePlaybackConnected()
     val currentSurah = audioState.value.currentSurahId
     val surahToPlay = if (reciter.availableSurahs.contains(currentSurah)) {
@@ -1977,6 +2307,31 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
       reciter.availableSurahs.minOrNull() ?: 1
     }
     playbackController.playSurah(reciter, surahToPlay, 0L, autoPlay = audioState.value.isPlaying)
+  }
+
+  fun selectReciterStyle(reciter: VerifiedReciter, style: ReciterMoshafStyle) {
+    if (!reciter.isPlayable) return
+    val updated = reciter.withSelectedStyle(style)
+    _uiState.update { st ->
+      fun replaceMatching(list: List<VerifiedReciter>): List<VerifiedReciter> {
+        return list.map { item ->
+          if (item.reciterId == reciter.reciterId && item.riwayaId == reciter.riwayaId) {
+            updated
+          } else {
+            item
+          }
+        }
+      }
+      st.copy(
+        primaryReciters = replaceMatching(st.primaryReciters),
+        additionalReciters = replaceMatching(st.additionalReciters),
+      )
+    }
+    val rId = updated.reciterId
+    if (rId != null) {
+      viewModelScope.launch { preferences.saveReciterPreferredMoshaf(rId, style.moshafId) }
+    }
+    selectReciter(updated)
   }
 
   fun playSurah(surahId: Int) {

@@ -28,6 +28,7 @@ import com.example.data.quran.MushafPageData
 import com.example.data.quran.MushafWord
 import com.example.data.quran.PdfPageHeaderMeta
 import com.example.data.quran.SurahMeta
+import com.example.data.quran.TajweedTagParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
@@ -76,6 +77,7 @@ data class PageBitmapKey(
   val globalBodyFontSpBits: Int = 0,
   val layoutVersion: Int = com.example.data.quran.QuranRepository.LAYOUT_CACHE_VERSION,
   val isPreview: Boolean = false,
+  val usesTagFallbackTajweed: Boolean = false,
 )
 
 data class TextBodyLayoutMetrics(
@@ -466,6 +468,7 @@ class MushafPageBitmapRenderer(
     pageNumber: Int,
     spec: PageRenderSpec,
     isPreview: Boolean = false,
+    usesTagFallbackTajweed: Boolean = false,
   ): PageBitmapKey =
     PageBitmapKey(
       pageNumber = pageNumber,
@@ -481,6 +484,7 @@ class MushafPageBitmapRenderer(
       globalIntroFontSpBits = if (spec.isPdfMode) 0 else (spec.globalIntroFontSp?.toRawBits() ?: 0),
       globalBodyFontSpBits = if (spec.isPdfMode) 0 else (spec.globalBodyFontSp?.toRawBits() ?: 0),
       isPreview = isPreview,
+      usesTagFallbackTajweed = usesTagFallbackTajweed,
     )
 
   private fun ensureCacheCapacityFor(spec: PageRenderSpec) {
@@ -703,7 +707,11 @@ class MushafPageBitmapRenderer(
     surahsById: Map<Int, SurahMeta>,
     endMarkerTypeface: Typeface? = null,
   ): RenderedMushafPage {
-    val key = makeKey(pageData.pageNumber, spec)
+    val key = makeKey(
+      pageNumber = pageData.pageNumber,
+      spec = spec,
+      usesTagFallbackTajweed = usesTagFallbackTajweed,
+    )
     val pageFontId = System.identityHashCode(pageTypeface)
     val basmalahFontId = System.identityHashCode(basmalahTypeface)
     val endMarkerFontId = System.identityHashCode(endMarkerTypeface)
@@ -1026,13 +1034,13 @@ class MushafPageBitmapRenderer(
       val safeGapFromBadge = dp(12f)
       val maxHintW = (badgeLeft - contentLeft - safeGapFromBadge).coerceAtLeast(0f)
       if (maxHintW > dp(34f)) {
-        var hintText = "اضغط مطولاً على الآية للتفسير"
+        var hintText = "اضغط على الآية للتحديد"
         hintPaint.textSize = minOf(sp(6.8f), dp(8.5f))
         if (hintPaint.measureText(hintText) > maxHintW) {
           hintPaint.textSize = minOf(sp(6.2f), dp(7.6f))
         }
         if (hintPaint.measureText(hintText) > maxHintW) {
-          hintText = "اضغط مطولاً للتفسير"
+          hintText = "اضغط للتحديد"
           hintPaint.textSize = minOf(sp(6.2f), dp(7.6f))
         }
         if (hintPaint.measureText(hintText) > maxHintW) {
@@ -1273,6 +1281,17 @@ class MushafPageBitmapRenderer(
       )
     }
 
+    val parsedAyahTokensByVerse: Map<String, List<TajweedTagParser.TaggedToken>> =
+      if (usesTagFallbackTajweed && pageData.tajweedAyahTexts.isNotEmpty()) {
+        buildMap(pageData.tajweedAyahTexts.size) {
+          for ((vk, rawText) in pageData.tajweedAyahTexts) {
+            put(vk, TajweedTagParser.parseAyahToTaggedTokens(rawText, effectiveDark = effectiveDark))
+          }
+        }
+      } else {
+        emptyMap()
+      }
+
     for (slotIndex in displayedLines.indices) {
       val line = displayedLines[slotIndex]
       val slotTop = linesStartTop + slotIndex * slotHeight
@@ -1361,6 +1380,7 @@ class MushafPageBitmapRenderer(
             verseRectAccum = verseRectAccum,
             rosetteAccum = rosetteAccum,
             endMarkerPaint = endMarkerPaint,
+            parsedAyahTokensByVerse = parsedAyahTokensByVerse,
           )
         }
       }
@@ -2013,6 +2033,7 @@ class MushafPageBitmapRenderer(
     verseRectAccum: HashMap<String, MutableList<Float>>,
     rosetteAccum: HashMap<String, MutableList<Float>>,
     endMarkerPaint: TextPaint? = null,
+    parsedAyahTokensByVerse: Map<String, List<TajweedTagParser.TaggedToken>> = emptyMap(),
   ): Int {
     val words = line.words
     val n = words.size
@@ -2239,7 +2260,32 @@ class MushafPageBitmapRenderer(
       } else {
         val tok = tokens[i]
         if (tok.isNotEmpty()) {
-          canvas.drawText(tok, wordLeft + wordDrawOffsets[i], baselineY, paint)
+          val coloredWord = if (usesTagFallbackTajweed) {
+            TajweedTagParser.buildWordSpannable(
+              wordTextUthmani = tok,
+              wordPosition1Based = w.position,
+              ayahTokens = parsedAyahTokensByVerse[w.verseKey],
+            )
+          } else {
+            tok
+          }
+          if (coloredWord is android.text.Spannable) {
+            val layoutW = ceil(ww).toInt().coerceAtLeast(1) + 64
+            val wordLayout = StaticLayout.Builder
+              .obtain(coloredWord, 0, coloredWord.length, paint, layoutW)
+              .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+              .setTextDirection(TextDirectionHeuristics.RTL)
+              .setIncludePad(false)
+              .build()
+            val drawLeftInLayout = if (wordLayout.lineCount > 0) wordLayout.getLineLeft(0) else 0f
+            val layoutBaseline = if (wordLayout.lineCount > 0) wordLayout.getLineBaseline(0).toFloat() else baselineY
+            canvas.save()
+            canvas.translate(wordLeft + wordDrawOffsets[i] - drawLeftInLayout, baselineY - layoutBaseline)
+            wordLayout.draw(canvas)
+            canvas.restore()
+          } else {
+            canvas.drawText(tok, wordLeft + wordDrawOffsets[i], baselineY, paint)
+          }
         }
       }
 

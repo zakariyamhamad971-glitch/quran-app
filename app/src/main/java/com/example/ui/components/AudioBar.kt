@@ -8,6 +8,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,6 +45,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Button
@@ -57,6 +60,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -81,8 +85,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.audio.AudioRepository
 import com.example.data.audio.RecitationRange
 import com.example.data.audio.ReciterMatchStatus
+import com.example.data.audio.ReciterMoshafStyle
 import com.example.data.audio.VerifiedReciter
 import com.example.data.quran.SurahMeta
 import com.example.player.AudioPlaybackUiState
@@ -1358,6 +1364,7 @@ fun CompactDockedAudioPlayer(
   }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CompactRecitersPopup(
   primaryReciters: List<VerifiedReciter>,
@@ -1370,11 +1377,24 @@ fun CompactRecitersPopup(
   onSelectReciter: (VerifiedReciter) -> Unit,
   onDismiss: () -> Unit,
   modifier: Modifier = Modifier,
+  onSelectReciterStyle: (VerifiedReciter, ReciterMoshafStyle) -> Unit = { r, s ->
+    onSelectReciter(r.withSelectedStyle(s))
+  },
 ) {
   BackHandler(onBack = onDismiss)
   var showAllCatalog by remember { mutableStateOf(false) }
-  val displayed = remember(primaryReciters, additionalReciters, showAllCatalog) {
-    if (showAllCatalog) primaryReciters + additionalReciters else primaryReciters
+  var searchQuery by remember { mutableStateOf("") }
+  val filteredPrimary = remember(primaryReciters, searchQuery) {
+    if (searchQuery.isBlank()) primaryReciters
+    else primaryReciters.filter { AudioRepository.matchesReciterSearchQuery(it.displayName, searchQuery) }
+  }
+  val filteredAll = remember(primaryReciters, additionalReciters, searchQuery) {
+    val all = primaryReciters + additionalReciters
+    if (searchQuery.isBlank()) all
+    else all.filter { AudioRepository.matchesReciterSearchQuery(it.displayName, searchQuery) }
+  }
+  val displayed = remember(filteredPrimary, filteredAll, showAllCatalog) {
+    if (showAllCatalog) filteredAll else filteredPrimary
   }
   val noopInteraction = remember { MutableInteractionSource() }
 
@@ -1383,7 +1403,7 @@ fun CompactRecitersPopup(
       .widthIn(max = 520.dp)
       .fillMaxWidth()
       .padding(horizontal = 14.dp)
-      .heightIn(max = 260.dp)
+      .heightIn(max = 320.dp)
       .clickable(interactionSource = noopInteraction, indication = null, onClick = {})
       .testTag("compact_reciters_popup"),
     shape = RoundedCornerShape(16.dp),
@@ -1414,7 +1434,7 @@ fun CompactRecitersPopup(
               onClick = { showAllCatalog = !showAllCatalog },
               label = {
                 Text(
-                  text = if (showAllCatalog) "المعتمدة" else "الكل (${primaryReciters.size + additionalReciters.size})",
+                  text = if (showAllCatalog) "المعتمدة (${filteredPrimary.size})" else "الكل (${filteredAll.size})",
                   style = MaterialTheme.typography.labelSmall,
                 )
               },
@@ -1434,6 +1454,28 @@ fun CompactRecitersPopup(
           }
         }
       }
+
+      OutlinedTextField(
+        value = searchQuery,
+        onValueChange = { searchQuery = it },
+        placeholder = { Text("ابحث عن قارئ...") },
+        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+        trailingIcon = if (searchQuery.isNotEmpty()) {
+          {
+            IconButton(onClick = { searchQuery = "" }) {
+              Icon(Icons.Filled.Close, contentDescription = "مسح البحث", modifier = Modifier.size(16.dp))
+            }
+          }
+        } else {
+          null
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(bottom = 6.dp)
+          .testTag("compact_reciters_search_input"),
+      )
 
       HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
@@ -1480,7 +1522,7 @@ fun CompactRecitersPopup(
             contentAlignment = Alignment.Center,
           ) {
             Text(
-              text = "لا يوجد قارئ متاح لهذه الرواية حاليًا",
+              text = if (searchQuery.isNotBlank()) "لا توجد نتائج مطابقة" else "لا يوجد قارئ متاح لهذه الرواية حاليًا",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
               textAlign = TextAlign.Center,
@@ -1493,13 +1535,15 @@ fun CompactRecitersPopup(
             modifier = Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(vertical = 4.dp),
           ) {
-            items(displayed, key = { "popup_${it.orderIndex}_${it.key}" }) { reciter ->
-              val isSelected = activeReciter?.key == reciter.key && reciter.isPlayable
+            items(displayed, key = { "popup_${it.orderIndex}_${it.reciterId ?: it.key}" }) { reciter ->
+              val isSelected = activeReciter?.reciterId != null &&
+                activeReciter.reciterId == reciter.reciterId &&
+                activeReciter.riwayaId == reciter.riwayaId &&
+                reciter.isPlayable
               val enabled = reciter.isPlayable
-              Row(
+              Column(
                 modifier = Modifier
                   .fillMaxWidth()
-                  .heightIn(min = 48.dp)
                   .alpha(if (enabled) 1f else 0.52f)
                   .clickable(enabled = enabled) {
                     onSelectReciter(reciter)
@@ -1507,53 +1551,85 @@ fun CompactRecitersPopup(
                   }
                   .padding(horizontal = 6.dp, vertical = 4.dp)
                   .testTag("compact_popup_reciter_${reciter.orderIndex}"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
               ) {
-                Column(modifier = Modifier.weight(1f)) {
-                  Text(
-                    text = reciter.displayName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                  )
-                  val note = if (reciter.isPdfModeReciter && reciter.riwayaName.isNotBlank()) {
-                    reciter.riwayaName
-                  } else {
-                    reciter.statusNote
-                  }
-                  if (note.isNotBlank()) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
                     Text(
-                      text = note,
-                      style = MaterialTheme.typography.labelSmall,
-                      color = if (reciter.status == ReciterMatchStatus.VERIFIED || reciter.isPdfModeReciter) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                      } else {
-                        MaterialTheme.colorScheme.error
-                      },
+                      text = reciter.displayName,
+                      style = MaterialTheme.typography.bodyMedium,
+                      color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                       maxLines = 1,
                       overflow = TextOverflow.Ellipsis,
                     )
+                    val note = if (reciter.isPdfModeReciter && reciter.riwayaName.isNotBlank()) {
+                      reciter.riwayaName
+                    } else {
+                      reciter.statusNote
+                    }
+                    if (note.isNotBlank()) {
+                      Text(
+                        text = note,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (reciter.status == ReciterMatchStatus.VERIFIED || reciter.isPdfModeReciter) {
+                          MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                          MaterialTheme.colorScheme.error
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                      )
+                    }
+                  }
+
+                  Spacer(Modifier.width(8.dp))
+
+                  if (isSelected) {
+                    Icon(
+                      imageVector = Icons.Filled.Check,
+                      contentDescription = "القارئ المختار",
+                      tint = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.size(18.dp),
+                    )
+                  } else if (!enabled) {
+                    Icon(
+                      imageVector = Icons.Filled.ErrorOutline,
+                      contentDescription = "غير متاح",
+                      tint = MaterialTheme.colorScheme.error,
+                      modifier = Modifier.size(16.dp),
+                    )
                   }
                 }
-
-                Spacer(Modifier.width(8.dp))
-
-                if (isSelected) {
-                  Icon(
-                    imageVector = Icons.Filled.Check,
-                    contentDescription = "القارئ المختار",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
-                  )
-                } else if (!enabled) {
-                  Icon(
-                    imageVector = Icons.Filled.ErrorOutline,
-                    contentDescription = "غير متاح",
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(16.dp),
-                  )
+                val stylesToShow = reciter.availableStyles.filter { it.moshafName.isNotBlank() }
+                if (enabled && stylesToShow.size > 1) {
+                  FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                  ) {
+                    stylesToShow.forEach { style ->
+                      FilterChip(
+                        selected = reciter.moshafId == style.moshafId,
+                        onClick = {
+                          onSelectReciterStyle(reciter, style)
+                          onDismiss()
+                        },
+                        label = {
+                          Text(
+                            text = style.moshafName,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                          )
+                        },
+                      )
+                    }
+                  }
                 }
               }
               HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))

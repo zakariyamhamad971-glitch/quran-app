@@ -137,6 +137,7 @@ dependencies {
   implementation(libs.okhttp)
   // implementation(libs.play.services.location)
   implementation(libs.adhan2)
+  implementation(libs.androidx.work.runtime.ktx)
   coreLibraryDesugaring(libs.desugar.jdk.libs)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)

@@ -57,6 +57,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.audio.AudioRepository
 import com.example.data.audio.VerifiedReciter
 import com.example.player.AudioPlaybackUiState
 import com.example.ui.theme.AmiriFontFamily
@@ -102,7 +103,7 @@ fun CombinedAudioAndRecitersSheet(
   }
   val filteredReciters = remember(allReciters, searchQuery) {
     if (searchQuery.isBlank()) allReciters
-    else allReciters.filter { it.displayName.contains(searchQuery, ignoreCase = true) }
+    else allReciters.filter { AudioRepository.matchesReciterSearchQuery(it.displayName, searchQuery) }
   }
 
   val playbackStatusText = remember(

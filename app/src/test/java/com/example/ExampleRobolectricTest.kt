@@ -283,7 +283,7 @@ class ExampleRobolectricTest {
       quranRepository = repo,
       fontManager = fontManager,
       scope = this,
-      includeTajweedFallback = false,
+      includeTajweedFallbackOverride = false,
     )
 
     // Pre-populate verified cache items for both editions + chapters + basmalah + juzs
