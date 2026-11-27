@@ -123,6 +123,7 @@ data class AdhanSoundRegistryEntry(
   val sourceType: String,
   val license: String,
   val attribution: String,
+  val audioUrl: String? = null,
 )
 
 @Immutable

@@ -38,6 +38,7 @@ class AdhanSoundRepository(private val context: Context) {
                 sourceType = obj.optString("source_type", "user"),
                 license = obj.optString("license", ""),
                 attribution = obj.optString("attribution", ""),
+                audioUrl = obj.optString("audio_url", "").trim().takeIf { it.isNotBlank() },
               ),
             )
           }

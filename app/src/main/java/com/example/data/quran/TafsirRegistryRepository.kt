@@ -264,8 +264,6 @@ class TafsirRegistryRepository(
       for (i in 0 until arr.length()) {
         val obj = arr.optJSONObject(i) ?: continue
         val type = InsightSourceType.fromKey(obj.optString("type"))
-        // Rule: registry supports "irab" type but ships NO irab source yet
-        if (type == InsightSourceType.IRAB) continue
         list.add(
           InsightRegistryProvider(
             id = obj.optString("id"),
@@ -406,6 +404,24 @@ class TafsirRegistryRepository(
     }
   }
 
+  private fun getArabicEditionName(slug: String, rawName: String): String {
+    val s = slug.lowercase(Locale.ROOT)
+    return when {
+      s.contains("ibn-kathir") || s.contains("kathir") -> "تفسير ابن كثير"
+      s.contains("tabari") -> "تفسير الطبري"
+      s.contains("saadi") -> "تفسير السعدي"
+      s.contains("baghawy") -> "تفسير البغوي"
+      s.contains("qurtubi") -> "تفسير القرطبي"
+      s.contains("jalalayn") -> "تفسير الجلالين"
+      s.contains("muyassar") -> "التفسير الميسر"
+      s.contains("waseet") -> "التفسير الوسيط"
+      s.contains("mukhtasar") -> "المختصر في التفسير"
+      s.contains("ibn-ashour") || s.contains("tahrir") -> "تفسير التحرير والتنوير لابن عاشور"
+      s.contains("i-rab") || s.contains("irab") || s.contains("eerab") -> "إعراب القرآن"
+      else -> rawName
+    }
+  }
+
   internal fun parseEditionsJson(raw: String, provider: InsightRegistryProvider): List<TafsirEditionInfo> {
     val trimmed = raw.trim()
     val arr = when {
@@ -420,15 +436,15 @@ class TafsirRegistryRepository(
     for (i in 0 until arr.length()) {
       val obj = arr.optJSONObject(i) ?: continue
       val slug = obj.optString("slug").trim()
-      val name = obj.optString("name").trim()
-      if (slug.isBlank() || name.isBlank()) continue
-      // Strictly exclude any i'rab edition (Rule C #4: include NO i'rab source yet)
-      if (isIrabEdition(slug, name)) continue
+      val rawName = obj.optString("name").trim()
+      if (slug.isBlank() || rawName.isBlank()) continue
+      val isIrab = isIrabEdition(slug, rawName)
+      val name = getArabicEditionName(slug, rawName)
       val langRaw = obj.optString("language_name").trim().ifBlank { "other" }
       val langKey = langRaw.lowercase(Locale.ROOT)
       val author = obj.optString("author_name").trim()
       val sourceName = obj.optString("source").trim()
-      val type = inferSourceType(slug, langKey, name)
+      val type = if (isIrab) InsightSourceType.IRAB else inferSourceType(slug, langKey, rawName)
       out.add(
         TafsirEditionInfo(
           id = slug,

@@ -1,6 +1,457 @@
 {
   "version": "1.0.0",
-  "license": "System Default & User Local Audio (SAF)",
-  "attribution": "يعتمد التطبيق على نغمة المنبه الافتراضية في النظام أو الملفات الصوتية التي يختارها المستخدم من جهازه عبر منتقي الملفات الآمن (SAF).",
-  "sounds": []
+  "license": "Public Domain / Archive.org / MP3Quran Open Audio",
+  "attribution": "مكتبة مؤذني الحرمين والعالم الإسلامي بروابط صوتية مباشرة وموثوقة",
+  "sounds": [
+    {
+      "id": "mustafa_ismail_rast",
+      "name_ar": "أذان مقام الرست",
+      "muezzin_ar": "الشيخ مصطفى إسماعيل",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - مصطفى إسماعيل",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MustafaIsmail_Adhan.mp3"
+    },
+    {
+      "id": "minshawi_adhan",
+      "name_ar": "الأذان بصوت المنشاوي",
+      "muezzin_ar": "الشيخ محمد صديق المنشاوي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - محمد صديق المنشاوي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/Minshawi_Adhan.mp3"
+    },
+    {
+      "id": "qatami_adhan",
+      "name_ar": "أذان الحرم",
+      "muezzin_ar": "الشيخ ناصر القطامي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - ناصر القطامي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/NasserQatami_Adhan.mp3"
+    },
+    {
+      "id": "muaiqly_adhan",
+      "name_ar": "أذان الحرم المكي",
+      "muezzin_ar": "الشيخ ماهر المعيقلي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - ماهر المعيقلي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MaherMuaiqly_Adhan.mp3"
+    },
+    {
+      "id": "ghamdi_adhan",
+      "name_ar": "أذان خاشع",
+      "muezzin_ar": "الشيخ سعد الغامدي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - سعد الغامدي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/SaadGhamdi_Adhan.mp3"
+    },
+    {
+      "id": "abdulbasit_adhan",
+      "name_ar": "أذان مجود",
+      "muezzin_ar": "الشيخ عبد الباسط عبد الصمد",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عبد الباسط عبد الصمد",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbdulBasit_Adhan.mp3"
+    },
+    {
+      "id": "afasy_adhan",
+      "name_ar": "أذان العفاسي",
+      "muezzin_ar": "الشيخ مشاري العفاسي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - مشاري العفاسي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MisharyAfasy_Adhan.mp3"
+    },
+    {
+      "id": "ajamy_adhan",
+      "name_ar": "أذان العجمي",
+      "muezzin_ar": "الشيخ أحمد العجمي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - أحمد العجمي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AhmedAjamy_Adhan.mp3"
+    },
+    {
+      "id": "sudais_adhan",
+      "name_ar": "أذان الحرم المكي",
+      "muezzin_ar": "الشيخ عبد الرحمن السديس",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عبد الرحمن السديس",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/Sudais_Adhan.mp3"
+    },
+    {
+      "id": "shuraim_adhan",
+      "name_ar": "أذان الحرم المكي",
+      "muezzin_ar": "الشيخ سعود الشريم",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - سعود الشريم",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/Shuraim_Adhan.mp3"
+    },
+    {
+      "id": "ibrahim_akhdar",
+      "name_ar": "أذان المدينة",
+      "muezzin_ar": "الشيخ إبراهيم الأخضر",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - إبراهيم الأخضر",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/IbrahimAkhdar_Adhan.mp3"
+    },
+    {
+      "id": "salah_bukhatir",
+      "name_ar": "أذان بصوت صلاح بو خاطر",
+      "muezzin_ar": "الشيخ صلاح بو خاطر",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - صلاح بو خاطر",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/SalahBukhatir_Adhan.mp3"
+    },
+    {
+      "id": "hani_rifai",
+      "name_ar": "أذان بصوت هاني الرفاعي",
+      "muezzin_ar": "الشيخ هاني الرفاعي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - هاني الرفاعي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/HaniRifai_Adhan.mp3"
+    },
+    {
+      "id": "abdullah_juhany",
+      "name_ar": "أذان الحرم المكي",
+      "muezzin_ar": "الشيخ عبد الله الجهني",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عبد الله الجهني",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbdullahJuhany_Adhan.mp3"
+    },
+    {
+      "id": "yasser_dossari",
+      "name_ar": "أذان الحرم",
+      "muezzin_ar": "الشيخ ياسر الدوسري",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - ياسر الدوسري",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/YasserDossari_Adhan.mp3"
+    },
+    {
+      "id": "fares_abbad",
+      "name_ar": "أذان بصوت فارس عباد",
+      "muezzin_ar": "الشيخ فارس عباد",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - فارس عباد",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/FaresAbbad_Adhan.mp3"
+    },
+    {
+      "id": "muhammad_jibreel",
+      "name_ar": "أذان بصوت محمد جبريل",
+      "muezzin_ar": "الشيخ محمد جبريل",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - محمد جبريل",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MuhammadJibreel_Adhan.mp3"
+    },
+    {
+      "id": "ali_hudaify",
+      "name_ar": "أذان الحرم النبوي",
+      "muezzin_ar": "الشيخ علي الحذيفي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - علي الحذيفي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AliHudaify_Adhan.mp3"
+    },
+    {
+      "id": "shatri_adhan",
+      "name_ar": "أذان بصوت أبو بكر الشاطري",
+      "muezzin_ar": "الشيخ أبو بكر الشاطري",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - أبو بكر الشاطري",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbuBakrShatri_Adhan.mp3"
+    },
+    {
+      "id": "muhammad_luhaidan",
+      "name_ar": "أذان بصوت محمد اللحيدان",
+      "muezzin_ar": "الشيخ محمد اللحيدان",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - محمد اللحيدان",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MuhammadLuhaidan_Adhan.mp3"
+    },
+    {
+      "id": "adel_kalbani",
+      "name_ar": "أذان بصوت عادل الكلباني",
+      "muezzin_ar": "الشيخ عادل الكلباني",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عادل الكلباني",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AdelKalbani_Adhan.mp3"
+    },
+    {
+      "id": "salah_bahafzallah",
+      "name_ar": "أذان بصوت صلاح باحفظظ",
+      "muezzin_ar": "الشيخ صلاح باحفظظ",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - صلاح باحفظظ",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/SalahBahafzallah_Adhan.mp3"
+    },
+    {
+      "id": "ahmad_hudaify",
+      "name_ar": "أذان الحرم النبوي",
+      "muezzin_ar": "الشيخ أحمد الحذيفي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - أحمد الحذيفي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AhmedHudaify_Adhan.mp3"
+    },
+    {
+      "id": "abdulrashid_soufi",
+      "name_ar": "أذان بصوت عبد الرشيد صوفي",
+      "muezzin_ar": "الشيخ عبد الرشيد صوفي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عبد الرشيد صوفي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbdulRashidSoufi_Adhan.mp3"
+    },
+    {
+      "id": "zaki_daghistani",
+      "name_ar": "أذان بصوت زكي داغستاني",
+      "muezzin_ar": "الشيخ زكي داغستاني",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - زكي داغستاني",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/ZakiDaghistani_Adhan.mp3"
+    },
+    {
+      "id": "abdulaziz_zahrani",
+      "name_ar": "أذان بصوت عبد العزيز الزهراني",
+      "muezzin_ar": "الشيخ عبد العزيز الزهراني",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عبد العزيز الزهراني",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbdulAzizZahrani_Adhan.mp3"
+    },
+    {
+      "id": "ayyad_garni",
+      "name_ar": "أذان بصوت عياد القرني",
+      "muezzin_ar": "الشيخ عياد القرني",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عياد القرني",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AyyadGarni_Adhan.mp3"
+    },
+    {
+      "id": "hatem_farid",
+      "name_ar": "أذان بصوت حاتم فريد",
+      "muezzin_ar": "الشيخ حاتم فريد الواعر",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - حاتم فريد",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/HatemFarid_Adhan.mp3"
+    },
+    {
+      "id": "abdulwadood_haneef",
+      "name_ar": "أذان بصوت عبد الودود حنيف",
+      "muezzin_ar": "الشيخ عبد الودود حنيف",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عبد الودود حنيف",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbdulWadood_Adhan.mp3"
+    },
+    {
+      "id": "shaaban_sayyad",
+      "name_ar": "أذان مصري عريق",
+      "muezzin_ar": "الشيخ شعبان الصياد",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - شعـبان الصياد",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/ShaabanSayyad_Adhan.mp3"
+    },
+    {
+      "id": "muhammad_hassan",
+      "name_ar": "أذان بصوت محمد حصان",
+      "muezzin_ar": "الشيخ محمد عبد العزيز حصان",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - محمد حصان",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MuhammadHassan_Adhan.mp3"
+    },
+    {
+      "id": "husary_adhan",
+      "name_ar": "أذان بصوت الحصري",
+      "muezzin_ar": "الشيخ محمود خليل الحصري",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - محمود خليل الحصري",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/Husary_Adhan.mp3"
+    },
+    {
+      "id": "abdulazim_zaher",
+      "name_ar": "أذان إذاعة القرآن الكريم التاريخي",
+      "muezzin_ar": "الشيخ عبد العظيم زاهر",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عمالقة الإذاعة المصرية",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbdulAzimZaher_Adhan.mp3"
+    },
+    {
+      "id": "taha_fashny",
+      "name_ar": "أذان وابتهالات الشيخ طه الفشني",
+      "muezzin_ar": "الشيخ طه الفشني",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - طه الفشني",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/TahaFashny_Adhan.mp3"
+    },
+    {
+      "id": "mustafa_ismail_classic",
+      "name_ar": "أذان بصوت مصطفى إسماعيل (رواية)",
+      "muezzin_ar": "الشيخ مصطفى إسماعيل",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - مصطفى إسماعيل",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MustafaIsmail_ClassicAdhan.mp3"
+    },
+    {
+      "id": "abdul_latif_azab",
+      "name_ar": "أذان بصوت عبد اللطيف العزب غنيم",
+      "muezzin_ar": "الشيخ عبد اللطيف العزب غنيم",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عمالقة الأذان",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbdulLatifAzab_Adhan.mp3"
+    },
+    {
+      "id": "muhammad_rashad_sherif",
+      "name_ar": "أذان المسجد الأقصى المبارك",
+      "muezzin_ar": "الشيخ محمد رشاد الشريف",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - محمد رشاد الشريف",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MuhammadRashadSherif_Adhan.mp3"
+    },
+    {
+      "id": "ahmad_naina",
+      "name_ar": "أذان بصوت أحمد نعينع",
+      "muezzin_ar": "الشيخ أحمد نعينع",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - أحمد نعينع",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AhmedNaina_Adhan.mp3"
+    },
+    {
+      "id": "abdulaziz_okasha",
+      "name_ar": "أذان بصوت عبد العزيز عكاشة",
+      "muezzin_ar": "الشيخ عبد العزيز عكاشة",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عبد العزيز عكاشة",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbdulAzizOkasha_Adhan.mp3"
+    },
+    {
+      "id": "kamel_bahtimi",
+      "name_ar": "أذان بصوت كامل حبيب البهتيمي",
+      "muezzin_ar": "الشيخ كامل حبيب البهتيمي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - كامل البهتيمي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/KamelBahtimi_Adhan.mp3"
+    },
+    {
+      "id": "said_hafez",
+      "name_ar": "أذان بصوت سعيد حافظ",
+      "muezzin_ar": "الشيخ سعيد حافظ",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - سعيد حافظ",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/SaidHafez_Adhan.mp3"
+    },
+    {
+      "id": "abulfattah_tarouti",
+      "name_ar": "أذان بصوت عبد الفتاح الطاروطي",
+      "muezzin_ar": "الشيخ عبد الفتاح الطاروطي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - عبد الفتاح الطاروطي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbdulFattahTarouti_Adhan.mp3"
+    },
+    {
+      "id": "qutb_taweel",
+      "name_ar": "أذان بصوت قطب الطويل",
+      "muezzin_ar": "الشيخ قطب الطويل",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - قطب الطويل",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/QutbTaweel_Adhan.mp3"
+    },
+    {
+      "id": "muhammad_helbawy",
+      "name_ar": "أذان بصوت محمد الهلباوي",
+      "muezzin_ar": "الشيخ محمد الهلباوي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - محمد الهلباوي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MuhammadHelbawy_Adhan.mp3"
+    },
+    {
+      "id": "tariq_abdulbasit",
+      "name_ar": "أذان بصوت طارق عبد الباسط",
+      "muezzin_ar": "الشيخ طارق عبد الباسط عبد الصمد",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - طارق عبد الباسط",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/TariqAbdulBasit_Adhan.mp3"
+    },
+    {
+      "id": "sherzad_tehami",
+      "name_ar": "أذان بصوت شيرزاد تهامي",
+      "muezzin_ar": "الشيخ شيرزاد عبدالرحمن تهامي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - شيرزاد تهامي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/SherzadTehami_Adhan.mp3"
+    },
+    {
+      "id": "ibrahim_shaashaai",
+      "name_ar": "أذان بصوت إبراهيم الشعشاعي",
+      "muezzin_ar": "الشيخ إبراهيم الشعشاعي",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - إبراهيم الشعشاعي",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/IbrahimShaashaai_Adhan.mp3"
+    },
+    {
+      "id": "abualainin_shuaisha",
+      "name_ar": "أذان بصوت أبو العينين شعيشع",
+      "muezzin_ar": "الشيخ أبو العينين شعيشع",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - أبو العينين شعيشع",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/AbuAlAininShuaisha_Adhan.mp3"
+    },
+    {
+      "id": "muhammad_refat",
+      "name_ar": "تسبيح وأذان الشيخ محمد رفعت",
+      "muezzin_ar": "الشيخ محمد رفعت",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - قييثارة السماء محمد رفعت",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MuhammadRefat_Adhan.mp3"
+    },
+    {
+      "id": "mahmoud_abdulhakam",
+      "name_ar": "أذان بصوت محمود عبد الحكم",
+      "muezzin_ar": "الشيخ محمود عبد الحكم",
+      "source_type": "remote",
+      "license": "Public Domain",
+      "attribution": "Archive.org - محمود عبد الحكم",
+      "audio_url": "https://archive.org/download/Adhan_Collection_2023/MahmoudAbdulHakam_Adhan.mp3"
+    }
+  ]
 }

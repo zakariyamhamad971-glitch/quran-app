@@ -5,6 +5,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -442,47 +444,88 @@ fun MushafPageFrame(
                 }
                 .pointerInput(rendered, isPdfMode, onNonWordTapped, onWordTapped, onWordLongPressed) {
                   if (isPdfMode) {
-                    detectTapGestures(onTap = { onNonWordTapped() })
-                  } else {
-                    detectTapGestures(
-                      onTap = { tapOffset ->
-                        val viewW = size.width.toFloat().coerceAtLeast(1f)
-                        val viewH = size.height.toFloat().coerceAtLeast(1f)
-                        val sx = rendered.widthPx.toFloat() / viewW
-                        val sy = rendered.heightPx.toFloat() / viewH
-                        val tx = tapOffset.x * sx
-                        val ty = tapOffset.y * sy
-                        val boxes = rendered.wordHitBoxes
-                        val hitIdx = findHitWordIndex(boxes, tx, ty)
-                        if (hitIdx >= 0) {
-                          onWordTapped(
-                            boxes.verseKeys[hitIdx],
-                            rendered.pageNumber,
-                            boxes.codeV2Lines[hitIdx],
-                          )
-                        } else {
+                    awaitPointerEventScope {
+                      while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.any { it.pressed }) {
                           onNonWordTapped()
+                          break
                         }
-                      },
-                      onLongPress = { tapOffset ->
-                        val viewW = size.width.toFloat().coerceAtLeast(1f)
-                        val viewH = size.height.toFloat().coerceAtLeast(1f)
-                        val sx = rendered.widthPx.toFloat() / viewW
-                        val sy = rendered.heightPx.toFloat() / viewH
-                        val tx = tapOffset.x * sx
-                        val ty = tapOffset.y * sy
-                        val boxes = rendered.wordHitBoxes
-                        val hitIdx = findHitWordIndex(boxes, tx, ty)
-                        if (hitIdx >= 0) {
-                          haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                          onWordLongPressed(
-                            boxes.verseKeys[hitIdx],
-                            rendered.pageNumber,
-                            boxes.codeV2Lines[hitIdx],
-                          )
+                      }
+                    }
+                  } else {
+                    awaitPointerEventScope {
+                      while (true) {
+                        val downEvent = awaitPointerEvent()
+                        val down = downEvent.changes.firstOrNull { it.pressed } ?: continue
+                        val downPos = down.position
+                        val pointerId = down.id
+                        var longPressed = false
+                        val slop = viewConfiguration.touchSlop
+                        val startTime = System.currentTimeMillis()
+
+                        while (true) {
+                          val elapsed = System.currentTimeMillis() - startTime
+                          val remaining = 1500L - elapsed
+                          if (remaining <= 0) {
+                            longPressed = true
+                            break
+                          }
+                          val event = awaitPointerEvent()
+                          val up = event.changes.firstOrNull { it.id == pointerId && !it.pressed }
+                          if (up != null) break
+                          val moved = event.changes.firstOrNull { it.id == pointerId }
+                          if (moved != null && (moved.position - downPos).getDistance() > slop) break
                         }
-                      },
-                    )
+
+                        if (longPressed) {
+                          val viewW = size.width.toFloat().coerceAtLeast(1f)
+                          val viewH = size.height.toFloat().coerceAtLeast(1f)
+                          val sx = rendered.widthPx.toFloat() / viewW
+                          val sy = rendered.heightPx.toFloat() / viewH
+                          val tx = downPos.x * sx
+                          val ty = downPos.y * sy
+                          val boxes = rendered.wordHitBoxes
+                          val hitIdx = findHitWordIndex(boxes, tx, ty)
+                          if (hitIdx >= 0) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onWordLongPressed(
+                              boxes.verseKeys[hitIdx],
+                              rendered.pageNumber,
+                              boxes.codeV2Lines[hitIdx],
+                            )
+                          }
+                          while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.all { !it.pressed }) break
+                          }
+                        } else {
+                          while (true) {
+                            val event = awaitPointerEvent()
+                            val ch = event.changes.firstOrNull { it.id == pointerId }
+                            if (ch == null || !ch.pressed) break
+                          }
+
+                          val viewW = size.width.toFloat().coerceAtLeast(1f)
+                          val viewH = size.height.toFloat().coerceAtLeast(1f)
+                          val sx = rendered.widthPx.toFloat() / viewW
+                          val sy = rendered.heightPx.toFloat() / viewH
+                          val tx = downPos.x * sx
+                          val ty = downPos.y * sy
+                          val boxes = rendered.wordHitBoxes
+                          val hitIdx = findHitWordIndex(boxes, tx, ty)
+                          if (hitIdx >= 0) {
+                            onWordTapped(
+                              boxes.verseKeys[hitIdx],
+                              rendered.pageNumber,
+                              boxes.codeV2Lines[hitIdx],
+                            )
+                          } else {
+                            onNonWordTapped()
+                          }
+                        }
+                      }
+                    }
                   }
                 }
                 .testTag("mushaf_page_canvas_$pageNumber"),
