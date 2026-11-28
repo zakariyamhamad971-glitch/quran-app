@@ -57,6 +57,7 @@ data class VerseDto(
   val page_number: Int,
   val juz_number: Int,
   val hizb_number: Int,
+  val rub_el_hizb_number: Int? = null,
   val text_uthmani: String? = null,
   val words: List<WordDto> = emptyList(),
 )
@@ -165,6 +166,7 @@ data class MushafPageData(
   val pageNumber: Int,
   val juzNumber: Int,
   val hizbNumber: Int,
+  val rubElHizbNumber: Int? = null,
   val surahIds: List<Int>,
   val lines: List<MushafLine>,
   val tajweedAyahTexts: Map<String, String> = emptyMap(),
@@ -176,6 +178,7 @@ data class PdfPageHeaderMeta(
   val surahIds: List<Int>,
   val juzNumber: Int?,
   val hizbNumber: Int?,
+  val rubElHizbNumber: Int? = null,
 )
 
 @Immutable

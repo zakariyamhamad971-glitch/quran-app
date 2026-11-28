@@ -37,8 +37,29 @@ class AdhanAlarmReceiver : BroadcastReceiver() {
                 timeText = timeText,
                 locationName = locationName,
                 config = cfg,
+                volumePercent = persisted.adhanSettings.adhanVolumePercent,
+                vibrateEnabled = persisted.adhanSettings.vibrateOnAdhan,
               )
             }
+          }
+        } else if (action == ACTION_PRE_ADHAN_REMINDER) {
+          val prayerKey = intent.getStringExtra(AdhanNotificationHelper.EXTRA_PRAYER_KEY).orEmpty()
+          val prayerType = PrayerType.entries.firstOrNull { it.key == prayerKey }
+          val timeText = intent.getStringExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT).orEmpty()
+          val locationName = intent.getStringExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME)
+            ?: persisted.settings.location?.resolvedLabel().orEmpty()
+          val minutesBefore = intent.getIntExtra(
+            AdhanAlarmScheduler.EXTRA_MINUTES_BEFORE,
+            persisted.adhanSettings.preAdhanMinutes,
+          )
+          if (prayerType != null && persisted.adhanSettings.alarmsEnabled && minutesBefore > 0) {
+            AdhanNotificationHelper.showPreAdhanNotification(
+              context = appCtx,
+              prayerType = prayerType,
+              minutesBefore = minutesBefore,
+              timeText = timeText,
+              locationName = locationName,
+            )
           }
         }
 
@@ -52,6 +73,7 @@ class AdhanAlarmReceiver : BroadcastReceiver() {
 
   companion object {
     const val ACTION_PRAYER_ALARM = "com.example.data.prayer.ACTION_PRAYER_ALARM"
+    const val ACTION_PRE_ADHAN_REMINDER = "com.example.data.prayer.ACTION_PRE_ADHAN_REMINDER"
     const val ACTION_REFRESH_COUNTDOWN = "com.example.data.prayer.ACTION_REFRESH_COUNTDOWN"
   }
 }

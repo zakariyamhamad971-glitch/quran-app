@@ -116,6 +116,11 @@ class ReaderPreferences(private val context: Context) {
     val RECITER_PREFERRED_MOSHAF_JSON = stringPreferencesKey("reciter_preferred_moshaf_json")
     val ADHAN_ALARMS_ENABLED = booleanPreferencesKey("adhan_alarms_enabled")
     val ADHAN_PERSISTENT_COUNTDOWN_ENABLED = booleanPreferencesKey("adhan_persistent_countdown_enabled")
+    val ADHAN_PRE_ALERT_MINUTES = intPreferencesKey("adhan_pre_alert_minutes")
+    val ADHAN_VOLUME_PERCENT = intPreferencesKey("adhan_volume_percent")
+    val ADHAN_VIBRATE_ENABLED = booleanPreferencesKey("adhan_vibrate_enabled")
+    val ADHAN_BACKGROUND_PATH = stringPreferencesKey("adhan_background_path")
+    val ADHAN_BACKGROUND_LABEL = stringPreferencesKey("adhan_background_label")
     val ADHAN_PER_PRAYER_CONFIG_JSON = stringPreferencesKey("adhan_per_prayer_config_json")
   }
 
@@ -148,6 +153,11 @@ class ReaderPreferences(private val context: Context) {
     val adhanSettings = AdhanSettingsState(
       alarmsEnabled = prefs[Keys.ADHAN_ALARMS_ENABLED] ?: true,
       persistentCountdownEnabled = prefs[Keys.ADHAN_PERSISTENT_COUNTDOWN_ENABLED] ?: true,
+      preAdhanMinutes = (prefs[Keys.ADHAN_PRE_ALERT_MINUTES] ?: 0).coerceIn(0, 60),
+      adhanVolumePercent = (prefs[Keys.ADHAN_VOLUME_PERCENT] ?: 100).coerceIn(10, 100),
+      vibrateOnAdhan = prefs[Keys.ADHAN_VIBRATE_ENABLED] ?: true,
+      backgroundImagePath = prefs[Keys.ADHAN_BACKGROUND_PATH]?.takeIf { it.isNotBlank() },
+      backgroundLabel = prefs[Keys.ADHAN_BACKGROUND_LABEL]?.takeIf { it.isNotBlank() },
       perPrayerConfig = AdhanSettingsState.decodeConfigsJson(prefs[Keys.ADHAN_PER_PRAYER_CONFIG_JSON]),
     )
 
@@ -572,6 +582,31 @@ class ReaderPreferences(private val context: Context) {
 
   suspend fun setPersistentCountdownEnabled(enabled: Boolean) {
     context.dataStore.edit { it[Keys.ADHAN_PERSISTENT_COUNTDOWN_ENABLED] = enabled }
+  }
+
+  suspend fun setAdhanPreAlertMinutes(minutes: Int) {
+    context.dataStore.edit { it[Keys.ADHAN_PRE_ALERT_MINUTES] = minutes.coerceIn(0, 60) }
+  }
+
+  suspend fun setAdhanVolumePercent(percent: Int) {
+    context.dataStore.edit { it[Keys.ADHAN_VOLUME_PERCENT] = percent.coerceIn(10, 100) }
+  }
+
+  suspend fun setAdhanVibrateEnabled(enabled: Boolean) {
+    context.dataStore.edit { it[Keys.ADHAN_VIBRATE_ENABLED] = enabled }
+  }
+
+  suspend fun setAdhanBackground(path: String?, label: String?) {
+    context.dataStore.edit { prefs ->
+      if (path.isNullOrBlank()) {
+        prefs.remove(Keys.ADHAN_BACKGROUND_PATH)
+        prefs.remove(Keys.ADHAN_BACKGROUND_LABEL)
+      } else {
+        prefs[Keys.ADHAN_BACKGROUND_PATH] = path
+        if (label.isNullOrBlank()) prefs.remove(Keys.ADHAN_BACKGROUND_LABEL)
+        else prefs[Keys.ADHAN_BACKGROUND_LABEL] = label
+      }
+    }
   }
 
   suspend fun savePrayerAlarmConfig(prayerType: PrayerType, config: PrayerAlarmConfig) {

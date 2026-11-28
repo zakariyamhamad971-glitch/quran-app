@@ -7,16 +7,19 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
@@ -36,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +56,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -65,6 +70,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.content.res.ResourcesCompat
 import com.example.R
 import com.example.data.prefs.BackgroundTheme
@@ -233,6 +239,47 @@ private fun findHitWordIndex(
   return bestIdx
 }
 
+private fun findNearestWordIndexForDrag(
+  boxes: WordHitBoxes,
+  tx: Float,
+  ty: Float,
+): Int {
+  val exact = findHitWordIndex(boxes, tx, ty)
+  if (exact >= 0) return exact
+  if (boxes.count <= 0) return -1
+  var bestIdx = -1
+  var bestDistSq = Float.POSITIVE_INFINITY
+  for (i in 0 until boxes.count) {
+    val l = boxes.lefts[i]
+    val t = boxes.tops[i]
+    val r = boxes.rights[i]
+    val b = boxes.bottoms[i]
+    val dx = when {
+      tx < l -> l - tx
+      tx > r -> tx - r
+      else -> 0f
+    }
+    val dy = when {
+      ty < t -> t - ty
+      ty > b -> ty - b
+      else -> 0f
+    }
+    val score = dx * dx + (dy * 1.8f) * (dy * 1.8f)
+    if (score < bestDistSq) {
+      bestDistSq = score
+      bestIdx = i
+    }
+  }
+  return bestIdx
+}
+
+private fun parseVerseSortPair(vk: String): Pair<Int, Int>? {
+  val p = vk.split(":")
+  val s = p.getOrNull(0)?.toIntOrNull() ?: return null
+  val a = p.getOrNull(1)?.toIntOrNull() ?: return null
+  return s to a
+}
+
 @Composable
 fun MushafPageFrame(
   pageNumber: Int,
@@ -247,6 +294,7 @@ fun MushafPageFrame(
   onNonWordTapped: () -> Unit,
   onWordTapped: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
   onWordLongPressed: (verseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
+  onSelectionHandleDragged: (isStart: Boolean, targetVerseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit = { _, _, _, _ -> },
   onSelectionBoundsChanged: (pageNumber: Int, rectInRoot: PageSelectionRootRect?) -> Unit = { _, _ -> },
   modifier: Modifier = Modifier,
   isPdfMode: Boolean = false,
@@ -460,6 +508,7 @@ fun MushafPageFrame(
                       val pointerId = down.id
                       val slop = viewConfiguration.touchSlop
                       var movedBeyondSlop = false
+                      var upChange: PointerInputChange? = null
 
                       try {
                         withTimeout(1500L) {
@@ -467,6 +516,7 @@ fun MushafPageFrame(
                             val event = awaitPointerEvent()
                             val ch = event.changes.firstOrNull { it.id == pointerId }
                             if (ch == null || !ch.pressed) {
+                              upChange = ch
                               break
                             }
                             if ((ch.position - downPos).getDistance() > slop) {
@@ -477,6 +527,7 @@ fun MushafPageFrame(
                         }
 
                         if (!movedBeyondSlop) {
+                          upChange?.consume()
                           val viewW = size.width.toFloat().coerceAtLeast(1f)
                           val viewH = size.height.toFloat().coerceAtLeast(1f)
                           val sx = rendered.widthPx.toFloat() / viewW
@@ -514,6 +565,7 @@ fun MushafPageFrame(
                         }
                         while (true) {
                           val event = awaitPointerEvent()
+                          event.changes.forEach { it.consume() }
                           if (event.changes.all { !it.pressed }) break
                         }
                       }
@@ -675,6 +727,53 @@ fun MushafPageFrame(
               )
             }
 
+            if (!isPdfMode && pdfContent == null && currentSelectedKeys.isNotEmpty()) {
+              val sortedSelected = remember(currentSelectedKeys) {
+                currentSelectedKeys.sortedWith(
+                  compareBy<String>(
+                    { parseVerseSortPair(it)?.first ?: Int.MAX_VALUE },
+                    { parseVerseSortPair(it)?.second ?: Int.MAX_VALUE },
+                  ),
+                )
+              }
+              val scaleX = containerW / rendered.widthPx.toFloat().coerceAtLeast(1f)
+              val scaleY = containerH / rendered.heightPx.toFloat().coerceAtLeast(1f)
+              val startKey = sortedSelected.firstOrNull()
+              val endKey = sortedSelected.lastOrNull()
+              val startRects = startKey?.let { rendered.verseHighlightRects[it] }
+              val endRects = endKey?.let { rendered.verseHighlightRects[it] }
+
+              if (startRects != null && startRects.size >= 4) {
+                val anchorX = (startRects[2] * scaleX).coerceIn(0f, containerW)
+                val anchorY = (startRects[3] * scaleY).coerceIn(0f, containerH)
+                SelectionDragHandle(
+                  isStart = true,
+                  anchorX = anchorX,
+                  anchorY = anchorY,
+                  containerW = containerW,
+                  containerH = containerH,
+                  rendered = rendered,
+                  handleColor = if (effectiveDark) Color(0xFF64B5F6) else Color(0xFF1976D2),
+                  onHandleDragged = onSelectionHandleDragged,
+                )
+              }
+              if (endRects != null && endRects.size >= 4) {
+                val n = endRects.size
+                val anchorX = (endRects[n - 4] * scaleX).coerceIn(0f, containerW)
+                val anchorY = (endRects[n - 1] * scaleY).coerceIn(0f, containerH)
+                SelectionDragHandle(
+                  isStart = false,
+                  anchorX = anchorX,
+                  anchorY = anchorY,
+                  containerW = containerW,
+                  containerH = containerH,
+                  rendered = rendered,
+                  handleColor = if (effectiveDark) Color(0xFF64B5F6) else Color(0xFF1976D2),
+                  onHandleDragged = onSelectionHandleDragged,
+                )
+              }
+            }
+
             // Compact interactive bookmark toggle aligned strictly within the slim footer row
             Box(
               contentAlignment = Alignment.Center,
@@ -700,6 +799,75 @@ fun MushafPageFrame(
         }
       }
     }
+  }
+}
+
+@Composable
+private fun SelectionDragHandle(
+  isStart: Boolean,
+  anchorX: Float,
+  anchorY: Float,
+  containerW: Float,
+  containerH: Float,
+  rendered: RenderedMushafPage,
+  handleColor: Color,
+  onHandleDragged: (isStart: Boolean, targetVerseKey: String, pageNumber: Int, verseCodeV2Line: String) -> Unit,
+) {
+  val density = LocalDensity.current
+  val touchSizeDp = 48.dp
+  val touchSizePx = with(density) { touchSizeDp.toPx() }
+  val halfTouchPx = touchSizePx * 0.5f
+  val pinOffsetPx = with(density) { 4.dp.toPx() }
+  val latestAnchorX by rememberUpdatedState(anchorX)
+  val latestAnchorY by rememberUpdatedState(anchorY)
+  val latestOnDragged by rememberUpdatedState(onHandleDragged)
+
+  val boxX = (anchorX - halfTouchPx).roundToInt()
+  val boxY = (anchorY - pinOffsetPx).roundToInt()
+
+  Box(
+    contentAlignment = Alignment.TopCenter,
+    modifier = Modifier
+      .zIndex(5f)
+      .absoluteOffset { IntOffset(boxX, boxY) }
+      .size(touchSizeDp)
+      .pointerInput(rendered, isStart, containerW, containerH) {
+        var curX = 0f
+        var curY = 0f
+        detectDragGestures(
+          onDragStart = {
+            curX = latestAnchorX
+            curY = latestAnchorY
+          },
+          onDrag = { change, dragAmount ->
+            change.consume()
+            curX = (curX + dragAmount.x).coerceIn(0f, containerW)
+            curY = (curY + dragAmount.y).coerceIn(0f, containerH)
+            val sx = rendered.widthPx.toFloat() / containerW
+            val sy = rendered.heightPx.toFloat() / containerH
+            val hitIdx = findNearestWordIndexForDrag(rendered.wordHitBoxes, curX * sx, curY * sy)
+            if (hitIdx >= 0) {
+              val boxes = rendered.wordHitBoxes
+              latestOnDragged(
+                isStart,
+                boxes.verseKeys[hitIdx],
+                rendered.pageNumber,
+                boxes.codeV2Lines[hitIdx],
+              )
+            }
+          },
+        )
+      }
+      .testTag(if (isStart) "selection_handle_start" else "selection_handle_end"),
+  ) {
+    Box(
+      modifier = Modifier
+        .padding(top = 4.dp)
+        .size(20.dp)
+        .clip(CircleShape)
+        .background(handleColor)
+        .border(2.dp, Color.White, CircleShape),
+    )
   }
 }
 

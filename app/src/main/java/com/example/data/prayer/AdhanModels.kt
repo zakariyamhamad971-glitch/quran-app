@@ -41,6 +41,11 @@ data class PrayerAlarmConfig(
 data class AdhanSettingsState(
   val alarmsEnabled: Boolean = true,
   val persistentCountdownEnabled: Boolean = true,
+  val preAdhanMinutes: Int = 0,
+  val adhanVolumePercent: Int = 100,
+  val vibrateOnAdhan: Boolean = true,
+  val backgroundImagePath: String? = null,
+  val backgroundLabel: String? = null,
   val perPrayerConfig: Map<PrayerType, PrayerAlarmConfig> = defaultPerPrayerConfig(),
 ) {
   fun configFor(type: PrayerType): PrayerAlarmConfig =

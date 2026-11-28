@@ -590,10 +590,12 @@ private fun AvailableTafsirCard(
             overflow = TextOverflow.Ellipsis,
           )
           Spacer(Modifier.height(2.dp))
+          val localizedAuthor = TafsirRegistryRepository.localizeAuthorAr(edition.authorName)
+          val localizedSource = TafsirRegistryRepository.localizeSourceLabelAr(edition.sourceName)
           val metaParts = listOfNotNull(
             edition.type.labelAr,
-            edition.authorName.takeIf { it.isNotBlank() && it != edition.nameAr },
-            edition.sourceName.takeIf { it.isNotBlank() },
+            localizedAuthor.takeIf { it.isNotBlank() && it != edition.nameAr },
+            localizedSource.takeIf { it.isNotBlank() && it != localizedAuthor },
           )
           if (metaParts.isNotEmpty()) {
             Text(

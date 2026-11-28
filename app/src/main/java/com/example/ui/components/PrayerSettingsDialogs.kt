@@ -244,210 +244,233 @@ fun PrayerSettingsSheet(
       }
       Spacer(Modifier.height(14.dp))
 
-      // Calculation method section
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Text(
-          text = stringResource(R.string.prayer_method_title),
-          style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-          color = MaterialTheme.colorScheme.primary,
-        )
-        if (settings.isMethodUserSelected) {
-          TextButton(onClick = onResetMethodToCountryDefault) {
-            Text("تلقائي حسب الدولة")
-          }
-        }
-      }
+      PrayerCalculationSettingsContent(
+        settings = settings,
+        onSelectMethod = onSelectMethod,
+        onResetMethodToCountryDefault = onResetMethodToCountryDefault,
+        onSelectMadhab = onSelectMadhab,
+        onSelectHighLatitudeRule = onSelectHighLatitudeRule,
+        onAdjustMinutes = onAdjustMinutes,
+        onResetAdjustments = onResetAdjustments,
+      )
+    }
+  }
+}
 
-      Spacer(Modifier.height(6.dp))
-      PrayerCalculationMethod.entries.forEach { method ->
-        val selected = settings.calculationMethod == method
-        Surface(
-          shape = RoundedCornerShape(12.dp),
-          color = if (selected) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-          } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-          },
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .clickable { onSelectMethod(method) }
-            .testTag("prayer_method_${method.name}"),
-        ) {
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .heightIn(min = 52.dp)
-              .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            RadioButton(
-              selected = selected,
-              onClick = { onSelectMethod(method) },
-            )
-            Spacer(Modifier.width(6.dp))
-            Column(modifier = Modifier.weight(1f)) {
-              Text(
-                text = method.arabicLabel,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-              )
-              Text(
-                text = method.subtitleAr,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-              )
-            }
-          }
-        }
-      }
-
-      Spacer(Modifier.height(16.dp))
-      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-      Spacer(Modifier.height(14.dp))
-
-      // Asr juristic method
+@Composable
+fun PrayerCalculationSettingsContent(
+  settings: PrayerSettingsState,
+  onSelectMethod: (PrayerCalculationMethod) -> Unit,
+  onResetMethodToCountryDefault: () -> Unit,
+  onSelectMadhab: (AsrMadhab) -> Unit,
+  onSelectHighLatitudeRule: (PrayerHighLatitudeRule) -> Unit,
+  onAdjustMinutes: (PrayerType, Int) -> Unit,
+  onResetAdjustments: () -> Unit,
+) {
+  Column(modifier = Modifier.fillMaxWidth()) {
+    // Calculation method section
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
       Text(
-        text = stringResource(R.string.prayer_madhab_title),
+        text = stringResource(R.string.prayer_method_title),
         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
         color = MaterialTheme.colorScheme.primary,
       )
-      Spacer(Modifier.height(6.dp))
-      AsrMadhab.entries.forEach { madhab ->
-        val selected = settings.asrMadhab == madhab
+      if (settings.isMethodUserSelected) {
+        TextButton(onClick = onResetMethodToCountryDefault) {
+          Text("تلقائي حسب الدولة")
+        }
+      }
+    }
+
+    Spacer(Modifier.height(6.dp))
+    PrayerCalculationMethod.entries.forEach { method ->
+      val selected = settings.calculationMethod == method
+      Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) {
+          MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+        } else {
+          MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+        },
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(vertical = 3.dp)
+          .clip(RoundedCornerShape(12.dp))
+          .clickable { onSelectMethod(method) }
+          .testTag("prayer_method_${method.name}"),
+      ) {
         Row(
           modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .clickable { onSelectMadhab(madhab) }
-            .padding(horizontal = 6.dp)
-            .testTag("prayer_madhab_${madhab.name}"),
+            .heightIn(min = 52.dp)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
           RadioButton(
             selected = selected,
-            onClick = { onSelectMadhab(madhab) },
+            onClick = { onSelectMethod(method) },
           )
           Spacer(Modifier.width(6.dp))
-          Text(
-            text = madhab.arabicLabel,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-          )
-        }
-      }
-
-      Spacer(Modifier.height(16.dp))
-      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-      Spacer(Modifier.height(14.dp))
-
-      // High-latitude rule
-      Text(
-        text = stringResource(R.string.prayer_high_lat_title),
-        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-        color = MaterialTheme.colorScheme.primary,
-      )
-      Spacer(Modifier.height(6.dp))
-      PrayerHighLatitudeRule.entries.forEach { rule ->
-        val selected = settings.highLatitudeRule == rule
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .clickable { onSelectHighLatitudeRule(rule) }
-            .padding(horizontal = 6.dp)
-            .testTag("prayer_high_lat_${rule.name}"),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          RadioButton(
-            selected = selected,
-            onClick = { onSelectHighLatitudeRule(rule) },
-          )
-          Spacer(Modifier.width(6.dp))
-          Text(
-            text = rule.arabicLabel,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-          )
-        }
-      }
-
-      Spacer(Modifier.height(16.dp))
-      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-      Spacer(Modifier.height(14.dp))
-
-      // Manual +/- minutes adjustment per prayer
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Text(
-          text = stringResource(R.string.prayer_adjustments_title),
-          style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-          color = MaterialTheme.colorScheme.primary,
-        )
-        TextButton(onClick = onResetAdjustments) {
-          Text("إعادة تعيين")
-        }
-      }
-      Spacer(Modifier.height(6.dp))
-
-      PrayerType.entries.forEach { prayerType ->
-        val offset = settings.adjustments.forPrayer(prayerType)
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 50.dp)
-            .padding(vertical = 2.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-          Text(
-            text = prayerType.arabicName,
-            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-            color = MaterialTheme.colorScheme.onSurface,
-          )
-          Row(verticalAlignment = Alignment.CenterVertically) {
-            FilledTonalIconButton(
-              onClick = { onAdjustMinutes(prayerType, -1) },
-              modifier = Modifier
-                .size(48.dp)
-                .testTag("prayer_adj_minus_${prayerType.key}"),
-            ) {
-              Icon(
-                imageVector = Icons.Filled.Remove,
-                contentDescription = "إنقاص دقيقة لـ ${prayerType.arabicName}",
-              )
-            }
+          Column(modifier = Modifier.weight(1f)) {
             Text(
-              text = "${PrayerFormatters.formatSignedMinutesArabic(offset)} د",
-              style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-              color = if (offset == 0) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
-              modifier = Modifier.padding(horizontal = 10.dp),
+              text = method.arabicLabel,
+              style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+              color = MaterialTheme.colorScheme.onSurface,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
             )
-            FilledTonalIconButton(
-              onClick = { onAdjustMinutes(prayerType, 1) },
-              modifier = Modifier
-                .size(48.dp)
-                .testTag("prayer_adj_plus_${prayerType.key}"),
-            ) {
-              Icon(
-                imageVector = Icons.Filled.Add,
-                contentDescription = "زيادة دقيقة لـ ${prayerType.arabicName}",
-              )
-            }
+            Text(
+              text = method.subtitleAr,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+        }
+      }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+    Spacer(Modifier.height(14.dp))
+
+    // Asr juristic method
+    Text(
+      text = stringResource(R.string.prayer_madhab_title),
+      style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+      color = MaterialTheme.colorScheme.primary,
+    )
+    Spacer(Modifier.height(6.dp))
+    AsrMadhab.entries.forEach { madhab ->
+      val selected = settings.asrMadhab == madhab
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 48.dp)
+          .clip(RoundedCornerShape(10.dp))
+          .clickable { onSelectMadhab(madhab) }
+          .padding(horizontal = 6.dp)
+          .testTag("prayer_madhab_${madhab.name}"),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        RadioButton(
+          selected = selected,
+          onClick = { onSelectMadhab(madhab) },
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+          text = madhab.arabicLabel,
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurface,
+        )
+      }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+    Spacer(Modifier.height(14.dp))
+
+    // High-latitude rule
+    Text(
+      text = stringResource(R.string.prayer_high_lat_title),
+      style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+      color = MaterialTheme.colorScheme.primary,
+    )
+    Spacer(Modifier.height(6.dp))
+    PrayerHighLatitudeRule.entries.forEach { rule ->
+      val selected = settings.highLatitudeRule == rule
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 48.dp)
+          .clip(RoundedCornerShape(10.dp))
+          .clickable { onSelectHighLatitudeRule(rule) }
+          .padding(horizontal = 6.dp)
+          .testTag("prayer_high_lat_${rule.name}"),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        RadioButton(
+          selected = selected,
+          onClick = { onSelectHighLatitudeRule(rule) },
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+          text = rule.arabicLabel,
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurface,
+        )
+      }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+    Spacer(Modifier.height(14.dp))
+
+    // Manual +/- minutes adjustment per prayer
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Text(
+        text = stringResource(R.string.prayer_adjustments_title),
+        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+        color = MaterialTheme.colorScheme.primary,
+      )
+      TextButton(onClick = onResetAdjustments) {
+        Text("إعادة تعيين")
+      }
+    }
+    Spacer(Modifier.height(6.dp))
+
+    PrayerType.entries.forEach { prayerType ->
+      val offset = settings.adjustments.forPrayer(prayerType)
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 50.dp)
+          .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Text(
+          text = prayerType.arabicName,
+          style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+          color = MaterialTheme.colorScheme.onSurface,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          FilledTonalIconButton(
+            onClick = { onAdjustMinutes(prayerType, -1) },
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("prayer_adj_minus_${prayerType.key}"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Remove,
+              contentDescription = "إنقاص دقيقة لـ ${prayerType.arabicName}",
+            )
+          }
+          Text(
+            text = "${PrayerFormatters.formatSignedMinutesArabic(offset)} د",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            color = if (offset == 0) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 10.dp),
+          )
+          FilledTonalIconButton(
+            onClick = { onAdjustMinutes(prayerType, 1) },
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("prayer_adj_plus_${prayerType.key}"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Add,
+              contentDescription = "زيادة دقيقة لـ ${prayerType.arabicName}",
+            )
           }
         }
       }

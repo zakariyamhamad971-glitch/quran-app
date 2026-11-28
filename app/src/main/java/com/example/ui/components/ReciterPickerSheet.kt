@@ -32,11 +32,13 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -105,6 +107,7 @@ fun ReciterPickerSheet(
   onSelectReciterStyle: (VerifiedReciter, ReciterMoshafStyle) -> Unit = { r, s ->
     onSelectReciter(r.withSelectedStyle(s))
   },
+  onOpenReciterDownloads: ((VerifiedReciter) -> Unit)? = null,
 ) {
   BackHandler(onBack = onDismiss)
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -534,6 +537,22 @@ fun ReciterPickerSheet(
                     }
 
                     Spacer(Modifier.width(8.dp))
+
+                    if (enabled && onOpenReciterDownloads != null) {
+                      IconButton(
+                        onClick = { onOpenReciterDownloads(reciter) },
+                        modifier = Modifier
+                          .minimumInteractiveComponentSize()
+                          .testTag("reciter_picker_download_${reciter.orderIndex}"),
+                      ) {
+                        Icon(
+                          imageVector = Icons.Filled.Download,
+                          contentDescription = "تحميل سور ${reciter.displayName}",
+                          tint = MaterialTheme.colorScheme.primary,
+                          modifier = Modifier.size(20.dp),
+                        )
+                      }
+                    }
 
                     if (isSelected) {
                       Surface(

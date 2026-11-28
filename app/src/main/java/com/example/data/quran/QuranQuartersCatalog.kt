@@ -55,7 +55,7 @@ object QuranQuartersCatalog {
   }
 
   /**
-   * Returns the header text: "الجزء K • [الربع] الحزب N"
+   * Returns the header text: "الجزء K، [الربع] الحزب N"
    * based on the latest quarter at or before the first verse of the page.
    */
   fun getHeaderQuarterText(page: Int): String {
@@ -79,6 +79,6 @@ object QuranQuartersCatalog {
       2 -> "نصف الحزب ${toArabicIndic(hizbNumber)}"
       else -> "ثلاثة أرباع الحزب ${toArabicIndic(hizbNumber)}"
     }
-    return "الجزء ${toArabicIndic(juzNumber)} • $hizbPart"
+    return "الجزء ${toArabicIndic(juzNumber)}، $hizbPart"
   }
 }

@@ -18,7 +18,9 @@ object AdhanAlarmScheduler {
 
   private const val WORK_NAME_DAILY_RESCHEDULE = "qabasat_daily_adhan_reschedule"
   private const val COUNTDOWN_REFRESH_REQUEST_CODE = 7801
+  private const val COUNTDOWN_MINUTE_REFRESH_REQUEST_CODE = 7802
   private const val ALARM_REQUEST_BASE = 6000
+  private const val PRE_ADHAN_REQUEST_BASE = 6500
   private const val MAX_DAY_SLOTS = 3
   private const val FORTY_EIGHT_HOURS_MS = 48L * 60L * 60L * 1000L
 
@@ -63,6 +65,9 @@ object AdhanAlarmScheduler {
 
   fun requestCodeFor(daySlot: Int, prayerType: PrayerType): Int =
     ALARM_REQUEST_BASE + (daySlot * 16) + prayerType.ordinal
+
+  fun preAdhanRequestCodeFor(daySlot: Int, prayerType: PrayerType): Int =
+    PRE_ADHAN_REQUEST_BASE + (daySlot * 16) + prayerType.ordinal
 
   fun syncFromPreferences(
     context: Context,
@@ -110,6 +115,18 @@ object AdhanAlarmScheduler {
         )
         for (alarm in alarms) {
           scheduleSinglePrayerAlarm(appCtx, alarm, location)
+          if (adhanSettings.preAdhanMinutes > 0) {
+            val preTriggerMs = alarm.triggerEpochMs - (adhanSettings.preAdhanMinutes * 60_000L)
+            if (preTriggerMs > nowMs) {
+              schedulePreAdhanReminder(
+                context = appCtx,
+                alarm = alarm,
+                preTriggerMs = preTriggerMs,
+                minutesBefore = adhanSettings.preAdhanMinutes,
+                location = location,
+              )
+            }
+          }
         }
 
         // Schedule next boundary refresh for the persistent countdown notification
@@ -157,9 +174,60 @@ object AdhanAlarmScheduler {
           am.cancel(existing)
           existing.cancel()
         }
+
+        val preRc = preAdhanRequestCodeFor(slot, prayerType)
+        val preIntent = Intent(context, AdhanAlarmReceiver::class.java).apply {
+          action = AdhanAlarmReceiver.ACTION_PRE_ADHAN_REMINDER
+        }
+        val existingPre = PendingIntent.getBroadcast(
+          context,
+          preRc,
+          preIntent,
+          PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+        )
+        if (existingPre != null) {
+          am.cancel(existingPre)
+          existingPre.cancel()
+        }
       }
     }
   }
+
+  private fun schedulePreAdhanReminder(
+    context: Context,
+    alarm: ScheduledPrayerAlarm,
+    preTriggerMs: Long,
+    minutesBefore: Int,
+    location: SavedPrayerLocation,
+  ) {
+    val am = context.getSystemService(AlarmManager::class.java) ?: return
+    val timeText = PrayerFormatters.formatTime12hArabic(alarm.triggerEpochMs, location.timeZoneId)
+    val intent = Intent(context, AdhanAlarmReceiver::class.java).apply {
+      action = AdhanAlarmReceiver.ACTION_PRE_ADHAN_REMINDER
+      putExtra(AdhanNotificationHelper.EXTRA_PRAYER_KEY, alarm.prayerType.key)
+      putExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT, timeText)
+      putExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME, location.resolvedLabel())
+      putExtra(EXTRA_MINUTES_BEFORE, minutesBefore)
+    }
+    val preRequestCode = PRE_ADHAN_REQUEST_BASE + (alarm.requestCode - ALARM_REQUEST_BASE)
+    val pi = PendingIntent.getBroadcast(
+      context,
+      preRequestCode,
+      intent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+    if (canScheduleExactAlarmsCompat(context)) {
+      runCatching {
+        am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, preTriggerMs, pi)
+      }.onFailure {
+        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, preTriggerMs, pi)
+      }
+    } else {
+      am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, preTriggerMs, pi)
+    }
+  }
+
+  const val EXTRA_MINUTES_BEFORE = "extra_minutes_before"
 
   private fun scheduleSinglePrayerAlarm(
     context: Context,
@@ -211,6 +279,12 @@ object AdhanAlarmScheduler {
     val intent = Intent(context, AdhanAlarmReceiver::class.java).apply {
       action = AdhanAlarmReceiver.ACTION_REFRESH_COUNTDOWN
     }
+    val minutePi = PendingIntent.getBroadcast(
+      context,
+      COUNTDOWN_MINUTE_REFRESH_REQUEST_CODE,
+      intent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
     if (!enabled || triggerMs == null || triggerMs <= System.currentTimeMillis()) {
       val existing = PendingIntent.getBroadcast(
         context,
@@ -222,6 +296,8 @@ object AdhanAlarmScheduler {
         am.cancel(existing)
         existing.cancel()
       }
+      am.cancel(minutePi)
+      minutePi.cancel()
       return
     }
     val pi = PendingIntent.getBroadcast(
@@ -238,6 +314,12 @@ object AdhanAlarmScheduler {
       }
     } else {
       am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMs, pi)
+    }
+    // Keep remaining minutes and current time (no seconds) updated cleanly on minute boundaries
+    val now = System.currentTimeMillis()
+    val nextMinute = ((now / 60_000L) + 1L) * 60_000L + 500L
+    runCatching {
+      am.set(AlarmManager.RTC, nextMinute, minutePi)
     }
   }
 

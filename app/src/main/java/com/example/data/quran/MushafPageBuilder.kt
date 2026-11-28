@@ -230,11 +230,13 @@ object MushafPageBuilder {
       ?: sortedVerses.firstOrNull()
     val juzNumber = firstVerse?.juz_number ?: 1
     val hizbNumber = firstVerse?.hizb_number ?: 1
+    val rubElHizbNumber = firstVerse?.rub_el_hizb_number
 
     return MushafPageData(
       pageNumber = pageNumber,
       juzNumber = juzNumber,
       hizbNumber = hizbNumber,
+      rubElHizbNumber = rubElHizbNumber,
       surahIds = surahIdsOnPage,
       lines = builtLines,
       tajweedAyahTexts = tajweedAyahTexts,
@@ -257,11 +259,13 @@ object MushafPageBuilder {
 
     var juzNumber = 1
     var hizbNumber = 1
+    var rubElHizbNumber: Int? = null
 
     val sortedVerses = versesResponse.verses.sortedBy { it.id }
     if (sortedVerses.isNotEmpty()) {
       juzNumber = sortedVerses.first().juz_number
       hizbNumber = sortedVerses.first().hizb_number
+      rubElHizbNumber = sortedVerses.first().rub_el_hizb_number
     }
 
     for (verse in sortedVerses) {
@@ -358,6 +362,7 @@ object MushafPageBuilder {
       pageNumber = pageNumber,
       juzNumber = juzNumber,
       hizbNumber = hizbNumber,
+      rubElHizbNumber = rubElHizbNumber,
       surahIds = surahIdsOnPage.toList(),
       lines = lines,
       tajweedAyahTexts = tajweedAyahTexts,

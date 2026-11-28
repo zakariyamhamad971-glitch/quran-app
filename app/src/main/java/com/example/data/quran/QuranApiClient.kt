@@ -18,7 +18,7 @@ interface QuranComApi {
     @Path("page") page: Int,
     @Query("words") words: Boolean = true,
     @Query("word_fields") wordFields: String = "code_v2,text_uthmani,page_number,line_number",
-    @Query("fields") fields: String = "text_uthmani,page_number,juz_number,hizb_number",
+    @Query("fields") fields: String = "text_uthmani,page_number,juz_number,hizb_number,rub_el_hizb_number",
     @Query("per_page") perPage: Int = 50,
   ): Response<ResponseBody>
 
@@ -27,7 +27,7 @@ interface QuranComApi {
     @Path("key") verseKey: String,
     @Query("words") words: Boolean = true,
     @Query("word_fields") wordFields: String = "code_v2,text_uthmani,page_number,line_number",
-    @Query("fields") fields: String = "text_uthmani,page_number,juz_number,hizb_number",
+    @Query("fields") fields: String = "text_uthmani,page_number,juz_number,hizb_number,rub_el_hizb_number",
   ): Response<ResponseBody>
 
   @GET("verses/by_juz/{juz}")

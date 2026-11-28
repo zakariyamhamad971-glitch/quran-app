@@ -10,6 +10,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +31,7 @@ class AdhanPlaybackService : Service() {
   private var mediaPlayer: MediaPlayer? = null
   private var wakeLock: PowerManager.WakeLock? = null
   private var autoStopJob: Job? = null
+  private var vibrator: Vibrator? = null
   private lateinit var soundRepository: AdhanSoundRepository
 
   override fun onCreate() {
@@ -57,6 +61,8 @@ class AdhanPlaybackService : Service() {
         val modeName = intent.getStringExtra(EXTRA_ALARM_MODE).orEmpty()
         val customUriStr = intent.getStringExtra(EXTRA_CUSTOM_URI)
         val muezzinIdStr = intent.getStringExtra(EXTRA_MUEZZIN_ID)
+        val volumePercent = intent.getIntExtra(EXTRA_VOLUME_PERCENT, 100).coerceIn(10, 100)
+        val vibrateEnabled = intent.getBooleanExtra(EXTRA_VIBRATE_ENABLED, true)
         val mode = runCatching { PrayerAlarmMode.valueOf(modeName) }
           .getOrDefault(PrayerAlarmMode.SYSTEM_DEFAULT)
 
@@ -92,9 +98,19 @@ class AdhanPlaybackService : Service() {
         _isTestPlaying.value = isTest
         _isAnyAdhanActive.value = true
 
+        if (vibrateEnabled && config.mode != PrayerAlarmMode.SILENT) {
+          startGentleVibration()
+        } else {
+          stopVibration()
+        }
+
         val uri = soundRepository.resolvePlayableUri(config)
         if (uri != null && config.mode != PrayerAlarmMode.SILENT) {
-          startAudioUri(uri, loopIfShortAlarm = !isTest && config.mode == PrayerAlarmMode.SYSTEM_DEFAULT)
+          startAudioUri(
+            uri = uri,
+            loopIfShortAlarm = !isTest && config.mode == PrayerAlarmMode.SYSTEM_DEFAULT,
+            volumePercent = volumePercent,
+          )
         }
 
         autoStopJob?.cancel()
@@ -108,8 +124,36 @@ class AdhanPlaybackService : Service() {
     return START_NOT_STICKY
   }
 
-  private fun startAudioUri(uri: Uri, loopIfShortAlarm: Boolean) {
+  private fun startGentleVibration() {
+    stopVibration()
+    runCatching {
+      val v: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        getSystemService(VibratorManager::class.java)?.defaultVibrator
+      } else {
+        @Suppress("DEPRECATION")
+        getSystemService(Vibrator::class.java)
+      }
+      if (v != null && v.hasVibrator()) {
+        vibrator = v
+        val pattern = longArrayOf(0L, 450L, 650L, 450L, 1200L)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          v.vibrate(VibrationEffect.createWaveform(pattern, 0))
+        } else {
+          @Suppress("DEPRECATION")
+          v.vibrate(pattern, 0)
+        }
+      }
+    }
+  }
+
+  private fun stopVibration() {
+    runCatching { vibrator?.cancel() }
+    vibrator = null
+  }
+
+  private fun startAudioUri(uri: Uri, loopIfShortAlarm: Boolean, volumePercent: Int) {
     releasePlayer()
+    val vol = (volumePercent.coerceIn(10, 100) / 100f)
     runCatching {
       val mp = MediaPlayer().apply {
         setAudioAttributes(
@@ -120,11 +164,11 @@ class AdhanPlaybackService : Service() {
         )
         setDataSource(applicationContext, uri)
         isLooping = loopIfShortAlarm
+        setVolume(vol, vol)
         setOnErrorListener { _, _, _ ->
-          // Attempt fallback to default alarm if custom URI failed at playback time
           val fallback = soundRepository.resolveSystemDefaultAlarmUri()
           if (fallback != null && fallback != uri) {
-            startAudioUri(fallback, loopIfShortAlarm = loopIfShortAlarm)
+            startAudioUri(fallback, loopIfShortAlarm = loopIfShortAlarm, volumePercent = volumePercent)
           } else {
             stopPlaybackAndExit()
           }
@@ -137,14 +181,17 @@ class AdhanPlaybackService : Service() {
         }
         prepareAsync()
         setOnPreparedListener { player ->
-          runCatching { player.start() }
+          runCatching {
+            player.setVolume(vol, vol)
+            player.start()
+          }
         }
       }
       mediaPlayer = mp
     }.onFailure {
       val fallback = soundRepository.resolveSystemDefaultAlarmUri()
       if (fallback != null && fallback != uri) {
-        startAudioUri(fallback, loopIfShortAlarm = loopIfShortAlarm)
+        startAudioUri(fallback, loopIfShortAlarm = loopIfShortAlarm, volumePercent = volumePercent)
       }
     }
   }
@@ -183,6 +230,7 @@ class AdhanPlaybackService : Service() {
     autoStopJob?.cancel()
     autoStopJob = null
     releasePlayer()
+    stopVibration()
     releaseWakeLock()
     _isTestPlaying.value = false
     _isAnyAdhanActive.value = false
@@ -199,6 +247,7 @@ class AdhanPlaybackService : Service() {
   override fun onDestroy() {
     autoStopJob?.cancel()
     releasePlayer()
+    stopVibration()
     releaseWakeLock()
     _isTestPlaying.value = false
     _isAnyAdhanActive.value = false
@@ -214,6 +263,8 @@ class AdhanPlaybackService : Service() {
     const val EXTRA_ALARM_MODE = "extra_alarm_mode"
     const val EXTRA_CUSTOM_URI = "extra_custom_uri"
     const val EXTRA_MUEZZIN_ID = "extra_muezzin_id"
+    const val EXTRA_VOLUME_PERCENT = "extra_volume_percent"
+    const val EXTRA_VIBRATE_ENABLED = "extra_vibrate_enabled"
 
     private const val TEST_DURATION_MS = 10_000L
     private const val MAX_ALARM_DURATION_MS = 180_000L
@@ -231,6 +282,8 @@ class AdhanPlaybackService : Service() {
       timeText: String,
       locationName: String,
       config: PrayerAlarmConfig,
+      volumePercent: Int = 100,
+      vibrateEnabled: Boolean = true,
     ) {
       val intent = Intent(context, AdhanPlaybackService::class.java).apply {
         action = ACTION_START_ADHAN
@@ -242,6 +295,8 @@ class AdhanPlaybackService : Service() {
         putExtra(EXTRA_ALARM_MODE, config.mode.name)
         putExtra(EXTRA_CUSTOM_URI, config.customUri)
         putExtra(EXTRA_MUEZZIN_ID, config.muezzinId)
+        putExtra(EXTRA_VOLUME_PERCENT, volumePercent)
+        putExtra(EXTRA_VIBRATE_ENABLED, vibrateEnabled)
       }
       ContextCompat.startForegroundService(context, intent)
     }
@@ -251,6 +306,8 @@ class AdhanPlaybackService : Service() {
       prayerType: PrayerType = PrayerType.FAJR,
       config: PrayerAlarmConfig,
       locationName: String,
+      volumePercent: Int = 100,
+      vibrateEnabled: Boolean = true,
     ) {
       val intent = Intent(context, AdhanPlaybackService::class.java).apply {
         action = ACTION_TEST_ADHAN_10S
@@ -262,6 +319,8 @@ class AdhanPlaybackService : Service() {
         putExtra(EXTRA_ALARM_MODE, config.mode.name)
         putExtra(EXTRA_CUSTOM_URI, config.customUri)
         putExtra(EXTRA_MUEZZIN_ID, config.muezzinId)
+        putExtra(EXTRA_VOLUME_PERCENT, volumePercent)
+        putExtra(EXTRA_VIBRATE_ENABLED, vibrateEnabled)
       }
       ContextCompat.startForegroundService(context, intent)
     }

@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -38,18 +39,23 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -58,6 +64,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,9 +81,16 @@ import com.example.data.prayer.AdhanAlarmScheduler
 import com.example.data.prayer.AdhanNotificationHelper
 import com.example.data.prayer.AdhanSettingsState
 import com.example.data.prayer.AdhanSoundRepository
+import com.example.data.prayer.AsrMadhab
 import com.example.data.prayer.PrayerAlarmConfig
 import com.example.data.prayer.PrayerAlarmMode
+import com.example.data.prayer.PrayerCalculationMethod
+import com.example.data.prayer.PrayerFormatters
+import com.example.data.prayer.PrayerHighLatitudeRule
+import com.example.data.prayer.PrayerSettingsState
 import com.example.data.prayer.PrayerType
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -91,8 +105,10 @@ fun PrayerSoundConfigSheet(
   onDismiss: () -> Unit,
 ) {
   val context = LocalContext.current
+  val scope = rememberCoroutineScope()
   val soundRepository = remember(context) { AdhanSoundRepository(context.applicationContext) }
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+  var showMuadhinPicker by remember { mutableStateOf(false) }
 
   val openDocumentLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.OpenDocument(),
@@ -153,6 +169,25 @@ fun PrayerSoundConfigSheet(
 
       PrayerAlarmMode.entries.forEach { mode ->
         val selected = currentConfig.mode == mode
+        val handleModeTap = {
+          when (mode) {
+            PrayerAlarmMode.MUEZZIN -> {
+              if (currentConfig.muezzinId.isNullOrBlank()) {
+                showMuadhinPicker = true
+              } else {
+                onSaveConfig(currentConfig.copy(mode = PrayerAlarmMode.MUEZZIN))
+              }
+            }
+            PrayerAlarmMode.CUSTOM_URI -> {
+              if (currentConfig.customUri.isNullOrBlank() || !currentConfig.muezzinId.isNullOrBlank()) {
+                openDocumentLauncher.launch(arrayOf("audio/*"))
+              } else {
+                onSaveConfig(currentConfig.copy(mode = PrayerAlarmMode.CUSTOM_URI))
+              }
+            }
+            else -> onSaveConfig(currentConfig.copy(mode = mode))
+          }
+        }
         Surface(
           shape = RoundedCornerShape(14.dp),
           color = if (selected) {
@@ -163,13 +198,7 @@ fun PrayerSoundConfigSheet(
           modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .clickable {
-              if (mode == PrayerAlarmMode.CUSTOM_URI && currentConfig.customUri.isNullOrBlank()) {
-                openDocumentLauncher.launch(arrayOf("audio/*"))
-              } else {
-                onSaveConfig(currentConfig.copy(mode = mode))
-              }
-            }
+            .clickable { handleModeTap() }
             .testTag("prayer_sound_mode_${mode.name}"),
         ) {
           Row(
@@ -181,13 +210,7 @@ fun PrayerSoundConfigSheet(
           ) {
             RadioButton(
               selected = selected,
-              onClick = {
-                if (mode == PrayerAlarmMode.CUSTOM_URI && currentConfig.customUri.isNullOrBlank()) {
-                  openDocumentLauncher.launch(arrayOf("audio/*"))
-                } else {
-                  onSaveConfig(currentConfig.copy(mode = mode))
-                }
-              },
+              onClick = { handleModeTap() },
             )
             Spacer(Modifier.width(6.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -196,10 +219,16 @@ fun PrayerSoundConfigSheet(
                 style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onSurface,
               )
-              val sub = if (mode == PrayerAlarmMode.CUSTOM_URI && !currentConfig.customDisplayName.isNullOrBlank()) {
-                "الملف المختار: ${currentConfig.customDisplayName}"
-              } else {
-                mode.subtitleAr
+              val sub = when {
+                mode == PrayerAlarmMode.MUEZZIN &&
+                  !currentConfig.muezzinId.isNullOrBlank() &&
+                  !currentConfig.customDisplayName.isNullOrBlank() ->
+                  "المؤذن المختار: ${currentConfig.customDisplayName}"
+                mode == PrayerAlarmMode.CUSTOM_URI &&
+                  currentConfig.muezzinId.isNullOrBlank() &&
+                  !currentConfig.customDisplayName.isNullOrBlank() ->
+                  "الملف المختار: ${currentConfig.customDisplayName}"
+                else -> mode.subtitleAr
               }
               Text(
                 text = sub,
@@ -213,6 +242,25 @@ fun PrayerSoundConfigSheet(
         }
       }
 
+      FilledTonalButton(
+        onClick = { showMuadhinPicker = true },
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 48.dp)
+          .testTag("prayer_open_muadhin_library_button"),
+      ) {
+        Icon(Icons.Filled.Mosque, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(
+          if (currentConfig.muezzinId.isNullOrBlank()) {
+            "اختيار مؤذن من مكتبة المؤذنين"
+          } else {
+            "تغيير المؤذن (${currentConfig.customDisplayName ?: "مؤذن"})"
+          },
+        )
+      }
+
       OutlinedButton(
         onClick = { openDocumentLauncher.launch(arrayOf("audio/*")) },
         shape = RoundedCornerShape(12.dp),
@@ -224,7 +272,7 @@ fun PrayerSoundConfigSheet(
         Icon(Icons.Filled.AudioFile, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
         Text(
-          text = if (currentConfig.customUri.isNullOrBlank()) {
+          text = if (currentConfig.customUri.isNullOrBlank() || !currentConfig.muezzinId.isNullOrBlank()) {
             "اختيار ملف أذان من الجهاز"
           } else {
             "تغيير الملف الصوتي"
@@ -273,6 +321,38 @@ fun PrayerSoundConfigSheet(
       }
     }
   }
+
+  if (showMuadhinPicker) {
+    MuadhinPickerSheet(
+      prayerType = prayerType,
+      currentConfig = currentConfig,
+      onSelectMuezzin = { entry ->
+        val cfg = PrayerAlarmConfig(
+          mode = PrayerAlarmMode.MUEZZIN,
+          muezzinId = entry.id,
+          customDisplayName = entry.muezzinAr,
+          customUri = entry.audioUrl,
+        )
+        onSaveConfig(cfg)
+        scope.launch {
+          soundRepository.downloadMuezzinAudio(entry)
+        }
+      },
+      onApplyToAllPrayers = { entry ->
+        val cfg = PrayerAlarmConfig(
+          mode = PrayerAlarmMode.MUEZZIN,
+          muezzinId = entry.id,
+          customDisplayName = entry.muezzinAr,
+          customUri = entry.audioUrl,
+        )
+        onApplyToAllPrayers(cfg)
+        scope.launch {
+          soundRepository.downloadMuezzinAudio(entry)
+        }
+      },
+      onDismiss = { showMuadhinPicker = false },
+    )
+  }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -282,12 +362,26 @@ fun AdhanAlarmsManagementSheet(
   isTestPlaying: Boolean,
   onToggleAlarmsEnabled: (Boolean) -> Unit,
   onTogglePersistentCountdown: (Boolean) -> Unit,
+  onSelectPreAdhanMinutes: (Int) -> Unit = {},
+  onChangeVolumePercent: (Int) -> Unit = {},
+  onToggleVibrate: (Boolean) -> Unit = {},
+  onSelectBackground: (path: String?, label: String?) -> Unit = { _, _ -> },
   onEditPrayerSound: (PrayerType) -> Unit,
   onTestAdhanNow: () -> Unit,
   onStopTestAdhan: () -> Unit,
+  prayerSettings: PrayerSettingsState? = null,
+  initialTab: Int = 0,
+  onSelectMethod: (PrayerCalculationMethod) -> Unit = {},
+  onResetMethodToCountryDefault: () -> Unit = {},
+  onSelectMadhab: (AsrMadhab) -> Unit = {},
+  onSelectHighLatitudeRule: (PrayerHighLatitudeRule) -> Unit = {},
+  onAdjustMinutes: (PrayerType, Int) -> Unit = { _, _ -> },
+  onResetAdjustments: () -> Unit = {},
   onDismiss: () -> Unit,
 ) {
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+  var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 1)) }
+
   ModalBottomSheet(
     onDismissRequest = onDismiss,
     sheetState = sheetState,
@@ -302,20 +396,56 @@ fun AdhanAlarmsManagementSheet(
       verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
       Text(
-        text = "تنبيهات الأذان والمواقيت",
+        text = "المواقيت وتنبيهات الأذان",
         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
         color = MaterialTheme.colorScheme.primary,
       )
 
-      AdhanControlsSection(
-        adhanSettings = adhanSettings,
-        isTestPlaying = isTestPlaying,
-        onToggleAlarmsEnabled = onToggleAlarmsEnabled,
-        onTogglePersistentCountdown = onTogglePersistentCountdown,
-        onEditPrayerSound = onEditPrayerSound,
-        onTestAdhanNow = onTestAdhanNow,
-        onStopTestAdhan = onStopTestAdhan,
-      )
+      if (prayerSettings != null) {
+        PrimaryTabRow(
+          selectedTabIndex = selectedTab,
+          containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+          Tab(
+            selected = selectedTab == 0,
+            onClick = { selectedTab = 0 },
+            text = { Text("تنبيهات الأذان", maxLines = 1) },
+            modifier = Modifier.testTag("adhan_sheet_tab_alarms"),
+          )
+          Tab(
+            selected = selectedTab == 1,
+            onClick = { selectedTab = 1 },
+            text = { Text("الحساب والمواقيت", maxLines = 1) },
+            modifier = Modifier.testTag("adhan_sheet_tab_calculation"),
+          )
+        }
+      }
+
+      if (prayerSettings != null && selectedTab == 1) {
+        PrayerCalculationSettingsContent(
+          settings = prayerSettings,
+          onSelectMethod = onSelectMethod,
+          onResetMethodToCountryDefault = onResetMethodToCountryDefault,
+          onSelectMadhab = onSelectMadhab,
+          onSelectHighLatitudeRule = onSelectHighLatitudeRule,
+          onAdjustMinutes = onAdjustMinutes,
+          onResetAdjustments = onResetAdjustments,
+        )
+      } else {
+        AdhanControlsSection(
+          adhanSettings = adhanSettings,
+          isTestPlaying = isTestPlaying,
+          onToggleAlarmsEnabled = onToggleAlarmsEnabled,
+          onTogglePersistentCountdown = onTogglePersistentCountdown,
+          onSelectPreAdhanMinutes = onSelectPreAdhanMinutes,
+          onChangeVolumePercent = onChangeVolumePercent,
+          onToggleVibrate = onToggleVibrate,
+          onSelectBackground = onSelectBackground,
+          onEditPrayerSound = onEditPrayerSound,
+          onTestAdhanNow = onTestAdhanNow,
+          onStopTestAdhan = onStopTestAdhan,
+        )
+      }
     }
   }
 }
@@ -326,12 +456,17 @@ fun AdhanControlsSection(
   isTestPlaying: Boolean,
   onToggleAlarmsEnabled: (Boolean) -> Unit,
   onTogglePersistentCountdown: (Boolean) -> Unit,
+  onSelectPreAdhanMinutes: (Int) -> Unit = {},
+  onChangeVolumePercent: (Int) -> Unit = {},
+  onToggleVibrate: (Boolean) -> Unit = {},
+  onSelectBackground: (path: String?, label: String?) -> Unit = { _, _ -> },
   onEditPrayerSound: (PrayerType) -> Unit,
   onTestAdhanNow: () -> Unit,
   onStopTestAdhan: () -> Unit,
 ) {
   val context = LocalContext.current
   var refreshTick by remember { mutableIntStateOf(0) }
+  var showBgPicker by remember { mutableStateOf(false) }
   val lifecycleOwner = LocalLifecycleOwner.current
 
   DisposableEffect(lifecycleOwner) {
@@ -357,6 +492,8 @@ fun AdhanControlsSection(
   }
 
   Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    MissingPermissionsCard()
+
     // Master Adhan Alarms toggle
     Surface(
       shape = RoundedCornerShape(14.dp),
@@ -421,6 +558,184 @@ fun AdhanControlsSection(
           checked = adhanSettings.persistentCountdownEnabled,
           onCheckedChange = onTogglePersistentCountdown,
           modifier = Modifier.testTag("adhan_persistent_notif_switch"),
+        )
+      }
+    }
+
+    // Pre-Adhan Reminder selector
+    Surface(
+      shape = RoundedCornerShape(14.dp),
+      color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.50f),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        Text(
+          text = "تنبيه قبل الأذان",
+          style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+          color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+          text = "إشعار تذكيري قبل دخول وقت الصلاة المفعّل منبهها",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        val preOptions = remember { listOf(0, 5, 10, 15, 20, 30) }
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          preOptions.forEach { mins ->
+            val label = if (mins == 0) "إيقاف" else "${PrayerFormatters.toArabicIndicDigits(mins)} د"
+            FilterChip(
+              selected = adhanSettings.preAdhanMinutes == mins,
+              onClick = { onSelectPreAdhanMinutes(mins) },
+              label = { Text(label) },
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("adhan_pre_alert_$mins"),
+            )
+          }
+        }
+      }
+    }
+
+    // Adhan Volume slider + Vibrate toggle
+    var sliderVolume by remember(adhanSettings.adhanVolumePercent) {
+      mutableIntStateOf(adhanSettings.adhanVolumePercent.coerceIn(10, 100))
+    }
+    Surface(
+      shape = RoundedCornerShape(14.dp),
+      color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.50f),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text = "مستوى صوت الأذان",
+              style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+              color = MaterialTheme.colorScheme.onSurface,
+            )
+          }
+          Text(
+            text = "${PrayerFormatters.toArabicIndicDigits(sliderVolume)}٪",
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.primary,
+          )
+        }
+        Slider(
+          value = sliderVolume / 100f,
+          onValueChange = { fraction ->
+            sliderVolume = (fraction * 100f).roundToInt().coerceIn(10, 100)
+          },
+          onValueChangeFinished = {
+            onChangeVolumePercent(sliderVolume)
+          },
+          valueRange = 0.1f..1.0f,
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("adhan_volume_slider"),
+        )
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Vibration,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column {
+              Text(
+                text = "الاهتزاز مع الأذان",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface,
+              )
+              Text(
+                text = "تشغيل نمط اهتزاز هادئ عند بدء الأذان",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+          Spacer(Modifier.width(8.dp))
+          Switch(
+            checked = adhanSettings.vibrateOnAdhan,
+            onCheckedChange = onToggleVibrate,
+            modifier = Modifier.testTag("adhan_vibrate_switch"),
+          )
+        }
+      }
+    }
+
+    // Adhan screen background picker row
+    Surface(
+      shape = RoundedCornerShape(14.dp),
+      color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+      modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(14.dp))
+        .clickable { showBgPicker = true }
+        .testTag("adhan_background_picker_row"),
+    ) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 56.dp)
+          .padding(horizontal = 14.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = "خلفية شاشة الأذان",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onSurface,
+          )
+          Text(
+            text = adhanSettings.backgroundLabel?.takeIf { it.isNotBlank() } ?: "خلفية قبسات الافتراضية",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+          )
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+          text = "تغيير",
+          style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+          color = MaterialTheme.colorScheme.primary,
         )
       }
     }
@@ -515,6 +830,15 @@ fun AdhanControlsSection(
       onOpenFullScreenIntentSettings = { openFullScreenIntentSettings(context) },
       onOpenBatterySettings = { openBatteryOptimizationSettings(context) },
       onOpenAppDetails = { openAppDetailsSettings(context) },
+    )
+  }
+
+  if (showBgPicker) {
+    AdhanBackgroundPickerSheet(
+      currentPath = adhanSettings.backgroundImagePath,
+      currentLabel = adhanSettings.backgroundLabel,
+      onSelectBackground = onSelectBackground,
+      onDismiss = { showBgPicker = false },
     )
   }
 }

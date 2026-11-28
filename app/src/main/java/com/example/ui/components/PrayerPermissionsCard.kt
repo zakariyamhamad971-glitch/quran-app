@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -349,7 +350,9 @@ private fun SinglePermissionRow(
         OutlinedButton(
           onClick = onDismissLater,
           shape = RoundedCornerShape(8.dp),
-          modifier = Modifier.testTag("perm_later_${perm.id}"),
+          modifier = Modifier
+            .heightIn(min = 48.dp)
+            .testTag("perm_later_${perm.id}"),
         ) {
           Text("لاحقاً", style = MaterialTheme.typography.labelMedium)
         }
@@ -360,7 +363,9 @@ private fun SinglePermissionRow(
           colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
           ),
-          modifier = Modifier.testTag("perm_activate_${perm.id}"),
+          modifier = Modifier
+            .heightIn(min = 48.dp)
+            .testTag("perm_activate_${perm.id}"),
         ) {
           Text("تفعيل", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
         }
@@ -377,7 +382,12 @@ private fun openSettingSafely(context: Context, action: String) {
   runCatching {
     context.startActivity(intent)
   }.onFailure {
-    // Fallback to app details
+    if (action == Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS) {
+      val listIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+      }
+      if (runCatching { context.startActivity(listIntent) }.isSuccess) return@onFailure
+    }
     val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
       data = Uri.parse("package:${context.packageName}")
       flags = Intent.FLAG_ACTIVITY_NEW_TASK

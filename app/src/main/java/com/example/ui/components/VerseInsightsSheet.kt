@@ -79,6 +79,12 @@ private enum class InsightsSheetTab {
   PLAY,
 }
 
+enum class InsightsSourceFilter {
+  ALL,
+  TAFSIR,
+  TRANSLATION,
+}
+
 private fun toArabicIndicDigitsSheet(number: Int): String {
   val digits = charArrayOf('٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩')
   val raw = number.toString()
@@ -103,6 +109,7 @@ fun VerseInsightsSheet(
   onOpenRangePicker: () -> Unit,
   onDismiss: () -> Unit,
   onSheetTopInRootChanged: (Float?) -> Unit = {},
+  initialSourceFilter: InsightsSourceFilter = InsightsSourceFilter.ALL,
   modifier: Modifier = Modifier,
 ) {
   if (state is VerseInsightsUiState.Hidden) {
@@ -118,6 +125,7 @@ fun VerseInsightsSheet(
   BackHandler(onBack = onDismiss)
 
   var activeTab by remember { mutableStateOf(InsightsSheetTab.GLOBE) }
+  var sourceFilter by remember(initialSourceFilter) { mutableStateOf(initialSourceFilter) }
   var sourcesDropdownExpanded by remember { mutableStateOf(false) }
   val consumeTapInteraction = remember { MutableInteractionSource() }
 
@@ -257,10 +265,54 @@ fun VerseInsightsSheet(
           is VerseInsightsUiState.Ready -> {
             val insights = state.insights
             if (activeTab == InsightsSheetTab.GLOBE) {
-              val completeDownloaded = remember(downloadedSources) {
-                downloadedSources.filter { it.isComplete || it.completedSurahs > 0 }
+              val completeDownloaded = remember(downloadedSources, sourceFilter) {
+                downloadedSources.filter { it.isComplete || it.completedSurahs > 0 }.filter { src ->
+                  when (sourceFilter) {
+                    InsightsSourceFilter.ALL -> true
+                    InsightsSourceFilter.TAFSIR -> src.type == com.example.data.quran.InsightSourceType.TAFSIR || src.type == com.example.data.quran.InsightSourceType.IRAB
+                    InsightsSourceFilter.TRANSLATION -> src.type == com.example.data.quran.InsightSourceType.TRANSLATION
+                  }
+                }
               }
               val checkedCount = completeDownloaded.count { it.editionId in checkedEditionIds }
+
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                listOf(
+                  InsightsSourceFilter.ALL to "الكل",
+                  InsightsSourceFilter.TAFSIR to "تفسير",
+                  InsightsSourceFilter.TRANSLATION to "ترجمة",
+                ).forEach { (filter, label) ->
+                  val selected = sourceFilter == filter
+                  Surface(
+                    onClick = { sourceFilter = filter },
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (selected) {
+                      MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                    } else {
+                      MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                    },
+                    border = BorderStroke(
+                      1.dp,
+                      if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                    ),
+                    modifier = Modifier.testTag("insights_filter_${filter.name.lowercase()}"),
+                  ) {
+                    Text(
+                      text = label,
+                      style = MaterialTheme.typography.labelMedium,
+                      fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                      color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                      modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                  }
+                }
+              }
 
               // Dropdown selector bar + downloaded sources checkboxes + "المزيد من الترجمات والتفاسير"
               Box(
@@ -486,8 +538,28 @@ fun VerseInsightsSheet(
                         }
                       }
 
+                      val filteredEntries = remember(section.sourceEntries, sourceFilter) {
+                        when (sourceFilter) {
+                          InsightsSourceFilter.ALL -> section.sourceEntries
+                          InsightsSourceFilter.TAFSIR -> section.sourceEntries.filter {
+                            it.typeLabelAr == "تفسير" || it.typeLabelAr == "إعراب"
+                          }
+                          InsightsSourceFilter.TRANSLATION -> section.sourceEntries.filter { it.typeLabelAr == "ترجمة" }
+                        }
+                      }
+                      if (filteredEntries.isEmpty() && checkedCount > 0) {
+                        Text(
+                          text = when (sourceFilter) {
+                            InsightsSourceFilter.TAFSIR -> "لا توجد مصادر تفسير محددة لهذه الآية."
+                            InsightsSourceFilter.TRANSLATION -> "لا توجد مصادر ترجمة محددة لهذه الآية."
+                            InsightsSourceFilter.ALL -> ""
+                          },
+                          style = MaterialTheme.typography.bodySmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                      }
                       // Each checked source text for this ayah in order
-                      for (entry in section.sourceEntries) {
+                      for (entry in filteredEntries) {
                         Column(
                           modifier = Modifier.fillMaxWidth(),
                           verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -520,7 +592,7 @@ fun VerseInsightsSheet(
                             )
                           }
                         }
-                        if (entry != section.sourceEntries.last()) {
+                        if (entry != filteredEntries.last()) {
                           HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
                         }
                       }

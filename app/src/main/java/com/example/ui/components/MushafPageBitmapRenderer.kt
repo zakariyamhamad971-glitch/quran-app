@@ -880,7 +880,7 @@ class MushafPageBitmapRenderer(
     val juzHizbText = if (pageNumber in 1..604) {
       com.example.data.quran.QuranQuartersCatalog.getHeaderQuarterText(pageNumber)
     } else if (juzNumber != null && hizbNumber != null && juzNumber > 0 && hizbNumber > 0) {
-      "الجزء ${toArabicIndicDigits(juzNumber)} • الحزب ${toArabicIndicDigits(hizbNumber)}"
+      "الجزء ${toArabicIndicDigits(juzNumber)}، الحزب ${toArabicIndicDigits(hizbNumber)}"
     } else {
       ""
     }

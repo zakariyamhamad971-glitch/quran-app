@@ -42,7 +42,7 @@ data class PrayerTimesUiState(
   val settings: PrayerSettingsState = PrayerSettingsState(),
   val adhanSettings: AdhanSettingsState = AdhanSettingsState(),
   val isTestAdhanPlaying: Boolean = false,
-  val selectedDayOffset: Int = 0, // -1 yesterday, 0 today, +1 tomorrow
+  val selectedDayOffset: Int = 0, // -30..+30 days relative to today
   val todayRecord: DailyPrayerTimesRecord? = null,
   val displayedRecord: DailyPrayerTimesRecord? = null,
   val nextPrayer: NextPrayerTarget? = null,
@@ -79,6 +79,22 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
     observePreferences()
     observePrayerRolloverTicker()
     observeTestPlayback()
+    if (locationHelper.hasLocationPermission()) {
+      refreshCoarseLocation()
+    }
+  }
+
+  fun onScreenResumed() {
+    val granted = locationHelper.hasLocationPermission()
+    _uiState.update {
+      it.copy(
+        hasLocationPermission = granted,
+        locationPermissionDenied = !granted && it.locationPermissionDenied,
+      )
+    }
+    if (granted && (latestPrefs.settings.location == null || latestPrefs.settings.location?.isManual == true)) {
+      refreshCoarseLocation()
+    }
   }
 
   private fun observeTestPlayback() {
@@ -101,7 +117,9 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
         rebuildUiSnapshot(persisted)
 
         val loc = persisted.settings.location
-        if (loc != null && needsScheduleRefresh(persisted.settings, inMemorySchedule)) {
+        if (loc == null && locationHelper.hasLocationPermission()) {
+          refreshCoarseLocation()
+        } else if (loc != null && needsScheduleRefresh(persisted.settings, inMemorySchedule)) {
           recomputeAndCache30Days(persisted.settings)
         } else {
           syncAlarmsIfNeeded(persisted)
@@ -115,6 +133,9 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
       append(persisted.settings.cacheKey())
       append("|en=").append(persisted.adhanSettings.alarmsEnabled)
       append("|notif=").append(persisted.adhanSettings.persistentCountdownEnabled)
+      append("|pre=").append(persisted.adhanSettings.preAdhanMinutes)
+      append("|vol=").append(persisted.adhanSettings.adhanVolumePercent)
+      append("|vib=").append(persisted.adhanSettings.vibrateOnAdhan)
       append("|cfg=").append(AdhanSettingsState.encodeConfigsJson(persisted.adhanSettings.perPrayerConfig))
     }
     if (sig == lastSyncedAlarmSignature) return
@@ -154,12 +175,16 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
   }
 
   fun selectDayOffset(offset: Int) {
-    val clamped = offset.coerceIn(-1, 1)
+    val clamped = offset.coerceIn(-30, 30)
     if (_uiState.value.selectedDayOffset == clamped) return
     _uiState.update { it.copy(selectedDayOffset = clamped) }
     viewModelScope.launch {
       rebuildUiSnapshot(latestPrefs)
     }
+  }
+
+  fun stepDayOffset(delta: Int) {
+    selectDayOffset(_uiState.value.selectedDayOffset + delta)
   }
 
   fun onLocationPermissionResult(granted: Boolean) {
@@ -287,6 +312,30 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
     }
   }
 
+  fun setAdhanPreAlertMinutes(minutes: Int) {
+    viewModelScope.launch {
+      preferences.setAdhanPreAlertMinutes(minutes)
+    }
+  }
+
+  fun setAdhanVolumePercent(percent: Int) {
+    viewModelScope.launch {
+      preferences.setAdhanVolumePercent(percent)
+    }
+  }
+
+  fun setAdhanVibrateEnabled(enabled: Boolean) {
+    viewModelScope.launch {
+      preferences.setAdhanVibrateEnabled(enabled)
+    }
+  }
+
+  fun setAdhanBackground(path: String?, label: String?) {
+    viewModelScope.launch {
+      preferences.setAdhanBackground(path, label)
+    }
+  }
+
   fun updatePrayerAlarmConfig(prayerType: PrayerType, config: PrayerAlarmConfig) {
     viewModelScope.launch {
       preferences.savePrayerAlarmConfig(prayerType, config)
@@ -310,6 +359,8 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
       prayerType = prayerType,
       config = config,
       locationName = locationName,
+      volumePercent = latestPrefs.adhanSettings.adhanVolumePercent,
+      vibrateEnabled = latestPrefs.adhanSettings.vibrateOnAdhan,
     )
   }
 

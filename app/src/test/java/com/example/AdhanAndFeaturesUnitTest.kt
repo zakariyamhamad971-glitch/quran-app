@@ -161,7 +161,7 @@ class AdhanAndFeaturesUnitTest {
   }
 
   @Test
-  fun tafsirRegistry_parsesEditionsAndExcludesIrab() = runTest {
+  fun tafsirRegistry_parsesEditionsAndMarksIrab() = runTest {
     val context = RuntimeEnvironment.getApplication()
     val repo = TafsirRegistryRepository(context, this)
     val provider = InsightRegistryProvider(
@@ -203,8 +203,12 @@ class AdhanAndFeaturesUnitTest {
     """.trimIndent()
 
     val parsed = repo.parseEditionsJson(editionsJson, provider)
-    assertEquals(2, parsed.size)
-    assertEquals(listOf("ar-tafsir-muyassar", "en-tafisr-ibn-kathir"), parsed.map { it.slug })
+    assertEquals(3, parsed.size)
+    assertEquals(
+      listOf("ar-tafsir-muyassar", "ar-irab-sample", "en-tafisr-ibn-kathir"),
+      parsed.map { it.slug },
+    )
+    assertEquals(InsightSourceType.IRAB, parsed[1].type)
     assertEquals(InsightSourceType.IRAB.labelAr, "إعراب")
 
     val surahPayload = """
@@ -221,11 +225,11 @@ class AdhanAndFeaturesUnitTest {
   }
 
   @Test
-  fun adhanSoundRegistry_loadsEmptyBundledListAndAttributions() = runTest {
+  fun adhanSoundRegistry_loadsVerifiedCatalogOrOfflineFallbackAndAttributions() = runTest {
     val context = RuntimeEnvironment.getApplication()
     val repo = com.example.data.prayer.AdhanSoundRepository(context)
     val snapshot = repo.loadRegistry()
-    assertTrue(snapshot.sounds.isEmpty())
+    assertTrue(snapshot.sounds.isNotEmpty() || !snapshot.loadError.isNullOrBlank())
     val credits = repo.loadAdhanCredits()
     assertTrue(credits.any { it.id == "batoulapps_adhan2" && it.license.contains("MIT") })
     assertTrue(credits.any { it.id == "adhan_sounds_registry" })

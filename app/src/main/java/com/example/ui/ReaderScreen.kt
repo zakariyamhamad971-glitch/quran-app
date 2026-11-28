@@ -1,6 +1,8 @@
 package com.example.ui
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -14,10 +16,12 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,18 +42,22 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Brightness7
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ColorLens
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -78,6 +86,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -88,11 +97,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -117,6 +128,7 @@ import com.example.ui.components.CompactDockedAudioPlayer
 import com.example.ui.components.CompactRecitersPopup
 import com.example.ui.components.CreditsAndIntegrityDialog
 import com.example.ui.components.FullScreenQuranIndex
+import com.example.ui.components.InsightsSourceFilter
 import com.example.ui.components.MushafPageFrame
 import com.example.ui.components.MushafSelectorScreen
 import com.example.ui.components.MushafsManagerScreen
@@ -133,6 +145,7 @@ import com.example.ui.components.TajweedLegendSheet
 import com.example.ui.components.VerseInsightsSheet
 import com.example.ui.components.rememberNotificationPermissionRequester
 import com.example.ui.theme.AmiriFontFamily
+import com.example.ui.theme.QabasatNightGold
 import com.example.update.AppUpdateState
 import com.example.viewmodel.PageLoadState
 import com.example.viewmodel.PrayerTimesViewModel
@@ -218,6 +231,7 @@ private fun ReaderScreenContent(
   var downloadReciterKey by rememberSaveable { mutableStateOf<String?>(null) }
   var showTajweedLegend by remember { mutableStateOf(false) }
   var showCreditsDialog by remember { mutableStateOf(false) }
+  var insightsInitialFilter by remember { mutableStateOf(InsightsSourceFilter.ALL) }
   val requestNotifPermissionIfNeeded = rememberNotificationPermissionRequester()
 
   var rootOriginInWindow by remember { mutableStateOf(Offset.Zero) }
@@ -242,16 +256,6 @@ private fun ReaderScreenContent(
   }
 
   var activeQuarterBannerText by remember { mutableStateOf<String?>(null) }
-  LaunchedEffect(uiState.currentPage) {
-    val bannerText = com.example.data.quran.QuranQuartersCatalog.getQuarterBannerForPage(uiState.currentPage)
-    if (bannerText != null) {
-      activeQuarterBannerText = bannerText
-      kotlinx.coroutines.delay(3500L)
-      activeQuarterBannerText = null
-    } else {
-      activeQuarterBannerText = null
-    }
-  }
 
   val speeds = remember { listOf(0.75f, 1.0f, 1.15f, 1.25f) }
   val onCycleSpeed: (Float) -> Unit = remember(viewModel, speeds) {
@@ -272,11 +276,12 @@ private fun ReaderScreenContent(
   }
   val onWordLongPressed: (String, Int, String) -> Unit = remember(viewModel) {
     { key, p, glyphs ->
-      if (viewModel.uiState.value.selectedVerseKeys.isEmpty()) {
-        viewModel.onWordTapped(key, p, glyphs)
-      } else {
-        viewModel.onWordLongPressed(key, p, glyphs)
-      }
+      viewModel.onWordLongPressed(key, p, glyphs)
+    }
+  }
+  val onSelectionHandleDragged: (Boolean, String, Int, String) -> Unit = remember(viewModel) {
+    { isStart, targetKey, p, glyphs ->
+      viewModel.onSelectionHandleDragged(isStart, targetKey, p, glyphs)
     }
   }
   val onToggleBookmark: (Int) -> Unit = remember(viewModel) { { p -> viewModel.toggleBookmark(p) } }
@@ -307,14 +312,6 @@ private fun ReaderScreenContent(
     val controller = WindowCompat.getInsetsController(activity.window, view)
     controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     controller.hide(WindowInsetsCompat.Type.systemBars())
-  }
-
-  DisposableEffect(view) {
-    onDispose {
-      val activity = view.context.findActivity() ?: return@onDispose
-      WindowCompat.getInsetsController(activity.window, view)
-        .show(WindowInsetsCompat.Type.systemBars())
-    }
   }
 
   BackHandler(enabled = !isHomeOpen) {
@@ -359,6 +356,23 @@ private fun ReaderScreenContent(
         setOf(rightPage, leftPage)
       } else {
         setOf(uiState.currentPage)
+      }
+    }
+
+    LaunchedEffect(visiblePagesSet, isHomeOpen, isIndexOpen) {
+      if (isHomeOpen || isIndexOpen) {
+        activeQuarterBannerText = null
+        return@LaunchedEffect
+      }
+      val bannerText = visiblePagesSet.sorted().firstNotNullOfOrNull { p ->
+        com.example.data.quran.QuranQuartersCatalog.getQuarterBannerForPage(p)
+      }
+      if (bannerText != null) {
+        activeQuarterBannerText = bannerText
+        kotlinx.coroutines.delay(3500L)
+        activeQuarterBannerText = null
+      } else {
+        activeQuarterBannerText = null
       }
     }
 
@@ -434,6 +448,7 @@ private fun ReaderScreenContent(
         onNonWordTapped = onNonWordTapped,
         onWordTapped = onWordTapped,
         onWordLongPressed = onWordLongPressed,
+        onSelectionHandleDragged = onSelectionHandleDragged,
         onSelectionBoundsChanged = onSelectionBoundsChanged,
         modifier = Modifier
           .fillMaxSize()
@@ -671,6 +686,11 @@ private fun ReaderScreenContent(
             viewModel.playAyahRange(range)
           },
           onClearRange = { viewModel.clearAyahRange() },
+          onOpenReciterDownloads = { reciter ->
+            activeAudioSheet = null
+            viewModel.ensureAllDownloadableRecitersLoaded()
+            downloadReciterKey = reciter.key
+          },
           onDismiss = { activeAudioSheet = null },
         )
       }
@@ -755,9 +775,20 @@ private fun ReaderScreenContent(
         isTestPlaying = prayerUiState.isTestAdhanPlaying,
         onToggleAlarmsEnabled = prayerViewModel::setAdhanAlarmsEnabled,
         onTogglePersistentCountdown = prayerViewModel::setPersistentCountdownEnabled,
+        onSelectPreAdhanMinutes = prayerViewModel::setAdhanPreAlertMinutes,
+        onChangeVolumePercent = prayerViewModel::setAdhanVolumePercent,
+        onToggleVibrate = prayerViewModel::setAdhanVibrateEnabled,
+        onSelectBackground = prayerViewModel::setAdhanBackground,
         onEditPrayerSound = { editingAdhanPrayer = it },
         onTestAdhanNow = { prayerViewModel.startTestAdhan10s() },
         onStopTestAdhan = { prayerViewModel.stopTestAdhan() },
+        prayerSettings = prayerUiState.settings,
+        onSelectMethod = prayerViewModel::setCalculationMethod,
+        onResetMethodToCountryDefault = prayerViewModel::resetMethodToCountryDefault,
+        onSelectMadhab = prayerViewModel::setAsrMadhab,
+        onSelectHighLatitudeRule = prayerViewModel::setHighLatitudeRule,
+        onAdjustMinutes = prayerViewModel::adjustPrayerMinutes,
+        onResetAdjustments = prayerViewModel::resetAllAdjustments,
         onDismiss = {
           showAdhanSettingsSheet = false
           prayerViewModel.refreshAlarmsAndNotification()
@@ -847,7 +878,27 @@ private fun ReaderScreenContent(
           viewModel.playFromSelectedAyahs()
           isCompactPlayerDocked = true
         },
-        onOpenInsights = { viewModel.openInsightsForSelectedAyahs() },
+        onOpenTafsir = {
+          insightsInitialFilter = InsightsSourceFilter.TAFSIR
+          viewModel.openInsightsForSelectedAyahs()
+        },
+        onOpenTranslation = {
+          insightsInitialFilter = InsightsSourceFilter.TRANSLATION
+          viewModel.openInsightsForSelectedAyahs()
+        },
+        onCopy = {
+          coroutineScope.launch {
+            viewModel.buildSharePayloadForSelectedAyahs()
+              .onSuccess { (copyText, _) ->
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                clipboard?.setPrimaryClip(ClipData.newPlainText("الآية", copyText))
+                Toast.makeText(context, "تم نسخ نص الآية", Toast.LENGTH_SHORT).show()
+              }
+              .onFailure {
+                Toast.makeText(context, "تعذر تجهيز نص الآية للنسخ", Toast.LENGTH_SHORT).show()
+              }
+          }
+        },
         onShare = {
           coroutineScope.launch {
             viewModel.buildSharePayloadForSelectedAyahs()
@@ -873,6 +924,7 @@ private fun ReaderScreenContent(
             ).show()
           }
         },
+        onClose = { viewModel.clearVerseSelection() },
       )
     }
 
@@ -908,6 +960,7 @@ private fun ReaderScreenContent(
       tafsirCatalogStateFlow = viewModel.tafsirCatalogState,
       checkedTafsirIdsFlow = viewModel.checkedTafsirEditionIdsState,
       surahsById = surahsById,
+      initialSourceFilter = insightsInitialFilter,
       onToggleSourceChecked = remember(viewModel) { { id, checked -> viewModel.toggleTafsirSourceChecked(id, checked) } },
       onOpenTafsirManager = remember(viewModel) {
         {
@@ -943,14 +996,17 @@ private fun AyahSelectionActionBar(
   isTopChromeVisible: Boolean,
   isBookmarked: Boolean,
   onPlay: () -> Unit,
-  onOpenInsights: () -> Unit,
+  onOpenTafsir: () -> Unit,
+  onOpenTranslation: () -> Unit,
+  onCopy: () -> Unit,
   onShare: () -> Unit,
   onBookmark: () -> Unit,
+  onClose: () -> Unit,
 ) {
   val density = LocalDensity.current
   var barSize by remember { mutableStateOf(IntSize.Zero) }
   val edgePadPx = with(density) { 10.dp.roundToPx() }
-  val gapPx = with(density) { 8.dp.roundToPx() }
+  val gapPx = with(density) { 14.dp.roundToPx() }
   val minTopPx = with(density) { if (isTopChromeVisible) 88.dp.roundToPx() else 18.dp.roundToPx() }
   val bottomFallbackPx = with(density) { 86.dp.roundToPx() }
 
@@ -964,7 +1020,7 @@ private fun AyahSelectionActionBar(
       val y = if (aboveY >= minTopPx) {
         aboveY.coerceAtMost(maxY)
       } else {
-        (selectionRect.bottom + gapPx).roundToInt().coerceIn(minTopPx, maxY)
+        (selectionRect.bottom + gapPx + with(density) { 18.dp.roundToPx() }).roundToInt().coerceIn(minTopPx, maxY)
       }
       IntOffset(x, y)
     } else {
@@ -977,7 +1033,7 @@ private fun AyahSelectionActionBar(
   }
 
   Surface(
-    shape = RoundedCornerShape(24.dp),
+    shape = RoundedCornerShape(26.dp),
     color = MaterialTheme.colorScheme.surface,
     tonalElevation = 6.dp,
     shadowElevation = 10.dp,
@@ -986,40 +1042,46 @@ private fun AyahSelectionActionBar(
       .onSizeChanged { barSize = it }
       .border(
         width = 1.dp,
-        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
+        shape = RoundedCornerShape(26.dp),
       )
       .testTag("ayah_selection_action_bar"),
   ) {
     Row(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(2.dp),
-      modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+      modifier = Modifier
+        .horizontalScroll(rememberScrollState())
+        .padding(horizontal = 8.dp, vertical = 2.dp),
     ) {
-      IconButton(
+      SelectionPillAction(
+        icon = Icons.Filled.PlayArrow,
+        label = "تلاوة",
+        contentDescription = "تشغيل التلاوة",
         onClick = onPlay,
-        modifier = Modifier
-          .minimumInteractiveComponentSize()
-          .testTag("selection_action_play"),
-      ) {
-        Icon(
-          imageVector = Icons.Filled.PlayArrow,
-          contentDescription = "تشغيل التلاوة",
-          tint = MaterialTheme.colorScheme.primary,
-        )
-      }
-      IconButton(
-        onClick = onOpenInsights,
-        modifier = Modifier
-          .minimumInteractiveComponentSize()
-          .testTag("selection_action_globe"),
-      ) {
-        Icon(
-          imageVector = Icons.Filled.Language,
-          contentDescription = "الترجمة والتفسير",
-          tint = MaterialTheme.colorScheme.primary,
-        )
-      }
+        testTag = "selection_action_play",
+      )
+      SelectionPillAction(
+        icon = Icons.AutoMirrored.Filled.MenuBook,
+        label = "تفسير",
+        contentDescription = "تفسير الآية",
+        onClick = onOpenTafsir,
+        testTag = "selection_action_tafsir",
+      )
+      SelectionPillAction(
+        icon = Icons.Filled.Translate,
+        label = "ترجمة",
+        contentDescription = "ترجمة الآية",
+        onClick = onOpenTranslation,
+        testTag = "selection_action_translation",
+      )
+      SelectionPillAction(
+        icon = Icons.Filled.ContentCopy,
+        label = "نسخ",
+        contentDescription = "نسخ الآية",
+        onClick = onCopy,
+        testTag = "selection_action_copy",
+      )
       IconButton(
         onClick = onShare,
         modifier = Modifier
@@ -1030,6 +1092,7 @@ private fun AyahSelectionActionBar(
           imageVector = Icons.Filled.Share,
           contentDescription = "مشاركة الآية",
           tint = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(19.dp),
         )
       }
       IconButton(
@@ -1042,9 +1105,56 @@ private fun AyahSelectionActionBar(
           imageVector = if (isBookmarked) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
           contentDescription = "إضافة علامة مرجعية",
           tint = if (isBookmarked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(19.dp),
+        )
+      }
+      IconButton(
+        onClick = onClose,
+        modifier = Modifier
+          .minimumInteractiveComponentSize()
+          .testTag("selection_action_close"),
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Close,
+          contentDescription = "إلغاء التحديد",
+          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier.size(19.dp),
         )
       }
     }
+  }
+}
+
+@Composable
+private fun SelectionPillAction(
+  icon: androidx.compose.ui.graphics.vector.ImageVector,
+  label: String,
+  contentDescription: String,
+  onClick: () -> Unit,
+  testTag: String,
+) {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(4.dp),
+    modifier = Modifier
+      .clip(RoundedCornerShape(18.dp))
+      .clickable(onClick = onClick)
+      .minimumInteractiveComponentSize()
+      .padding(horizontal = 8.dp, vertical = 6.dp)
+      .testTag(testTag),
+  ) {
+    Icon(
+      imageVector = icon,
+      contentDescription = contentDescription,
+      tint = MaterialTheme.colorScheme.primary,
+      modifier = Modifier.size(18.dp),
+    )
+    Text(
+      text = label,
+      style = MaterialTheme.typography.labelMedium,
+      fontWeight = FontWeight.SemiBold,
+      color = MaterialTheme.colorScheme.onSurface,
+    )
   }
 }
 
@@ -1068,6 +1178,7 @@ private fun ReaderPagerHost(
   onNonWordTapped: () -> Unit,
   onWordTapped: (String, Int, String) -> Unit,
   onWordLongPressed: (String, Int, String) -> Unit,
+  onSelectionHandleDragged: (Boolean, String, Int, String) -> Unit,
   onSelectionBoundsChanged: (Int, PageSelectionRootRect?) -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -1161,6 +1272,7 @@ private fun ReaderPagerHost(
               onNonWordTapped = onEmptyAreaTapIfNotSwiping,
               onWordTapped = onWordTapped,
               onWordLongPressed = onWordLongPressed,
+              onSelectionHandleDragged = onSelectionHandleDragged,
               onSelectionBoundsChanged = onSelectionBoundsChanged,
               isPdfMode = isPdfMode,
               modifier = Modifier
@@ -1181,6 +1293,7 @@ private fun ReaderPagerHost(
                 onNonWordTapped = onEmptyAreaTapIfNotSwiping,
                 onWordTapped = onWordTapped,
                 onWordLongPressed = onWordLongPressed,
+                onSelectionHandleDragged = onSelectionHandleDragged,
                 onSelectionBoundsChanged = onSelectionBoundsChanged,
                 isPdfMode = isPdfMode,
                 modifier = Modifier
@@ -1260,6 +1373,7 @@ private fun ReaderPagerHost(
               onNonWordTapped = onEmptyAreaTapIfNotSwiping,
               onWordTapped = onWordTapped,
               onWordLongPressed = onWordLongPressed,
+              onSelectionHandleDragged = onSelectionHandleDragged,
               onSelectionBoundsChanged = onSelectionBoundsChanged,
               isPdfMode = isPdfMode,
               modifier = Modifier.size(width = pageWidth, height = pageHeight),
@@ -1277,6 +1391,7 @@ private fun ReaderVerseInsightsHost(
   tafsirCatalogStateFlow: StateFlow<com.example.data.quran.TafsirCatalogUiState>,
   checkedTafsirIdsFlow: StateFlow<Set<String>>,
   surahsById: Map<Int, SurahMeta>,
+  initialSourceFilter: InsightsSourceFilter,
   onToggleSourceChecked: (String, Boolean) -> Unit,
   onOpenTafsirManager: () -> Unit,
   onPlaySingleAyah: (Int, Int) -> Unit,
@@ -1303,6 +1418,7 @@ private fun ReaderVerseInsightsHost(
     onOpenRangePicker = onOpenRangePicker,
     onDismiss = onDismiss,
     onSheetTopInRootChanged = onSheetTopInRootChanged,
+    initialSourceFilter = initialSourceFilter,
     modifier = modifier,
   )
 }
@@ -1847,6 +1963,7 @@ private fun ReaderReciterPickerHost(
   onPlayFromAyah: (Int, Int) -> Unit,
   onPlayRange: (RecitationRange) -> Unit,
   onClearRange: () -> Unit,
+  onOpenReciterDownloads: ((VerifiedReciter) -> Unit)? = null,
   onDismiss: () -> Unit,
 ) {
   val audioState by audioStateFlow.collectAsStateWithLifecycle()
@@ -1868,6 +1985,7 @@ private fun ReaderReciterPickerHost(
     isPdfMode = isPdfMode,
     onRetryLoad = onRetryLoad,
     onSelectReciterStyle = onSelectReciterStyle,
+    onOpenReciterDownloads = onOpenReciterDownloads,
   )
 }
 

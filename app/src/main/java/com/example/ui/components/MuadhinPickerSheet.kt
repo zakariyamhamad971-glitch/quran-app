@@ -4,7 +4,6 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -29,8 +28,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Mosque
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
@@ -39,7 +38,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,7 +59,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -95,27 +92,35 @@ fun MuadhinPickerSheet(
 
   var muadhinList by remember { mutableStateOf<List<AdhanSoundRegistryEntry>>(emptyList()) }
   var isLoadingRegistry by remember { mutableStateOf(true) }
+  var statusMessage by remember { mutableStateOf<String?>(null) }
   var searchQuery by remember { mutableStateOf("") }
   var onlyDownloaded by remember { mutableStateOf(false) }
 
-  // Player preview state
   var playingMuezzinId by remember { mutableStateOf<String?>(null) }
   var isBufferingPreview by remember { mutableStateOf(false) }
   var playerInstance by remember { mutableStateOf<MediaPlayer?>(null) }
 
-  // Download states
   val downloadingMap = remember { mutableStateMapOf<String, Boolean>() }
   val downloadedMap = remember { mutableStateMapOf<String, Boolean>() }
 
-  LaunchedEffect(Unit) {
-    val snapshot = soundRepository.loadRegistry()
-    muadhinList = snapshot.sounds
-    isLoadingRegistry = false
-    withContext(Dispatchers.IO) {
-      snapshot.sounds.forEach { entry ->
-        downloadedMap[entry.id] = soundRepository.isMuezzinDownloaded(entry.id)
+  fun loadCatalog(forceRefresh: Boolean = false) {
+    isLoadingRegistry = true
+    statusMessage = null
+    scope.launch {
+      val snapshot = soundRepository.loadRegistry(forceRefresh = forceRefresh)
+      muadhinList = snapshot.sounds
+      statusMessage = snapshot.loadError
+      isLoadingRegistry = false
+      withContext(Dispatchers.IO) {
+        snapshot.sounds.forEach { entry ->
+          downloadedMap[entry.id] = soundRepository.isMuezzinDownloaded(entry.id)
+        }
       }
     }
+  }
+
+  LaunchedEffect(Unit) {
+    loadCatalog(forceRefresh = false)
   }
 
   fun stopPreview() {
@@ -141,19 +146,25 @@ fun MuadhinPickerSheet(
       return
     }
     stopPreview()
+    statusMessage = null
 
     val localFile = soundRepository.getLocalMuezzinAudioFile(entry.id)
-    val hasLocal = localFile.exists() && localFile.length() > 1024L
+    val hasLocal = localFile.exists() && localFile.length() > 4096L
     val targetUri = if (hasLocal) {
       Uri.fromFile(localFile)
     } else {
       entry.audioUrl?.let { Uri.parse(it) }
-    } ?: return
+    }
+    if (targetUri == null) {
+      statusMessage = "لا يوجد رابط صوتي متاح لهذا المؤذن"
+      return
+    }
 
     playingMuezzinId = entry.id
     isBufferingPreview = true
 
-    scope.launch(Dispatchers.IO) {
+    // MediaPlayer MUST be created on main thread (with Looper) so prepareAsync callbacks fire.
+    scope.launch(Dispatchers.Main.immediate) {
       runCatching {
         val mp = MediaPlayer().apply {
           setAudioAttributes(
@@ -165,12 +176,17 @@ fun MuadhinPickerSheet(
           setDataSource(context, targetUri)
           setOnPreparedListener { player ->
             isBufferingPreview = false
-            player.start()
+            runCatching { player.start() }
+              .onFailure {
+                statusMessage = "تعذر بدء تشغيل صوت الأذان"
+                stopPreview()
+              }
           }
           setOnCompletionListener {
             stopPreview()
           }
           setOnErrorListener { _, _, _ ->
+            statusMessage = "تعذر تحميل أو تشغيل صوت هذا المؤذن"
             stopPreview()
             true
           }
@@ -178,9 +194,8 @@ fun MuadhinPickerSheet(
         }
         playerInstance = mp
       }.onFailure {
-        withContext(Dispatchers.Main) {
-          stopPreview()
-        }
+        statusMessage = "تعذر تشغيل المعاينة لهذا المؤذن"
+        stopPreview()
       }
     }
   }
@@ -188,11 +203,14 @@ fun MuadhinPickerSheet(
   fun triggerDownload(entry: AdhanSoundRegistryEntry) {
     if (downloadingMap[entry.id] == true) return
     downloadingMap[entry.id] = true
+    statusMessage = null
     scope.launch {
       val res = soundRepository.downloadMuezzinAudio(entry)
       downloadingMap[entry.id] = false
       if (res.isSuccess) {
         downloadedMap[entry.id] = true
+      } else {
+        statusMessage = res.exceptionOrNull()?.message ?: "تعذر تنزيل صوت المؤذن"
       }
     }
   }
@@ -232,7 +250,7 @@ fun MuadhinPickerSheet(
       ) {
         Column(modifier = Modifier.weight(1f)) {
           Text(
-            text = "مكتبة المؤذنين (~٥٠ مؤذن)",
+            text = "مكتبة المؤذنين (${muadhinList.size})",
             style = MaterialTheme.typography.titleLarge.copy(
               fontFamily = AmiriFontFamily,
               fontWeight = FontWeight.Bold,
@@ -246,8 +264,45 @@ fun MuadhinPickerSheet(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
         }
-        IconButton(onClick = onDismiss) {
+        IconButton(
+          onClick = { loadCatalog(forceRefresh = true) },
+          modifier = Modifier.size(48.dp),
+        ) {
+          Icon(Icons.Filled.Refresh, contentDescription = "تحديث قائمة المؤذنين")
+        }
+        IconButton(
+          onClick = onDismiss,
+          modifier = Modifier.size(48.dp),
+        ) {
           Icon(Icons.Filled.Close, contentDescription = "إغلاق")
+        }
+      }
+
+      if (!statusMessage.isNullOrBlank()) {
+        Spacer(Modifier.height(8.dp))
+        Surface(
+          shape = RoundedCornerShape(12.dp),
+          color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Icon(
+              Icons.Filled.ErrorOutline,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.error,
+              modifier = Modifier.size(18.dp),
+            )
+            Text(
+              text = statusMessage.orEmpty(),
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onErrorContainer,
+              modifier = Modifier.weight(1f),
+            )
+          }
         }
       }
 
@@ -256,7 +311,7 @@ fun MuadhinPickerSheet(
       OutlinedTextField(
         value = searchQuery,
         onValueChange = { searchQuery = it },
-        placeholder = { Text("ابحث باسم المؤذن (مثلاً: مصطفى إسماعيل، المنشاوي، القطامي)") },
+        placeholder = { Text("ابحث باسم المؤذن أو الحرم (مثل: مكة، العفاسي، المنشاوي)") },
         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
         trailingIcon = {
           if (searchQuery.isNotEmpty()) {
@@ -298,23 +353,45 @@ fun MuadhinPickerSheet(
         Box(
           modifier = Modifier
             .fillMaxWidth()
-            .height(200.dp),
+            .height(220.dp),
           contentAlignment = Alignment.Center,
         ) {
-          CircularProgressIndicator(modifier = Modifier.size(36.dp))
+          Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(modifier = Modifier.size(36.dp))
+            Spacer(Modifier.height(10.dp))
+            Text(
+              text = "جاري جلب أصوات المؤذنين...",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
         }
       } else if (filteredList.isEmpty()) {
-        Box(
+        Column(
           modifier = Modifier
             .fillMaxWidth()
-            .height(160.dp),
-          contentAlignment = Alignment.Center,
+            .heightIn(min = 180.dp)
+            .padding(vertical = 20.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.Center,
         ) {
           Text(
-            text = if (onlyDownloaded) "لا توجد أصوات أذان محمّلة بعد" else "لا توجد نتائج مطابقة للبحث",
+            text = when {
+              onlyDownloaded -> "لا توجد أصوات أذان محمّلة بعد"
+              muadhinList.isEmpty() -> "لم تتوفر أصوات مؤذنين حالياً"
+              else -> "لا توجد نتائج مطابقة للبحث"
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
+          if (muadhinList.isEmpty() && !onlyDownloaded) {
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(onClick = { loadCatalog(forceRefresh = true) }) {
+              Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.width(6.dp))
+              Text("إعادة المحاولة")
+            }
+          }
         }
       } else {
         LazyColumn(
@@ -408,13 +485,12 @@ private fun MuadhinItemCard(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-          // Play / Stop Preview circular button
           Surface(
             shape = CircleShape,
             color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
             modifier = Modifier
-              .size(46.dp)
+              .size(48.dp)
               .clip(CircleShape)
               .clickable(onClick = onTogglePreview)
               .testTag("muadhin_preview_${entry.id}"),
@@ -466,10 +542,11 @@ private fun MuadhinItemCard(
           }
         }
 
-        // Offline / Download Action
         Row(verticalAlignment = Alignment.CenterVertically) {
           if (isDownloading) {
-            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+              CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            }
           } else if (isDownloaded) {
             Surface(
               shape = RoundedCornerShape(8.dp),
@@ -496,7 +573,7 @@ private fun MuadhinItemCard(
             }
             IconButton(
               onClick = onDelete,
-              modifier = Modifier.size(36.dp),
+              modifier = Modifier.size(48.dp),
             ) {
               Icon(
                 Icons.Filled.Delete,
@@ -509,7 +586,7 @@ private fun MuadhinItemCard(
             IconButton(
               onClick = onDownload,
               modifier = Modifier
-                .size(38.dp)
+                .size(48.dp)
                 .testTag("muadhin_download_${entry.id}"),
             ) {
               Icon(
@@ -522,7 +599,6 @@ private fun MuadhinItemCard(
         }
       }
 
-      // Action buttons
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -535,7 +611,7 @@ private fun MuadhinItemCard(
           ),
           modifier = Modifier
             .weight(1f)
-            .heightIn(min = 40.dp)
+            .heightIn(min = 48.dp)
             .testTag("muadhin_set_${entry.id}"),
         ) {
           Text(
@@ -550,7 +626,7 @@ private fun MuadhinItemCard(
           shape = RoundedCornerShape(10.dp),
           modifier = Modifier
             .weight(1f)
-            .heightIn(min = 40.dp)
+            .heightIn(min = 48.dp)
             .testTag("muadhin_set_all_${entry.id}"),
         ) {
           Text(

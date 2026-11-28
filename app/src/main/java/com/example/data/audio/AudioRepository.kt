@@ -290,8 +290,19 @@ class AudioRepository(
         val normReq = normalizeArabicForSearch(requested)
         val aliases = when (requested) {
           "المنشاوي" -> listOf(normReq, normalizeArabicForSearch("محمد صديق المنشاوي"))
-          "أبو بكر الشاطري" -> listOf(normReq, normalizeArabicForSearch("شيخ ابو بكر الشاطري"))
-          "أحمد دايبان" -> listOf(normReq, normalizeArabicForSearch("احمد ديبان"), normalizeArabicForSearch("احمد بن علي دايبان"))
+          "عبد الباسط عبد الصمد" -> listOf(normReq, normalizeArabicForSearch("عبدالباسط عبدالصمد"))
+          "أبو بكر الشاطري" -> listOf(
+            normReq,
+            normalizeArabicForSearch("شيخ ابو بكر الشاطري"),
+            normalizeArabicForSearch("أبو بكر الشاطري"),
+          )
+          "أحمد دايبان" -> listOf(
+            normReq,
+            normalizeArabicForSearch("احمد ديبان"),
+            normalizeArabicForSearch("أحمد ديبان"),
+            normalizeArabicForSearch("احمد بن علي ديبان"),
+            normalizeArabicForSearch("احمد بن علي دايبان"),
+          )
           "مشاري العفاسي" -> listOf(normReq, normalizeArabicForSearch("مشاري راشد العفاسي"))
           else -> listOf(normReq)
         }
@@ -343,24 +354,18 @@ class AudioRepository(
               val n = normalizeArabicForSearch(r.name)
               aliases.any { it == n }
             }
-            if (exact.size == 1) {
-              val (rec, styles) = exact.first()
-              buildVerified(rec, styles)
-            } else {
-              VerifiedReciter(
-                orderIndex = idx,
-                requestedName = requested,
-                reciterId = null,
-                displayName = requested,
-                moshafId = null,
-                moshafName = null,
-                serverUrl = null,
-                availableSurahs = emptySet(),
-                status = ReciterMatchStatus.AMBIGUOUS,
-                statusNote = "تطابق متعدد (${matches.joinToString(" / ") { it.first.name }})",
-                isPrimaryOrdered = true,
-              )
-            }
+            val pool = if (exact.isNotEmpty()) exact else matches
+            val best = pool.sortedWith(
+              compareBy<Pair<Mp3QuranReciterDto, List<ReciterMoshafStyle>>>(
+                { (_, styles) ->
+                  val normStyle = normalizeArabicForSearch(styles.first().moshafName)
+                  if (normStyle == normTargetMoshaf) 0 else if (normStyle.contains("مرتل")) 1 else 2
+                },
+                { (_, styles) -> -styles.first().availableSurahs.size },
+                { (r, _) -> r.name.length },
+              ),
+            ).first()
+            buildVerified(best.first, best.second)
           }
           else -> {
             val (rec, styles) = matches.first()
@@ -460,6 +465,16 @@ class AudioRepository(
     forceRefresh: Boolean = false,
   ): Result<List<VerifiedReciter>> =
     riwayatClient.fetchRecitersForRiwayas(apiRiwayaIds, forceRefresh)
+
+  suspend fun getHafsDownloadableRecitersFast(): Result<List<VerifiedReciter>> = withContext(Dispatchers.IO) {
+    runCatching {
+      val hafsPair = getVerifiedRecitersCatalog().getOrThrow()
+      (hafsPair.first + hafsPair.second)
+        .filter { it.isPlayable }
+        .map { r -> if (r.riwayaName.isBlank()) r.copy(riwayaName = "حفص عن عاصم") else r }
+        .distinctBy { it.key }
+    }
+  }
 
   suspend fun getAllDownloadableRecitersCatalog(
     manifestRiwayaIds: List<Int>,

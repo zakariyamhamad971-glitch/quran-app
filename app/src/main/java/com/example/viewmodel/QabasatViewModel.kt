@@ -2082,28 +2082,55 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     return out
   }
 
+  private fun compareVerseKeys(aKey: String, bKey: String): Int {
+    val a = parseVerseKeyPair(aKey) ?: return aKey.compareTo(bKey)
+    val b = parseVerseKeyPair(bKey) ?: return aKey.compareTo(bKey)
+    val surahCmp = a.first.compareTo(b.first)
+    return if (surahCmp != 0) surahCmp else a.second.compareTo(b.second)
+  }
+
   fun onWordTapped(verseKey: String, pageNumber: Int, verseCodeV2Line: String) {
     if (_uiState.value.activeMushafIsPdf) return
     versePageHints[verseKey] = pageNumber
     if (verseCodeV2Line.isNotBlank()) {
       verseCodeV2Hints[verseKey] = verseCodeV2Line
     }
-    var updatedKeys: List<String> = emptyList()
-    _uiState.update { st ->
-      val current = st.selectedVerseKeys
-      val next = if (current.contains(verseKey)) {
-        current.filterNot { it == verseKey }
-      } else {
-        sortVerseKeys(current + verseKey)
+    viewModelScope.launch {
+      val surahsMap = cachedSurahsById.ifEmpty {
+        quranRepository.getSurahs().getOrDefault(emptyList()).associateBy { it.id }.also {
+          if (it.isNotEmpty()) cachedSurahsById = it
+        }
       }
-      val nextAnchor = if (next.contains(verseKey)) verseKey else next.lastOrNull()
-      updatedKeys = next
-      st.copy(selectedVerseKeys = next, lastSelectedVerseKey = nextAnchor)
-    }
-    if (updatedKeys.isEmpty()) {
-      _verseInsightsState.value = VerseInsightsUiState.Hidden
-    } else if (_verseInsightsState.value !is VerseInsightsUiState.Hidden) {
-      openInsightsForSelectedAyahs()
+      var updatedKeys: List<String> = emptyList()
+      _uiState.update { st ->
+        val current = st.selectedVerseKeys
+        val next = when {
+          current.isEmpty() -> listOf(verseKey)
+          current.contains(verseKey) -> {
+            when {
+              current.size == 1 -> emptyList()
+              verseKey == current.first() -> current.drop(1)
+              verseKey == current.last() -> current.dropLast(1)
+              else -> enumerateVerseRangeInclusive(current.first(), verseKey, surahsMap)
+            }
+          }
+          else -> {
+            val first = current.first()
+            val last = current.last()
+            val rangeStart = if (compareVerseKeys(verseKey, first) < 0) verseKey else first
+            val rangeEnd = if (compareVerseKeys(verseKey, last) > 0) verseKey else last
+            enumerateVerseRangeInclusive(rangeStart, rangeEnd, surahsMap)
+          }
+        }
+        val nextAnchor = if (next.contains(verseKey)) verseKey else next.lastOrNull()
+        updatedKeys = next
+        st.copy(selectedVerseKeys = next, lastSelectedVerseKey = nextAnchor)
+      }
+      if (updatedKeys.isEmpty()) {
+        _verseInsightsState.value = VerseInsightsUiState.Hidden
+      } else if (_verseInsightsState.value !is VerseInsightsUiState.Hidden) {
+        openInsightsForSelectedAyahs()
+      }
     }
   }
 
@@ -2120,17 +2147,66 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
         }
       }
       val snapshot = _uiState.value
-      val anchor = snapshot.lastSelectedVerseKey ?: snapshot.selectedVerseKeys.lastOrNull() ?: verseKey
-      val rangeKeys = enumerateVerseRangeInclusive(anchor, verseKey, surahsMap)
+      val current = snapshot.selectedVerseKeys
+      val rangeKeys = if (current.isEmpty()) {
+        listOf(verseKey)
+      } else {
+        val anchor = snapshot.lastSelectedVerseKey ?: current.firstOrNull() ?: verseKey
+        enumerateVerseRangeInclusive(anchor, verseKey, surahsMap)
+      }
       var updatedKeys: List<String> = emptyList()
       _uiState.update { st ->
-        val next = sortVerseKeys(st.selectedVerseKeys + rangeKeys)
+        val next = sortVerseKeys(if (current.isEmpty()) rangeKeys else st.selectedVerseKeys + rangeKeys)
         updatedKeys = next
         st.copy(selectedVerseKeys = next, lastSelectedVerseKey = verseKey)
       }
       if (updatedKeys.isNotEmpty() && _verseInsightsState.value !is VerseInsightsUiState.Hidden) {
         openInsightsForSelectedAyahs()
       }
+    }
+  }
+
+  fun onSelectionHandleDragged(
+    isStart: Boolean,
+    targetVerseKey: String,
+    pageNumber: Int,
+    verseCodeV2Line: String,
+  ) {
+    if (_uiState.value.activeMushafIsPdf) return
+    versePageHints[targetVerseKey] = pageNumber
+    if (verseCodeV2Line.isNotBlank()) {
+      verseCodeV2Hints[targetVerseKey] = verseCodeV2Line
+    }
+    val surahsMap = cachedSurahsById
+    if (surahsMap.isEmpty()) {
+      viewModelScope.launch {
+        val loaded = quranRepository.getSurahs().getOrDefault(emptyList()).associateBy { it.id }.also {
+          if (it.isNotEmpty()) cachedSurahsById = it
+        }
+        applySelectionHandleRange(isStart, targetVerseKey, loaded)
+      }
+    } else {
+      applySelectionHandleRange(isStart, targetVerseKey, surahsMap)
+    }
+  }
+
+  private fun applySelectionHandleRange(
+    isStart: Boolean,
+    targetVerseKey: String,
+    surahsMap: Map<Int, SurahMeta>,
+  ) {
+    var changed = false
+    _uiState.update { st ->
+      val current = st.selectedVerseKeys
+      if (current.isEmpty()) return@update st
+      val anchorOther = if (isStart) current.last() else current.first()
+      val next = enumerateVerseRangeInclusive(targetVerseKey, anchorOther, surahsMap)
+      if (next == current) return@update st
+      changed = true
+      st.copy(selectedVerseKeys = next, lastSelectedVerseKey = targetVerseKey)
+    }
+    if (changed && _verseInsightsState.value !is VerseInsightsUiState.Hidden) {
+      openInsightsForSelectedAyahs()
     }
   }
 
@@ -2387,8 +2463,16 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
     }
     downloadableRecitersJob?.cancel()
     downloadableRecitersJob = viewModelScope.launch {
-      _downloadableRecitersState.update { it.copy(isLoading = true, errorMessage = null) }
+      _downloadableRecitersState.update { it.copy(isLoading = it.reciters.isEmpty(), errorMessage = null) }
       audioCacheManager.refreshDownloadedKeys()
+      val fastHafs = audioRepository.getHafsDownloadableRecitersFast().getOrDefault(emptyList())
+      if (fastHafs.isNotEmpty()) {
+        _downloadableRecitersState.value = DownloadableRecitersUiState(
+          reciters = fastHafs,
+          isLoading = false,
+          errorMessage = null,
+        )
+      }
       val manifestEntries = _uiState.value.pdfMushafs.ifEmpty {
         pdfMushafRepository.readCachedManifestOrEmpty().ifEmpty {
           pdfMushafRepository.fetchManifest(forceRefresh = false).getOrDefault(emptyList())
@@ -2406,10 +2490,10 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
           errorMessage = null,
         )
       }.onFailure {
-        _downloadableRecitersState.update {
-          it.copy(
+        _downloadableRecitersState.update { st ->
+          st.copy(
             isLoading = false,
-            errorMessage = "تعذر تحميل قائمة القراء",
+            errorMessage = if (st.reciters.isEmpty()) "تعذر تحميل قائمة القراء" else null,
           )
         }
       }

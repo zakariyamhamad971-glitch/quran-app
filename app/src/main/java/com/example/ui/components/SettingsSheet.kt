@@ -563,14 +563,14 @@ fun SettingsSheet(
                 Spacer(Modifier.width(14.dp))
                 Column {
                   Text(
-                    text = "تنبيهات الأذان والمواقيت",
+                    text = "المواقيت وتنبيهات الأذان",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
                   )
                   Spacer(Modifier.height(2.dp))
                   Text(
-                    text = "ضبط أصوات الأذان، الإشعار الدائم، وتجربة التنبيه",
+                    text = "طريقة الحساب، أصوات الأذان، الإشعار الدائم، والتنبيه قبل الأذان",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                   )

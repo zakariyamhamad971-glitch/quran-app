@@ -4,7 +4,21 @@
     android:viewportWidth="24"
     android:viewportHeight="24"
     android:tint="#FFFFFF">
+    <!-- Qabasat 8-pointed star (Rub el Hizb outer frame) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.4"
+        android:strokeLineJoin="round"
+        android:pathData="M5,5 H19 V19 H5 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.4"
+        android:strokeLineJoin="round"
+        android:pathData="M12,2.1 L21.9,12 L12,21.9 L2.1,12 Z" />
+    <!-- Open Mushaf pages centered inside the geometric star -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M12,2C8.69,2 6,4.69 6,8v5l-2,2v1h16v-1l-2,-2V8c0,-3.31 -2.69,-6 -6,-6zm0,2c2.21,0 4,1.79 4,4v5H8V8c0,-2.21 1.79,-4 4,-4zm-2,15h4c0,1.1 -0.9,2 -2,2s-2,-0.9 -2,-2z" />
+        android:pathData="M11.4,9.5 C10.2,8.8 8.7,8.7 7.3,9.1 L7.3,14.8 C8.7,14.4 10.2,14.5 11.4,15.3 Z M12.6,9.5 L12.6,15.3 C13.8,14.5 15.3,14.4 16.7,14.8 L16.7,9.1 C15.3,8.7 13.8,8.8 12.6,9.5 Z" />
 </vector>

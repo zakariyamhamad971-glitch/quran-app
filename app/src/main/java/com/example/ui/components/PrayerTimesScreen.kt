@@ -7,6 +7,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -38,6 +39,8 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Brightness7
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.NightsStay
@@ -56,8 +59,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,8 +72,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -76,6 +84,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.prayer.AdhanSettingsState
@@ -110,18 +121,29 @@ fun PrayerHomeScreen(
   modifier: Modifier = Modifier,
 ) {
   val uiState by prayerViewModel.uiState.collectAsStateWithLifecycle()
-  var showCityPicker by rememberSaveable { mutableStateOf(false) }
+  val lifecycleOwner = LocalLifecycleOwner.current
   var showPrayerSettings by rememberSaveable { mutableStateOf(false) }
   var showAdhanSettings by rememberSaveable { mutableStateOf(false) }
   var editingSoundPrayer by rememberSaveable { mutableStateOf<PrayerType?>(null) }
 
-  val locationPermissionLauncher = rememberLauncherForActivityResult(
-    contract = ActivityResultContracts.RequestPermission(),
-  ) { granted ->
-    prayerViewModel.onLocationPermissionResult(granted)
-    if (!granted && uiState.settings.location == null) {
-      showCityPicker = true
+  DisposableEffect(lifecycleOwner) {
+    val observer = LifecycleEventObserver { _, event ->
+      if (event == Lifecycle.Event.ON_RESUME) {
+        prayerViewModel.onScreenResumed()
+      }
     }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose {
+      lifecycleOwner.lifecycle.removeObserver(observer)
+    }
+  }
+
+  val locationPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestMultiplePermissions(),
+  ) { perms ->
+    val granted = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+      perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    prayerViewModel.onLocationPermissionResult(granted)
   }
 
   val onRequestCoarseLocation = remember(locationPermissionLauncher, prayerViewModel, uiState.hasLocationPermission) {
@@ -129,7 +151,12 @@ fun PrayerHomeScreen(
       if (uiState.hasLocationPermission) {
         prayerViewModel.refreshCoarseLocation()
       } else {
-        locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        locationPermissionLauncher.launch(
+          arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+          ),
+        )
       }
     }
   }
@@ -176,12 +203,15 @@ fun PrayerHomeScreen(
                 .verticalScroll(rememberScrollState()),
               verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
+              MissingPermissionsCard(
+                onLocationPermissionGranted = prayerViewModel::refreshCoarseLocation,
+              )
               PrayerTimesMainCard(
                 uiState = uiState,
                 isDarkTheme = isDarkTheme,
                 onSelectDayOffset = prayerViewModel::selectDayOffset,
+                onStepDayOffset = prayerViewModel::stepDayOffset,
                 onRequestLocation = onRequestCoarseLocation,
-                onOpenCityPicker = { showCityPicker = true },
                 onTogglePrayerCompleted = prayerViewModel::togglePrayerCompleted,
                 onOpenPrayerSound = { editingSoundPrayer = it },
               )
@@ -204,7 +234,7 @@ fun PrayerHomeScreen(
                 uiState = uiState,
                 onOpenPrayerSettings = { showPrayerSettings = true },
                 onOpenAdhanSettings = { showAdhanSettings = true },
-                onOpenCityPicker = { showCityPicker = true },
+                onRefreshLocation = onRequestCoarseLocation,
               )
             }
           }
@@ -217,12 +247,15 @@ fun PrayerHomeScreen(
               .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
           ) {
+            MissingPermissionsCard(
+              onLocationPermissionGranted = prayerViewModel::refreshCoarseLocation,
+            )
             PrayerTimesMainCard(
               uiState = uiState,
               isDarkTheme = isDarkTheme,
               onSelectDayOffset = prayerViewModel::selectDayOffset,
+              onStepDayOffset = prayerViewModel::stepDayOffset,
               onRequestLocation = onRequestCoarseLocation,
-              onOpenCityPicker = { showCityPicker = true },
               onTogglePrayerCompleted = prayerViewModel::togglePrayerCompleted,
               onOpenPrayerSound = { editingSoundPrayer = it },
             )
@@ -240,15 +273,6 @@ fun PrayerHomeScreen(
         }
       }
     }
-  }
-
-  if (showCityPicker) {
-    ManualCityPickerSheet(
-      currentCityName = uiState.settings.location?.displayName,
-      onUseCoarseLocation = onRequestCoarseLocation,
-      onSelectCity = prayerViewModel::selectManualCity,
-      onDismiss = { showCityPicker = false },
-    )
   }
 
   if (showPrayerSettings) {
@@ -271,9 +295,20 @@ fun PrayerHomeScreen(
       isTestPlaying = uiState.isTestAdhanPlaying,
       onToggleAlarmsEnabled = prayerViewModel::setAdhanAlarmsEnabled,
       onTogglePersistentCountdown = prayerViewModel::setPersistentCountdownEnabled,
+      onSelectPreAdhanMinutes = prayerViewModel::setAdhanPreAlertMinutes,
+      onChangeVolumePercent = prayerViewModel::setAdhanVolumePercent,
+      onToggleVibrate = prayerViewModel::setAdhanVibrateEnabled,
+      onSelectBackground = prayerViewModel::setAdhanBackground,
       onEditPrayerSound = { editingSoundPrayer = it },
       onTestAdhanNow = { prayerViewModel.startTestAdhan10s() },
       onStopTestAdhan = { prayerViewModel.stopTestAdhan() },
+      prayerSettings = uiState.settings,
+      onSelectMethod = prayerViewModel::setCalculationMethod,
+      onResetMethodToCountryDefault = prayerViewModel::resetMethodToCountryDefault,
+      onSelectMadhab = prayerViewModel::setAsrMadhab,
+      onSelectHighLatitudeRule = prayerViewModel::setHighLatitudeRule,
+      onAdjustMinutes = prayerViewModel::adjustPrayerMinutes,
+      onResetAdjustments = prayerViewModel::resetAllAdjustments,
       onDismiss = {
         showAdhanSettings = false
         prayerViewModel.refreshAlarmsAndNotification()
@@ -376,8 +411,8 @@ private fun PrayerTimesMainCard(
   uiState: PrayerTimesUiState,
   isDarkTheme: Boolean,
   onSelectDayOffset: (Int) -> Unit,
+  onStepDayOffset: (Int) -> Unit,
   onRequestLocation: () -> Unit,
-  onOpenCityPicker: () -> Unit,
   onTogglePrayerCompleted: (PrayerType) -> Unit,
   onOpenPrayerSound: (PrayerType) -> Unit,
 ) {
@@ -391,6 +426,8 @@ private fun PrayerTimesMainCard(
   } else {
     QabasatGold.copy(alpha = 0.38f)
   }
+  val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+  var accumulatedDrag by remember { mutableFloatStateOf(0f) }
 
   Surface(
     shape = RoundedCornerShape(24.dp),
@@ -400,6 +437,26 @@ private fun PrayerTimesMainCard(
     border = BorderStroke(1.dp, borderColor),
     modifier = Modifier
       .fillMaxWidth()
+      .pointerInput(isRtl) {
+        detectHorizontalDragGestures(
+          onDragStart = { accumulatedDrag = 0f },
+          onHorizontalDrag = { _, dragAmount ->
+            accumulatedDrag += dragAmount
+          },
+          onDragCancel = { accumulatedDrag = 0f },
+          onDragEnd = {
+            if (kotlin.math.abs(accumulatedDrag) >= 72f) {
+              val step = if (isRtl) {
+                if (accumulatedDrag > 0f) 1 else -1
+              } else {
+                if (accumulatedDrag < 0f) 1 else -1
+              }
+              onStepDayOffset(step)
+            }
+            accumulatedDrag = 0f
+          },
+        )
+      }
       .testTag("home_prayer_card"),
   ) {
     Column(
@@ -407,7 +464,7 @@ private fun PrayerTimesMainCard(
         .fillMaxWidth()
         .padding(16.dp),
     ) {
-      // Location header + Yesterday / Today / Tomorrow switch
+      // Location header + Multi-day navigator (-30..+30 days)
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -420,7 +477,7 @@ private fun PrayerTimesMainCard(
             .weight(1f, fill = false)
             .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(50))
-            .clickable(onClick = onOpenCityPicker)
+            .clickable(onClick = onRequestLocation)
             .testTag("home_location_chip"),
         ) {
           Row(
@@ -435,7 +492,7 @@ private fun PrayerTimesMainCard(
             )
             Spacer(Modifier.width(6.dp))
             Text(
-              text = uiState.settings.location?.resolvedLabel() ?: "اختر الموقع",
+              text = uiState.settings.location?.resolvedLabel() ?: "لم يتم تحديد الموقع",
               style = MaterialTheme.typography.labelLarge,
               color = MaterialTheme.colorScheme.onPrimaryContainer,
               maxLines = 1,
@@ -446,9 +503,11 @@ private fun PrayerTimesMainCard(
 
         Spacer(Modifier.width(8.dp))
 
-        DaySwitcherPill(
+        DayNavigatorPill(
           selectedOffset = uiState.selectedDayOffset,
-          onSelectOffset = onSelectDayOffset,
+          isRtl = isRtl,
+          onStepOffset = onStepDayOffset,
+          onResetToday = { onSelectDayOffset(0) },
         )
       }
 
@@ -459,8 +518,7 @@ private fun PrayerTimesMainCard(
           isLoading = uiState.isLoadingLocation,
           permissionDenied = uiState.locationPermissionDenied,
           locationUnavailable = uiState.locationUnavailable,
-          onRequestLocation = onRequestCoarseLocation(onRequestLocation),
-          onOpenCityPicker = onOpenCityPicker,
+          onRequestLocation = onRequestLocation,
         )
       } else {
         val tzId = uiState.settings.location.timeZoneId
@@ -514,53 +572,97 @@ private fun PrayerTimesMainCard(
   }
 }
 
-private fun onRequestCoarseLocation(block: () -> Unit): () -> Unit = block
-
 @Composable
-private fun DaySwitcherPill(
+private fun DayNavigatorPill(
   selectedOffset: Int,
-  onSelectOffset: (Int) -> Unit,
+  isRtl: Boolean,
+  onStepOffset: (Int) -> Unit,
+  onResetToday: () -> Unit,
 ) {
-  val items = remember {
-    listOf(
-      -1 to "أمس",
-      0 to "اليوم",
-      1 to "غداً",
-    )
+  val label = remember(selectedOffset) {
+    when (selectedOffset) {
+      0 -> "اليوم"
+      1 -> "غداً"
+      -1 -> "أمس"
+      in 2..30 -> "بعد ${PrayerFormatters.toArabicIndicDigits(selectedOffset)} ي"
+      else -> "قبل ${PrayerFormatters.toArabicIndicDigits(-selectedOffset)} ي"
+    }
   }
+  val prevIcon = if (isRtl) Icons.Filled.ChevronRight else Icons.Filled.ChevronLeft
+  val nextIcon = if (isRtl) Icons.Filled.ChevronLeft else Icons.Filled.ChevronRight
+
   Surface(
     shape = RoundedCornerShape(14.dp),
-    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
   ) {
     Row(
-      modifier = Modifier.padding(3.dp),
+      modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      items.forEach { (offset, label) ->
-        val selected = selectedOffset == offset
-        Surface(
-          shape = RoundedCornerShape(11.dp),
-          color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
-          modifier = Modifier
-            .heightIn(min = 42.dp)
-            .clip(RoundedCornerShape(11.dp))
-            .clickable { onSelectOffset(offset) }
-            .testTag("prayer_day_switch_$offset"),
+      IconButton(
+        onClick = { onStepOffset(-1) },
+        enabled = selectedOffset > -30,
+        modifier = Modifier
+          .size(48.dp)
+          .testTag("prayer_day_prev_button"),
+      ) {
+        Icon(
+          imageVector = prevIcon,
+          contentDescription = "اليوم السابق",
+          tint = if (selectedOffset > -30) {
+            MaterialTheme.colorScheme.onSurface
+          } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+          },
+        )
+      }
+
+      Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = if (selectedOffset == 0) {
+          MaterialTheme.colorScheme.primary
+        } else {
+          MaterialTheme.colorScheme.primaryContainer
+        },
+        modifier = Modifier
+          .heightIn(min = 40.dp)
+          .clip(RoundedCornerShape(10.dp))
+          .clickable(enabled = selectedOffset != 0, onClick = onResetToday)
+          .testTag("prayer_day_today_badge"),
+      ) {
+        Box(
+          modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+          contentAlignment = Alignment.Center,
         ) {
-          Box(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            contentAlignment = Alignment.Center,
-          ) {
-            Text(
-              text = label,
-              style = MaterialTheme.typography.labelMedium.copy(
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-              ),
-              color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-              maxLines = 1,
-            )
-          }
+          Text(
+            text = if (selectedOffset == 0) label else "$label • اليوم",
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+            color = if (selectedOffset == 0) {
+              MaterialTheme.colorScheme.onPrimary
+            } else {
+              MaterialTheme.colorScheme.onPrimaryContainer
+            },
+            maxLines = 1,
+          )
         }
+      }
+
+      IconButton(
+        onClick = { onStepOffset(1) },
+        enabled = selectedOffset < 30,
+        modifier = Modifier
+          .size(48.dp)
+          .testTag("prayer_day_next_button"),
+      ) {
+        Icon(
+          imageVector = nextIcon,
+          contentDescription = "اليوم التالي",
+          tint = if (selectedOffset < 30) {
+            MaterialTheme.colorScheme.onSurface
+          } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+          },
+        )
       }
     }
   }
@@ -594,58 +696,85 @@ private fun NextPrayerHeroSection(
         .fillMaxWidth()
         .padding(horizontal = 16.dp, vertical = 14.dp),
     ) {
+      // Top row: Prominent live current time + small Sun/Moon daytime/nighttime icon
       Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          modifier = Modifier.weight(1f),
+        Column {
+          Text(
+            text = "الوقت الحالي",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = 0.72f),
+          )
+          LiveCurrentTimeText(
+            timeZoneId = timeZoneId,
+            color = Color.White,
+          )
+        }
+
+        Surface(
+          shape = RoundedCornerShape(50),
+          color = Color.White.copy(alpha = 0.14f),
         ) {
-          Surface(
-            shape = CircleShape,
-            color = Color.White.copy(alpha = 0.14f),
-            modifier = Modifier.size(46.dp),
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
           ) {
-            Box(contentAlignment = Alignment.Center) {
-              Icon(
-                imageVector = if (isDaytime) Icons.Filled.WbSunny else Icons.Filled.NightsStay,
-                contentDescription = if (isDaytime) "النهار" else "الليل",
-                tint = goldAccent,
-                modifier = Modifier.size(26.dp),
-              )
-            }
-          }
-          Spacer(Modifier.width(12.dp))
-          Column {
-            Text(
-              text = if (nextPrayer?.isTomorrow == true) {
-                "${stringResource(R.string.prayer_next_label)} (غداً)"
-              } else {
-                stringResource(R.string.prayer_next_label)
-              },
-              style = MaterialTheme.typography.labelMedium,
-              color = Color.White.copy(alpha = 0.8f),
+            Icon(
+              imageVector = if (isDaytime) Icons.Filled.WbSunny else Icons.Filled.NightsStay,
+              contentDescription = if (isDaytime) "نهاراً" else "ليلاً",
+              tint = goldAccent,
+              modifier = Modifier.size(18.dp),
             )
-            if (nextPrayer != null) {
-              Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                  text = nextPrayer.prayerType.arabicName,
-                  style = MaterialTheme.typography.headlineSmall.copy(
-                    fontFamily = AmiriFontFamily,
-                    fontWeight = FontWeight.Bold,
-                  ),
-                  color = Color.White,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                  text = PrayerFormatters.formatTime12hArabic(nextPrayer.targetEpochMs, timeZoneId),
-                  style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                  color = goldAccent,
-                  modifier = Modifier.padding(bottom = 2.dp),
-                )
-              }
+            Spacer(Modifier.width(5.dp))
+            Text(
+              text = if (isDaytime) "نهار" else "ليل",
+              style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+              color = Color.White.copy(alpha = 0.9f),
+            )
+          }
+        }
+      }
+
+      Spacer(Modifier.height(10.dp))
+      HorizontalDivider(color = Color.White.copy(alpha = 0.14f))
+      Spacer(Modifier.height(10.dp))
+
+      // Middle row: Next prayer underneath the current time
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = if (nextPrayer?.isTomorrow == true) {
+              "${stringResource(R.string.prayer_next_label)} (غداً)"
+            } else {
+              stringResource(R.string.prayer_next_label)
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = Color.White.copy(alpha = 0.8f),
+          )
+          if (nextPrayer != null) {
+            Row(verticalAlignment = Alignment.Bottom) {
+              Text(
+                text = nextPrayer.prayerType.arabicName,
+                style = MaterialTheme.typography.headlineSmall.copy(
+                  fontFamily = AmiriFontFamily,
+                  fontWeight = FontWeight.Bold,
+                ),
+                color = Color.White,
+              )
+              Spacer(Modifier.width(8.dp))
+              Text(
+                text = PrayerFormatters.formatTime12hArabic(nextPrayer.targetEpochMs, timeZoneId),
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = goldAccent,
+                modifier = Modifier.padding(bottom = 2.dp),
+              )
             }
           }
         }
@@ -693,6 +822,36 @@ private fun NextPrayerHeroSection(
       }
     }
   }
+}
+
+@Composable
+private fun LiveCurrentTimeText(
+  timeZoneId: String,
+  color: Color,
+) {
+  var currentTimeText by remember(timeZoneId) {
+    mutableStateOf(PrayerFormatters.formatTime12hArabic(System.currentTimeMillis(), timeZoneId))
+  }
+
+  LaunchedEffect(timeZoneId) {
+    while (isActive) {
+      val now = System.currentTimeMillis()
+      currentTimeText = PrayerFormatters.formatTime12hArabic(now, timeZoneId)
+      val sleepMs = (60_000L - (now % 60_000L)).coerceIn(500L, 60_000L)
+      delay(sleepMs)
+    }
+  }
+
+  Text(
+    text = currentTimeText,
+    style = MaterialTheme.typography.headlineMedium.copy(
+      fontWeight = FontWeight.Bold,
+      fontSize = 28.sp,
+    ),
+    color = color,
+    maxLines = 1,
+    modifier = Modifier.testTag("prayer_live_current_time"),
+  )
 }
 
 /**
@@ -893,7 +1052,6 @@ private fun LocationSetupPrompt(
   permissionDenied: Boolean,
   locationUnavailable: Boolean,
   onRequestLocation: () -> Unit,
-  onOpenCityPicker: () -> Unit,
 ) {
   Surface(
     shape = RoundedCornerShape(16.dp),
@@ -914,13 +1072,19 @@ private fun LocationSetupPrompt(
       )
       Spacer(Modifier.height(8.dp))
       Text(
+        text = "لم يتم تحديد الموقع",
+        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+        color = MaterialTheme.colorScheme.onSurface,
+      )
+      Spacer(Modifier.height(4.dp))
+      Text(
         text = when {
-          permissionDenied -> "لم يتم منح إذن الموقع. يمكنك اختيار مدينتك يدوياً لحساب المواقيت بدقة دون اتصال."
-          locationUnavailable -> "تعذر الحصول على الموقع حالياً. يمكنك اختيار مدينتك يدوياً أو المحاولة لاحقاً."
-          else -> stringResource(R.string.prayer_location_needed)
+          permissionDenied -> "يرجى منح إذن الموقع لتحديد إحداثياتك تلقائياً وحساب مواقيت الصلاة بدقة."
+          locationUnavailable -> "تعذر الحصول على إشارة الموقع حالياً. تأكد من تفعيل الموقع (GPS) ثم أعد المحاولة."
+          else -> "اضغط لتحديد موقعك تلقائياً وحساب مواقيت الصلاة لمنطقتك."
         },
         style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurface,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
       Spacer(Modifier.height(14.dp))
 
@@ -929,39 +1093,22 @@ private fun LocationSetupPrompt(
         Spacer(Modifier.height(10.dp))
       }
 
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+      Button(
+        onClick = onRequestLocation,
+        enabled = !isLoading,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 48.dp)
+          .testTag("prayer_detect_location_button"),
       ) {
-        Button(
-          onClick = onRequestLocation,
-          enabled = !isLoading,
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-          modifier = Modifier
-            .weight(1f)
-            .heightIn(min = 48.dp)
-            .testTag("prayer_detect_location_button"),
-        ) {
-          Text(
-            text = stringResource(R.string.prayer_location_detect),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
-        }
-        OutlinedButton(
-          onClick = onOpenCityPicker,
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-          modifier = Modifier
-            .weight(1f)
-            .heightIn(min = 48.dp)
-            .testTag("prayer_manual_city_button"),
-        ) {
-          Text(
-            text = stringResource(R.string.prayer_location_pick_city),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
-        }
+        Icon(Icons.Filled.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(
+          text = if (permissionDenied) "منح إذن الموقع وتحديد الموقع" else "تحديد الموقع تلقائياً",
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
       }
     }
   }
@@ -1095,7 +1242,7 @@ private fun QuickPrayerMetaCard(
   uiState: PrayerTimesUiState,
   onOpenPrayerSettings: () -> Unit,
   onOpenAdhanSettings: () -> Unit,
-  onOpenCityPicker: () -> Unit,
+  onRefreshLocation: () -> Unit,
 ) {
   Surface(
     shape = RoundedCornerShape(18.dp),
@@ -1124,12 +1271,12 @@ private fun QuickPrayerMetaCard(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
         OutlinedButton(
-          onClick = onOpenCityPicker,
+          onClick = onRefreshLocation,
           modifier = Modifier
             .weight(1f)
             .heightIn(min = 48.dp),
         ) {
-          Text("تغيير المدينة", maxLines = 1)
+          Text("تحديث الموقع", maxLines = 1)
         }
         OutlinedButton(
           onClick = onOpenPrayerSettings,

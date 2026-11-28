@@ -165,7 +165,7 @@ class TafsirRegistryRepository(
         "urdu", "ur" -> "الأردية"
         "bengali", "bn" -> "البنغالية"
         "russian", "ru" -> "الروسية"
-        "kurdish", "ku" -> "الكردية"
+        "kurdish", "ku", "sorani", "ckb", "kurmanji" -> "الكردية"
         "indonesian", "id" -> "الإندونيسية"
         "malay", "ms" -> "الماليزية"
         "turkish", "tr" -> "التركية"
@@ -181,9 +181,212 @@ class TafsirRegistryRepository(
         "hindi", "hi" -> "الهندية"
         "malayalam", "ml" -> "المالايالامية"
         "tamil", "ta" -> "التاميلية"
-        else -> rawLang.trim().replaceFirstChar {
-          if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString()
-        }.ifBlank { "أخرى" }
+        "tajik", "tg" -> "الطاجيكية"
+        "pashto", "pushto", "ps" -> "البشتوية"
+        "sindhi", "sd" -> "السندية"
+        "somali", "so" -> "الصومالية"
+        "swahili", "sw" -> "السواحيلية"
+        "amharic", "am" -> "الأمهرية"
+        "italian", "it" -> "الإيطالية"
+        "portuguese", "pt" -> "البرتغالية"
+        "dutch", "nl" -> "الهولندية"
+        "japanese", "ja" -> "اليابانية"
+        "korean", "ko" -> "الكورية"
+        "thai", "th" -> "التايلاندية"
+        "kazakh", "kk" -> "الكازاخية"
+        "chechen", "ce" -> "الشيشانية"
+        "uyghur", "uighur", "ug" -> "الأويغورية"
+        "hausa", "ha" -> "الهوسا"
+        "yoruba", "yo" -> "اليوروبا"
+        "filipino", "tagalog", "tl", "fil" -> "الفلبينية"
+        "divehi", "dhivehi", "dv" -> "المالديفية"
+        "marathi", "mr" -> "المراثية"
+        "telugu", "te" -> "التيلوغوية"
+        "gujarati", "gu" -> "الغوجاراتية"
+        "punjabi", "panjabi", "pa" -> "البنجابية"
+        "assamese", "as" -> "الآسامية"
+        "nepali", "ne" -> "النيبالية"
+        "sinhala", "sinhalese", "si" -> "السنهالية"
+        "romanian", "ro" -> "الرومانية"
+        "polish", "pl" -> "البولندية"
+        "swedish", "sv" -> "السويدية"
+        "norwegian", "no" -> "النرويجية"
+        "danish", "da" -> "الدنماركية"
+        "finnish", "fi" -> "الفنلندية"
+        "greek", "el" -> "اليونانية"
+        "hebrew", "he" -> "العبرية"
+        "bulgarian", "bg" -> "البلغارية"
+        "ukrainian", "uk" -> "الأوكرانية"
+        "czech", "cs" -> "التشيكية"
+        "hungarian", "hu" -> "المجرية"
+        "vietnamese", "vi" -> "الفيتنامية"
+        "tatar", "tt" -> "التترية"
+        "kyrgyz", "kirghiz", "ky" -> "القيرغيزية"
+        "turkmen", "tk" -> "التركمانية"
+        "kannada", "kn" -> "الكانادية"
+        "kashmiri", "ks" -> "الكشميرية"
+        "oromo", "om" -> "الأورومو"
+        "tigrinya", "ti" -> "التغرينية"
+        "zulu", "zu" -> "الزولو"
+        "afrikaans", "af" -> "الأفريقانية"
+        "catalan", "ca" -> "الكتالانية"
+        "serbian", "sr" -> "الصربية"
+        "croatian", "hr" -> "الكرواتية"
+        "other", "multi", "" -> "لغات أخرى"
+        else -> "لغة أخرى"
+      }
+    }
+
+    private fun hasLatinLetters(text: String): Boolean = text.any { it in 'A'..'Z' || it in 'a'..'z' }
+
+    private fun transliterateLatinToArabic(raw: String): String {
+      if (raw.isBlank()) return ""
+      val lower = raw.trim().lowercase(Locale.ROOT)
+      val out = StringBuilder(lower.length)
+      var i = 0
+      while (i < lower.length) {
+        val two = if (i + 1 < lower.length) lower.substring(i, i + 2) else ""
+        when (two) {
+          "sh" -> { out.append('ش'); i += 2; continue }
+          "ch" -> { out.append("تش"); i += 2; continue }
+          "th" -> { out.append('ث'); i += 2; continue }
+          "kh" -> { out.append('خ'); i += 2; continue }
+          "gh" -> { out.append('غ'); i += 2; continue }
+          "dh" -> { out.append('ذ'); i += 2; continue }
+          "zh" -> { out.append('ج'); i += 2; continue }
+          "ph" -> { out.append('ف'); i += 2; continue }
+          "oo", "ou" -> { out.append('و'); i += 2; continue }
+          "ee", "ea" -> { out.append('ي'); i += 2; continue }
+          "ai", "ay" -> { out.append("اي"); i += 2; continue }
+          "aa" -> { out.append('ا'); i += 2; continue }
+        }
+        val mapped = when (val c = lower[i]) {
+          'a' -> "ا"
+          'b' -> "ب"
+          'c' -> "ك"
+          'd' -> "د"
+          'e' -> "ي"
+          'f' -> "ف"
+          'g' -> "غ"
+          'h' -> "ه"
+          'i' -> "ي"
+          'j' -> "ج"
+          'k' -> "ك"
+          'l' -> "ل"
+          'm' -> "م"
+          'n' -> "ن"
+          'o' -> "و"
+          'p' -> "ب"
+          'q' -> "ق"
+          'r' -> "ر"
+          's' -> "س"
+          't' -> "ت"
+          'u' -> "و"
+          'v' -> "ف"
+          'w' -> "و"
+          'x' -> "كس"
+          'y' -> "ي"
+          'z' -> "ز"
+          '-', '_' -> " "
+          else -> c.toString()
+        }
+        out.append(mapped)
+        i++
+      }
+      return out.toString().replace(Regex("\\s+"), " ").trim()
+    }
+
+    internal fun localizeAuthorAr(rawAuthor: String): String {
+      val trimmed = rawAuthor.trim()
+      if (trimmed.isBlank()) return ""
+      if (!hasLatinLetters(trimmed)) return trimmed
+      val a = trimmed.lowercase(Locale.ROOT)
+      return when {
+        a.contains("ibn kathir") || a.contains("kathir") -> "الحافظ ابن كثير"
+        a.contains("tabari") -> "الإمام الطبري"
+        a.contains("saadi") || a.contains("saddi") -> "الشيخ عبد الرحمن السعدي"
+        a.contains("baghaw") -> "الإمام البغوي"
+        a.contains("qurtubi") -> "الإمام القرطبي"
+        a.contains("jalal") || a.contains("suyuti") || a.contains("mahalli") -> "جلال الدين المحلي والسيوطي"
+        a.contains("muyassar") || a.contains("fahd") || a.contains("fahad") -> "مجمع الملك فهد"
+        a.contains("tantawi") || a.contains("waseet") || a.contains("wasit") -> "د. محمد سيد طنطاوي"
+        a.contains("mukhtasar") || a.contains("mokhtasar") -> "مركز تفسير للدراسات القرآنية"
+        a.contains("ashour") || a.contains("ashur") -> "الشيخ محمد الطاهر بن عاشور"
+        a.contains("abbas") || a.contains("fayruzabadi") -> "منسوب لابن عباس (الفيروزآبادي)"
+        a.contains("wahidi") -> "الإمام الواحدي"
+        a.contains("tustari") -> "سهل التستري"
+        a.contains("kashani") -> "عبد الرزاق القاشاني"
+        a.contains("qushayri") -> "أبو القاسم القشيري"
+        a.contains("maududi") || a.contains("moududi") -> "أبو الأعلى المودودي"
+        a.contains("shafi") -> "المفتي محمد شفيع العثماني"
+        a.contains("qutb") -> "سيد قطب"
+        a.contains("razee") || a.contains("razi") -> "الإمام فخر الدين الرازي"
+        a.contains("zamakhshari") -> "الإمام الزمخشري"
+        a.contains("baydawi") || a.contains("baidawi") -> "الإمام البيضاوي"
+        a.contains("nasafi") -> "الإمام النسفي"
+        a.contains("shawkani") -> "الإمام الشوكاني"
+        a.contains("alusi") || a.contains("aloosi") -> "الإمام الآلوسي"
+        a.contains("shinqiti") -> "الشيخ محمد الأمين الشنقيطي"
+        a.contains("shaaraw") || a.contains("sharawi") -> "الشيخ محمد متولي الشعراوي"
+        a.contains("maraghi") -> "الشيخ أحمد مصطفى المراغي"
+        a.contains("sahih") || a.contains("saheeh") -> "صحيح إنترناشونال"
+        a.contains("yusuf ali") -> "عبد الله يوسف علي"
+        a.contains("pickthall") -> "محمد مرمادوك بيكثول"
+        a.contains("ghali") -> "د. محمود غالي"
+        a.contains("arberry") -> "آرثر آربري"
+        a.contains("asad") -> "محمد أسد"
+        a.contains("hilali") || a.contains("muhsin khan") -> "د. تقي الدين الهلالي ود. محسن خان"
+        a.contains("khattab") -> "د. مصطفى خطاب"
+        a.contains("haleem") -> "د. محمد عبد الحليم"
+        a.contains("daryabadi") -> "عبد الماجد الدريابادي"
+        a.contains("shakir") -> "محمد حبيب شاكر"
+        a.contains("sarwar") -> "الشيخ محمد سرور"
+        a.contains("wahiduddin") -> "الشيخ وحيد الدين خان"
+        a.contains("qaribullah") -> "الشيخ قريب الله"
+        a.contains("itani") -> "طلال عيتاني"
+        a.contains("hamidullah") -> "د. محمد حميد الله"
+        a.contains("garcia") -> "الشيخ عيسى غارسيا"
+        a.contains("cortes") -> "خوليو كورتيس"
+        a.contains("kuliev") -> "إلمير كولييف"
+        a.contains("porokhova") -> "فاليريا بوروخوفا"
+        a.contains("krachkovsky") -> "إغناتي كراتشكوفسكي"
+        a.contains("osmanov") -> "محمد نوري عثمانوف"
+        a.contains("abu adel") -> "أبو عادل"
+        a.contains("jalandhry") -> "فتح محمد جالندهري"
+        a.contains("junagarhi") -> "الشيخ محمد جوناغري"
+        a.contains("ahmad raza") -> "أحمد رضا خان"
+        a.contains("israr") -> "د. إسرار أحمد"
+        a.contains("zakariya") || a.contains("zakaria") -> "د. أبو بكر زكريا"
+        a.contains("mujibur") -> "الشيخ مجيب الرحمن"
+        a.contains("salam") -> "الشيخ عبد السلام البتكوي"
+        a.contains("shihab") -> "د. قريش شهاب"
+        a.contains("diyanet") -> "رئاسة الشؤون الدينية التركية"
+        a.contains("yazir") || a.contains("elmalili") -> "حمدي يازير الإلمالي"
+        a.contains("makarem") -> "ناصر مكارم الشيرازي"
+        a.contains("rowwad") -> "مركز رواد الترجمة"
+        a.contains("taqi") || a.contains("usmani") -> "المفتي محمد تقي العثماني"
+        a.contains("bubenheim") -> "بوبنهايم وإلياس"
+        a.contains("zaidan") -> "د. أمير زيدان"
+        a.contains("korkut") -> "بسيم كوركوت"
+        a.contains("basmeih") -> "الشيخ عبد الله باسميه"
+        a.contains("rehbar") || a.contains("rahebar") -> "محمد رهبري"
+        a.contains("tazkirul") -> "وحيد الدين خان"
+        else -> transliterateLatinToArabic(trimmed)
+      }
+    }
+
+    internal fun localizeSourceLabelAr(rawSource: String): String {
+      val trimmed = rawSource.trim()
+      if (trimmed.isBlank()) return ""
+      if (!hasLatinLetters(trimmed)) return trimmed
+      val s = trimmed.lowercase(Locale.ROOT)
+      return when {
+        s.contains("quran.com") -> "موقع القرآن"
+        s.contains("spa5k") -> "مكتبة التفاسير المفتوحة"
+        s.contains("tanzil") -> "مشروع تنزيل"
+        s.contains("king fahd") || s.contains("fahad") -> "مجمع الملك فهد"
+        s.contains("quranenc") -> "موسوعة القرآن الكريم"
+        else -> localizeAuthorAr(trimmed)
       }
     }
 
@@ -404,41 +607,136 @@ class TafsirRegistryRepository(
     }
   }
 
-  private fun getArabicEditionName(slug: String, rawName: String, langKey: String = "", author: String = ""): String {
+  private fun getArabicEditionName(
+    slug: String,
+    rawName: String,
+    langKey: String = "",
+    author: String = "",
+    type: InsightSourceType = InsightSourceType.TAFSIR,
+  ): String {
     val s = slug.lowercase(Locale.ROOT)
     val a = author.lowercase(Locale.ROOT)
     val r = rawName.lowercase(Locale.ROOT)
+    val langAr = languageLabelAr(langKey)
+    val isArabicEdition = langKey == "arabic" || langKey == "ar"
+    val langSuffix = if (!isArabicEdition && langAr != "لغات أخرى" && langAr != "لغة أخرى") " ($langAr)" else ""
+
     return when {
-      s.contains("i-rab") || s.contains("irab") || s.contains("eerab") || r.contains("اعراب") || r.contains("إعراب") -> "إعراب القرآن الكريم"
-      s.contains("ibn-kathir") || s.contains("kathir") -> "تفسير ابن كثير"
-      s.contains("tabari") -> "تفسير الطبري"
-      s.contains("saadi") -> "تفسير السعدي"
-      s.contains("baghawy") -> "تفسير البغوي"
-      s.contains("qurtubi") -> "تفسير القرطبي"
-      s.contains("jalalayn") -> "تفسير الجلالين"
-      s.contains("muyassar") -> "التفسير الميسر"
-      s.contains("waseet") -> "التفسير الوسيط"
-      s.contains("mukhtasar") -> "المختصر في التفسير"
-      s.contains("ibn-ashour") || s.contains("tahrir") -> "تفسير التحرير والتنوير لابن عاشور"
-      s.contains("sahih") || r.contains("sahih") -> "ترجمة صحيح إنترناشونال"
+      s.contains("i-rab") || s.contains("irab") || s.contains("eerab") || r.contains("اعراب") || r.contains("إعراب") ->
+        "إعراب القرآن الكريم"
+      s.contains("ibn-kathir") || s.contains("kathir") || r.contains("kathir") || r.contains("كثير") ->
+        "تفسير ابن كثير$langSuffix"
+      s.contains("tabari") || r.contains("tabari") || r.contains("الطبري") ->
+        "تفسير الطبري$langSuffix"
+      s.contains("saadi") || s.contains("saddi") || r.contains("saadi") || r.contains("saddi") || r.contains("السعدي") ->
+        "تفسير السعدي$langSuffix"
+      s.contains("baghaw") || r.contains("baghaw") || r.contains("البغوي") ->
+        "تفسير البغوي$langSuffix"
+      s.contains("qurtubi") || r.contains("qurtubi") || r.contains("القرطبي") ->
+        "تفسير القرطبي$langSuffix"
+      s.contains("jalalayn") || r.contains("jalalayn") || r.contains("الجلالين") ->
+        "تفسير الجلالين$langSuffix"
+      s.contains("muyassar") || r.contains("muyassar") || r.contains("الميسر") ->
+        "التفسير الميسر$langSuffix"
+      s.contains("waseet") || s.contains("wasit") || r.contains("waseet") || r.contains("wasit") || r.contains("الوسيط") ->
+        "التفسير الوسيط لطنطاوي$langSuffix"
+      s.contains("mukhtasar") || s.contains("mokhtasar") || r.contains("mukhtasar") || r.contains("المختصر") ->
+        "المختصر في التفسير$langSuffix"
+      s.contains("ibn-ashour") || s.contains("tahrir") || r.contains("التحرير والتنوير") ->
+        "تفسير التحرير والتنوير لابن عاشور$langSuffix"
+      s.contains("tanwir") || s.contains("miqbas") || s.contains("ibn-abbas") ->
+        "تنوير المقباس من تفسير ابن عباس$langSuffix"
+      s.contains("wahidi") || s.contains("asbab") ->
+        "أسباب النزول للواحدي$langSuffix"
+      s.contains("tustari") -> "تفسير التستري$langSuffix"
+      s.contains("kashani") -> "تفسير القاشاني$langSuffix"
+      s.contains("qushayri") -> "لطائف الإشارات للقشيري$langSuffix"
+      s.contains("maududi") || s.contains("moududi") || s.contains("tafhim") ->
+        "تفهيم القرآن للمودودي$langSuffix"
+      s.contains("maarif") || s.contains("maaref") ->
+        "معارف القرآن$langSuffix"
+      s.contains("zilal") || a.contains("qutb") ->
+        "في ظلال القرآن$langSuffix"
+      s.contains("razee") || s.contains("razi") ->
+        "التفسير الكبير للرازي$langSuffix"
+      s.contains("zamakhshari") -> "تفسير الكشاف للزمخشري$langSuffix"
+      s.contains("baydawi") || s.contains("baidawi") -> "تفسير البيضاوي$langSuffix"
+      s.contains("nasafi") -> "تفسير النسفي$langSuffix"
+      s.contains("shawkani") -> "فتح القدير للشوكاني$langSuffix"
+      s.contains("alusi") || s.contains("aloosi") -> "روح المعاني للآلوسي$langSuffix"
+      s.contains("shinqiti") -> "أضواء البيان للشنقيطي$langSuffix"
+      s.contains("shaaraw") || s.contains("sharawi") -> "خواطر الشعراوي$langSuffix"
+      s.contains("fathul-majid") || s.contains("fath-ul-majid") ->
+        "تفسير فتح المجيد$langSuffix"
+      s.contains("tazkirul") -> "تفسير تذكير القرآن$langSuffix"
+      s.contains("bayan-ul-quran") || s.contains("israr") -> "تفسير بيان القرآن$langSuffix"
+      s.contains("ahsanul") || s.contains("ahsan-ul") -> "تفسير أحسن البيان$langSuffix"
+      s.contains("zakariya") || s.contains("zakaria") -> "تفسير أبو بكر زكريا$langSuffix"
+      s.contains("mujibur") -> "تفسير مجيب الرحمن$langSuffix"
+      s.contains("ishraq") -> "تفسير إشراق المعاني$langSuffix"
+      s.contains("rehbar") || s.contains("rahebar") -> "تفسير رهبري$langSuffix"
+      s.contains("sahih") || r.contains("sahih") || r.contains("saheeh") -> "ترجمة صحيح إنترناشونال"
       s.contains("yusuf") || a.contains("yusuf") || r.contains("yusuf") -> "ترجمة عبد الله يوسف علي"
       s.contains("pickthall") || a.contains("pickthall") || r.contains("pickthall") -> "ترجمة محمد مرمادوك بيكثول"
       s.contains("ghali") -> "ترجمة د. محمود غالي"
       s.contains("arberry") -> "ترجمة آرثر آربري"
       s.contains("asad") -> "ترجمة محمد أسد"
       s.contains("hilali") || s.contains("khan") -> "ترجمة تقي الدين الهلالي ومحسن خان"
-      langKey == "english" || langKey == "en" -> if (author.isNotBlank()) "ترجمة $author (الإنجليزية)" else "ترجمة معاني القرآن بالإنجليزية"
-      langKey == "french" || langKey == "fr" -> if (author.isNotBlank()) "ترجمة $author (الفرنسية)" else "ترجمة معاني القرآن بالفرنسية"
-      langKey == "urdu" || langKey == "ur" -> if (author.isNotBlank()) "ترجمة $author (الأردية)" else "ترجمة معاني القرآن بالأردية"
-      langKey == "indonesian" || langKey == "id" -> if (author.isNotBlank()) "ترجمة $author (الإندونيسية)" else "ترجمة معاني القرآن بالإندونيسية"
-      langKey == "turkish" || langKey == "tr" -> if (author.isNotBlank()) "ترجمة $author (التركية)" else "ترجمة معاني القرآن بالتركية"
-      langKey == "russian" || langKey == "ru" -> if (author.isNotBlank()) "ترجمة $author (الروسية)" else "ترجمة معاني القرآن بالروسية"
-      langKey == "spanish" || langKey == "es" -> if (author.isNotBlank()) "ترجمة $author (الإسبانية)" else "ترجمة معاني القرآن بالإسبانية"
-      langKey == "german" || langKey == "de" -> if (author.isNotBlank()) "ترجمة $author (الألمانية)" else "ترجمة معاني القرآن بالألمانية"
-      langKey == "bengali" || langKey == "bn" -> if (author.isNotBlank()) "ترجمة $author (البنغالية)" else "ترجمة معاني القرآن بالبنغالية"
-      langKey == "persian" || langKey == "farsi" || langKey == "fa" -> if (author.isNotBlank()) "ترجمة $author (الفارسية)" else "ترجمة معاني القرآن بالفارسية"
-      rawName.isNotBlank() && rawName.any { it in '\u0600'..'\u06FF' } -> rawName
-      else -> if (author.isNotBlank()) "ترجمة $author" else rawName
+      s.contains("khattab") || s.contains("clear") -> "ترجمة د. مصطفى خطاب"
+      s.contains("haleem") -> "ترجمة د. محمد عبد الحليم"
+      s.contains("daryabadi") -> "ترجمة عبد الماجد الدريابادي"
+      s.contains("shakir") -> "ترجمة محمد حبيب شاكر"
+      s.contains("sarwar") -> "ترجمة الشيخ محمد سرور"
+      s.contains("wahiduddin") -> "ترجمة وحيد الدين خان"
+      s.contains("qaribullah") -> "ترجمة قريب الله"
+      s.contains("itani") -> "ترجمة طلال عيتاني"
+      s.contains("hamidullah") -> "ترجمة د. محمد حميد الله"
+      s.contains("garcia") -> "ترجمة الشيخ عيسى غارسيا"
+      s.contains("cortes") -> "ترجمة خوليو كورتيس"
+      s.contains("bubenheim") -> "ترجمة بوبنهايم وإلياس"
+      s.contains("zaidan") -> "ترجمة د. أمير زيدان"
+      s.contains("kuliev") -> "ترجمة إلمير كولييف"
+      s.contains("porokhova") -> "ترجمة فاليريا بوروخوفا"
+      s.contains("krachkovsky") -> "ترجمة إغناتي كراتشكوفسكي"
+      s.contains("osmanov") -> "ترجمة محمد نوري عثمانوف"
+      s.contains("abu-adel") -> "ترجمة أبو عادل"
+      s.contains("jalandhry") -> "ترجمة فتح محمد جالندهري"
+      s.contains("junagarhi") -> "ترجمة محمد جوناغري"
+      s.contains("ahmad-raza") || s.contains("kanz") -> "ترجمة أحمد رضا خان (كنز الإيمان)"
+      s.contains("mahmudul") -> "ترجمة محمود الحسن الديوبندي"
+      s.contains("tahir") -> "ترجمة د. طاهر القادري"
+      s.contains("usmani") || s.contains("taqi") -> "ترجمة المفتي محمد تقي العثماني"
+      s.contains("shihab") -> "ترجمة د. قريش شهاب"
+      s.contains("diyanet") -> "ترجمة رئاسة الشؤون الدينية التركية"
+      s.contains("yazir") || s.contains("elmalili") -> "ترجمة حمدي يازير"
+      s.contains("ates") -> "ترجمة سليمان آتش"
+      s.contains("bulac") -> "ترجمة علي بولاج"
+      s.contains("makarem") -> "ترجمة ناصر مكارم الشيرازي"
+      s.contains("fooladvand") -> "ترجمة محمد مهدي فولادوند"
+      s.contains("ansarian") -> "ترجمة حسين أنصاريان"
+      s.contains("ghomshei") -> "ترجمة مهدي إلهي قمشئي"
+      s.contains("basmeih") -> "ترجمة الشيخ عبد الله باسميه"
+      s.contains("korkut") -> "ترجمة بسيم كوركوت"
+      s.contains("mlivo") -> "ترجمة مصطفى مليفو"
+      s.contains("fahd") || s.contains("fahad") -> "ترجمة مجمع الملك فهد$langSuffix"
+      s.contains("rowwad") -> "ترجمة مركز رواد الترجمة$langSuffix"
+      rawName.isNotBlank() && !hasLatinLetters(rawName) ->
+        if (!isArabicEdition && !rawName.contains(langAr)) "$rawName$langSuffix" else rawName
+      else -> {
+        val prefix = when (type) {
+          InsightSourceType.TAFSIR -> "تفسير"
+          InsightSourceType.IRAB -> "إعراب"
+          InsightSourceType.WORD_MEANINGS -> "معاني كلمات"
+          InsightSourceType.TRANSLATION -> "ترجمة"
+        }
+        val arAuthor = localizeAuthorAr(author)
+        val arTitle = if (arAuthor.isNotBlank()) arAuthor else transliterateLatinToArabic(rawName)
+        if (arTitle.isNotBlank()) {
+          "$prefix $arTitle$langSuffix"
+        } else {
+          "$prefix معاني القرآن$langSuffix"
+        }
+      }
     }
   }
 
@@ -461,25 +759,27 @@ class TafsirRegistryRepository(
       val isIrab = isIrabEdition(slug, rawName)
       val langRaw = obj.optString("language_name").trim().ifBlank { "other" }
       val langKey = langRaw.lowercase(Locale.ROOT)
-      val author = obj.optString("author_name").trim()
-      val name = getArabicEditionName(slug, rawName, langKey, author)
-      val sourceName = obj.optString("source").trim()
+      val rawAuthor = obj.optString("author_name").trim()
       val type = if (isIrab) InsightSourceType.IRAB else inferSourceType(slug, langKey, rawName)
+      val name = getArabicEditionName(slug, rawName, langKey, rawAuthor, type)
+      val authorAr = localizeAuthorAr(rawAuthor)
+      val rawSourceName = obj.optString("source").trim()
+      val sourceNameAr = localizeSourceLabelAr(rawSourceName)
       out.add(
         TafsirEditionInfo(
           id = slug,
           providerId = provider.id,
           slug = slug,
           nameAr = name,
-          authorName = author,
+          authorName = authorAr,
           languageKey = langKey,
           languageLabelAr = languageLabelAr(langKey),
           type = type,
           urlPattern = provider.urlPattern,
           version = provider.version,
           license = provider.license,
-          attribution = if (sourceName.isNotBlank()) "${provider.attribution} • $sourceName" else provider.attribution,
-          sourceName = sourceName,
+          attribution = if (sourceNameAr.isNotBlank()) "${provider.attribution} • $sourceNameAr" else provider.attribution,
+          sourceName = sourceNameAr,
         ),
       )
     }
@@ -516,20 +816,29 @@ class TafsirRegistryRepository(
         }
       }
       if (surahCount == 0) continue
+      val rawLangKey = meta.optString("languageKey", "arabic").lowercase(Locale.ROOT)
+      val rawName = meta.optString("nameAr", slug)
+      val rawAuthor = meta.optString("authorName", "")
+      val rawSource = meta.optString("sourceName", "")
+      val storedType = InsightSourceType.fromKey(meta.optString("type", "tafsir"))
+      val resolvedType = if (isIrabEdition(slug, rawName)) InsightSourceType.IRAB else storedType
+      val resolvedNameAr = getArabicEditionName(slug, rawName, rawLangKey, rawAuthor, resolvedType)
+      val resolvedAuthorAr = localizeAuthorAr(rawAuthor)
+      val resolvedSourceAr = localizeSourceLabelAr(rawSource)
       results.add(
         DownloadedTafsirEdition(
           editionId = editionId,
           providerId = meta.optString("providerId", "spa5k_tafsir_api"),
           slug = slug,
-          nameAr = meta.optString("nameAr", slug),
-          authorName = meta.optString("authorName", ""),
-          languageKey = meta.optString("languageKey", "arabic"),
-          languageLabelAr = meta.optString("languageLabelAr", "العربية"),
-          type = InsightSourceType.fromKey(meta.optString("type", "tafsir")),
+          nameAr = resolvedNameAr,
+          authorName = resolvedAuthorAr,
+          languageKey = rawLangKey,
+          languageLabelAr = languageLabelAr(rawLangKey),
+          type = resolvedType,
           version = meta.optString("version", "1.0.0"),
           license = meta.optString("license", ""),
           attribution = meta.optString("attribution", ""),
-          sourceName = meta.optString("sourceName", ""),
+          sourceName = resolvedSourceAr,
           completedSurahs = surahCount.coerceIn(0, TOTAL_SURAHS),
           totalSurahs = TOTAL_SURAHS,
           downloadedBytes = totalBytes,
