@@ -1048,7 +1048,17 @@ class QabasatViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun ensureCreditsLoaded(forceRefresh: Boolean = false) {
-    if (!forceRefresh && (creditsLoaded || creditsJob?.isActive == true)) return
+    if (!forceRefresh && creditsLoaded) {
+      viewModelScope.launch {
+        val updatedAdhan = AdhanSoundRepository(getApplication()).loadAdhanCredits()
+        _uiState.update { state ->
+          val nonAdhan = state.credits.filterNot { it.id == "batoulapps_adhan2" || it.id == "adhan_sounds_registry" }
+          state.copy(credits = nonAdhan + updatedAdhan)
+        }
+      }
+      return
+    }
+    if (!forceRefresh && creditsJob?.isActive == true) return
     creditsJob?.cancel()
     creditsJob = viewModelScope.launch {
       coroutineScope {

@@ -25,7 +25,7 @@ class AdhanAlarmReceiver : BroadcastReceiver() {
           val dateKey = intent.getStringExtra(AdhanNotificationHelper.EXTRA_DATE_KEY).orEmpty()
           val timeText = intent.getStringExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT).orEmpty()
           val locationName = intent.getStringExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME)
-            ?: persisted.settings.location?.resolvedLabel().orEmpty()
+            ?: persisted.settings.location?.cityOnlyOrNull().orEmpty()
 
           if (prayerType != null && persisted.adhanSettings.alarmsEnabled) {
             val cfg = persisted.adhanSettings.configFor(prayerType)
@@ -39,6 +39,7 @@ class AdhanAlarmReceiver : BroadcastReceiver() {
                 config = cfg,
                 volumePercent = persisted.adhanSettings.adhanVolumePercent,
                 vibrateEnabled = persisted.adhanSettings.vibrateOnAdhan,
+                shortAlertOnly = persisted.adhanSettings.shortAlertOnly,
               )
             }
           }
@@ -47,7 +48,7 @@ class AdhanAlarmReceiver : BroadcastReceiver() {
           val prayerType = PrayerType.entries.firstOrNull { it.key == prayerKey }
           val timeText = intent.getStringExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT).orEmpty()
           val locationName = intent.getStringExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME)
-            ?: persisted.settings.location?.resolvedLabel().orEmpty()
+            ?: persisted.settings.location?.cityOnlyOrNull().orEmpty()
           val minutesBefore = intent.getIntExtra(
             AdhanAlarmScheduler.EXTRA_MINUTES_BEFORE,
             persisted.adhanSettings.preAdhanMinutes,
@@ -60,6 +61,28 @@ class AdhanAlarmReceiver : BroadcastReceiver() {
               timeText = timeText,
               locationName = locationName,
             )
+          }
+        } else if (action == ACTION_IQAMA_ALARM) {
+          val prayerKey = intent.getStringExtra(AdhanNotificationHelper.EXTRA_PRAYER_KEY).orEmpty()
+          val prayerType = PrayerType.entries.firstOrNull { it.key == prayerKey }
+          val dateKey = intent.getStringExtra(AdhanNotificationHelper.EXTRA_DATE_KEY).orEmpty()
+          val timeText = intent.getStringExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT).orEmpty()
+          val locationName = intent.getStringExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME)
+            ?: persisted.settings.location?.cityOnlyOrNull().orEmpty()
+          if (prayerType != null && prayerType != PrayerType.SUNRISE) {
+            val iqamaCfg = persisted.adhanSettings.iqamaFor(prayerType)
+            if (iqamaCfg.enabled) {
+              AdhanPlaybackService.startIqamaAlarm(
+                context = appCtx,
+                prayerType = prayerType,
+                dateKey = dateKey,
+                timeText = timeText,
+                locationName = locationName,
+                iqamaConfig = iqamaCfg,
+                volumePercent = persisted.adhanSettings.adhanVolumePercent,
+                vibrateEnabled = persisted.adhanSettings.vibrateOnAdhan,
+              )
+            }
           }
         }
 
@@ -74,6 +97,7 @@ class AdhanAlarmReceiver : BroadcastReceiver() {
   companion object {
     const val ACTION_PRAYER_ALARM = "com.example.data.prayer.ACTION_PRAYER_ALARM"
     const val ACTION_PRE_ADHAN_REMINDER = "com.example.data.prayer.ACTION_PRE_ADHAN_REMINDER"
+    const val ACTION_IQAMA_ALARM = "com.example.data.prayer.ACTION_IQAMA_ALARM"
     const val ACTION_REFRESH_COUNTDOWN = "com.example.data.prayer.ACTION_REFRESH_COUNTDOWN"
   }
 }

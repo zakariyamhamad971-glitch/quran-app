@@ -50,9 +50,11 @@ class AdhanPlaybackService : Service() {
       }
       ACTION_START_ADHAN,
       ACTION_TEST_ADHAN_10S,
+      ACTION_START_IQAMA,
       -> {
-        val isTest = intent.action == ACTION_TEST_ADHAN_10S ||
-          intent.getBooleanExtra(AdhanNotificationHelper.EXTRA_IS_TEST, false)
+        val isIqama = intent.action == ACTION_START_IQAMA
+        val isTest = !isIqama && (intent.action == ACTION_TEST_ADHAN_10S ||
+          intent.getBooleanExtra(AdhanNotificationHelper.EXTRA_IS_TEST, false))
         val prayerKey = intent.getStringExtra(AdhanNotificationHelper.EXTRA_PRAYER_KEY).orEmpty()
         val prayerType = PrayerType.entries.firstOrNull { it.key == prayerKey } ?: PrayerType.FAJR
         val dateKey = intent.getStringExtra(AdhanNotificationHelper.EXTRA_DATE_KEY).orEmpty()
@@ -61,8 +63,10 @@ class AdhanPlaybackService : Service() {
         val modeName = intent.getStringExtra(EXTRA_ALARM_MODE).orEmpty()
         val customUriStr = intent.getStringExtra(EXTRA_CUSTOM_URI)
         val muezzinIdStr = intent.getStringExtra(EXTRA_MUEZZIN_ID)
+        val muezzinGroupIdStr = intent.getStringExtra(EXTRA_MUEZZIN_GROUP_ID)
         val volumePercent = intent.getIntExtra(EXTRA_VOLUME_PERCENT, 100).coerceIn(10, 100)
         val vibrateEnabled = intent.getBooleanExtra(EXTRA_VIBRATE_ENABLED, true)
+        val shortAlertOnly = intent.getBooleanExtra(EXTRA_SHORT_ALERT_ONLY, false)
         val mode = runCatching { PrayerAlarmMode.valueOf(modeName) }
           .getOrDefault(PrayerAlarmMode.SYSTEM_DEFAULT)
 
@@ -70,51 +74,85 @@ class AdhanPlaybackService : Service() {
           mode = if (isTest && mode == PrayerAlarmMode.SILENT) PrayerAlarmMode.SYSTEM_DEFAULT else mode,
           customUri = customUriStr,
           muezzinId = muezzinIdStr,
+          muezzinGroupId = muezzinGroupIdStr,
         )
 
-        val notification = AdhanNotificationHelper.buildAdhanAlarmNotification(
-          context = applicationContext,
-          prayerType = prayerType,
-          dateKey = dateKey,
-          timeText = timeText,
-          locationName = locationName,
-          isTest = isTest,
-        )
+        val notificationId = if (isIqama) {
+          AdhanNotificationHelper.NOTIFICATION_ID_IQAMA_ALARM
+        } else {
+          AdhanNotificationHelper.NOTIFICATION_ID_ADHAN_ALARM
+        }
+        val notification = if (isIqama) {
+          AdhanNotificationHelper.buildIqamaAlarmNotification(
+            context = applicationContext,
+            prayerType = prayerType,
+            dateKey = dateKey,
+            timeText = timeText,
+            locationName = locationName,
+          )
+        } else {
+          AdhanNotificationHelper.buildAdhanAlarmNotification(
+            context = applicationContext,
+            prayerType = prayerType,
+            dateKey = dateKey,
+            timeText = timeText,
+            locationName = locationName,
+            isTest = isTest,
+          )
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
           startForeground(
-            AdhanNotificationHelper.NOTIFICATION_ID_ADHAN_ALARM,
+            notificationId,
             notification,
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
           )
         } else {
           startForeground(
-            AdhanNotificationHelper.NOTIFICATION_ID_ADHAN_ALARM,
+            notificationId,
             notification,
           )
         }
 
-        acquireSafetyWakeLock(timeoutMs = if (isTest) 15_000L else 4 * 60_000L)
+        val maxDurationMs = when {
+          isIqama -> IQAMA_DURATION_MS
+          isTest -> TEST_DURATION_MS
+          shortAlertOnly -> SHORT_ALERT_DURATION_MS
+          else -> MAX_ALARM_DURATION_MS
+        }
+        acquireSafetyWakeLock(timeoutMs = maxDurationMs + 15_000L)
         _isTestPlaying.value = isTest
         _isAnyAdhanActive.value = true
 
-        if (vibrateEnabled && config.mode != PrayerAlarmMode.SILENT) {
+        if (vibrateEnabled && (isIqama || config.mode != PrayerAlarmMode.SILENT)) {
           startGentleVibration()
         } else {
           stopVibration()
         }
 
-        val uri = soundRepository.resolvePlayableUri(config)
-        if (uri != null && config.mode != PrayerAlarmMode.SILENT) {
-          startAudioUri(
-            uri = uri,
-            loopIfShortAlarm = !isTest && config.mode == PrayerAlarmMode.SYSTEM_DEFAULT,
-            volumePercent = volumePercent,
-          )
+        if (isIqama) {
+          // Iqama has no bundled sound: play ONLY user SAF custom audio if chosen & readable
+          val customUri = customUriStr?.takeIf { it.isNotBlank() }?.let { runCatching { Uri.parse(it) }.getOrNull() }
+          if (customUri != null) {
+            startAudioUri(
+              uri = customUri,
+              loopIfShortAlarm = false,
+              volumePercent = volumePercent,
+              fallbackOnErrorToSystem = false,
+            )
+          }
+        } else {
+          val uri = soundRepository.resolvePlayableUri(config, prayerType)
+          if (uri != null && config.mode != PrayerAlarmMode.SILENT) {
+            startAudioUri(
+              uri = uri,
+              loopIfShortAlarm = !isTest && config.mode == PrayerAlarmMode.SYSTEM_DEFAULT,
+              volumePercent = volumePercent,
+            )
+          }
         }
 
         autoStopJob?.cancel()
-        val maxDurationMs = if (isTest) TEST_DURATION_MS else MAX_ALARM_DURATION_MS
         autoStopJob = serviceScope.launch {
           delay(maxDurationMs)
           stopPlaybackAndExit()
@@ -151,7 +189,12 @@ class AdhanPlaybackService : Service() {
     vibrator = null
   }
 
-  private fun startAudioUri(uri: Uri, loopIfShortAlarm: Boolean, volumePercent: Int) {
+  private fun startAudioUri(
+    uri: Uri,
+    loopIfShortAlarm: Boolean,
+    volumePercent: Int,
+    fallbackOnErrorToSystem: Boolean = true,
+  ) {
     releasePlayer()
     val vol = (volumePercent.coerceIn(10, 100) / 100f)
     runCatching {
@@ -166,11 +209,13 @@ class AdhanPlaybackService : Service() {
         isLooping = loopIfShortAlarm
         setVolume(vol, vol)
         setOnErrorListener { _, _, _ ->
-          val fallback = soundRepository.resolveSystemDefaultAlarmUri()
-          if (fallback != null && fallback != uri) {
-            startAudioUri(fallback, loopIfShortAlarm = loopIfShortAlarm, volumePercent = volumePercent)
-          } else {
-            stopPlaybackAndExit()
+          if (fallbackOnErrorToSystem) {
+            val fallback = soundRepository.resolveSystemDefaultAlarmUri()
+            if (fallback != null && fallback != uri) {
+              startAudioUri(fallback, loopIfShortAlarm = loopIfShortAlarm, volumePercent = volumePercent)
+            } else {
+              stopPlaybackAndExit()
+            }
           }
           true
         }
@@ -189,9 +234,11 @@ class AdhanPlaybackService : Service() {
       }
       mediaPlayer = mp
     }.onFailure {
-      val fallback = soundRepository.resolveSystemDefaultAlarmUri()
-      if (fallback != null && fallback != uri) {
-        startAudioUri(fallback, loopIfShortAlarm = loopIfShortAlarm, volumePercent = volumePercent)
+      if (fallbackOnErrorToSystem) {
+        val fallback = soundRepository.resolveSystemDefaultAlarmUri()
+        if (fallback != null && fallback != uri) {
+          startAudioUri(fallback, loopIfShortAlarm = loopIfShortAlarm, volumePercent = volumePercent)
+        }
       }
     }
   }
@@ -235,6 +282,7 @@ class AdhanPlaybackService : Service() {
     _isTestPlaying.value = false
     _isAnyAdhanActive.value = false
     AdhanNotificationHelper.cancelAdhanAlarmNotification(applicationContext)
+    AdhanNotificationHelper.cancelIqamaAlarmNotification(applicationContext)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
       stopForeground(STOP_FOREGROUND_REMOVE)
     } else {
@@ -257,17 +305,22 @@ class AdhanPlaybackService : Service() {
 
   companion object {
     const val ACTION_START_ADHAN = "com.example.data.prayer.ACTION_START_ADHAN"
+    const val ACTION_START_IQAMA = "com.example.data.prayer.ACTION_START_IQAMA"
     const val ACTION_STOP_ADHAN = "com.example.data.prayer.ACTION_STOP_ADHAN"
     const val ACTION_TEST_ADHAN_10S = "com.example.data.prayer.ACTION_TEST_ADHAN_10S"
 
     const val EXTRA_ALARM_MODE = "extra_alarm_mode"
     const val EXTRA_CUSTOM_URI = "extra_custom_uri"
     const val EXTRA_MUEZZIN_ID = "extra_muezzin_id"
+    const val EXTRA_MUEZZIN_GROUP_ID = "extra_muezzin_group_id"
     const val EXTRA_VOLUME_PERCENT = "extra_volume_percent"
     const val EXTRA_VIBRATE_ENABLED = "extra_vibrate_enabled"
+    const val EXTRA_SHORT_ALERT_ONLY = "extra_short_alert_only"
 
     private const val TEST_DURATION_MS = 10_000L
-    private const val MAX_ALARM_DURATION_MS = 180_000L
+    private const val SHORT_ALERT_DURATION_MS = 15_000L
+    private const val IQAMA_DURATION_MS = 60_000L
+    private const val MAX_ALARM_DURATION_MS = 300_000L
 
     private val _isTestPlaying = MutableStateFlow(false)
     val isTestPlayingFlow: StateFlow<Boolean> = _isTestPlaying.asStateFlow()
@@ -284,6 +337,7 @@ class AdhanPlaybackService : Service() {
       config: PrayerAlarmConfig,
       volumePercent: Int = 100,
       vibrateEnabled: Boolean = true,
+      shortAlertOnly: Boolean = false,
     ) {
       val intent = Intent(context, AdhanPlaybackService::class.java).apply {
         action = ACTION_START_ADHAN
@@ -295,6 +349,33 @@ class AdhanPlaybackService : Service() {
         putExtra(EXTRA_ALARM_MODE, config.mode.name)
         putExtra(EXTRA_CUSTOM_URI, config.customUri)
         putExtra(EXTRA_MUEZZIN_ID, config.muezzinId)
+        putExtra(EXTRA_MUEZZIN_GROUP_ID, config.muezzinGroupId)
+        putExtra(EXTRA_VOLUME_PERCENT, volumePercent)
+        putExtra(EXTRA_VIBRATE_ENABLED, vibrateEnabled)
+        putExtra(EXTRA_SHORT_ALERT_ONLY, shortAlertOnly)
+      }
+      ContextCompat.startForegroundService(context, intent)
+    }
+
+    fun startIqamaAlarm(
+      context: Context,
+      prayerType: PrayerType,
+      dateKey: String,
+      timeText: String,
+      locationName: String,
+      iqamaConfig: IqamaConfig,
+      volumePercent: Int = 100,
+      vibrateEnabled: Boolean = true,
+    ) {
+      val intent = Intent(context, AdhanPlaybackService::class.java).apply {
+        action = ACTION_START_IQAMA
+        putExtra(AdhanNotificationHelper.EXTRA_PRAYER_KEY, prayerType.key)
+        putExtra(AdhanNotificationHelper.EXTRA_DATE_KEY, dateKey)
+        putExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT, timeText)
+        putExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME, locationName)
+        putExtra(AdhanNotificationHelper.EXTRA_IS_TEST, false)
+        putExtra(EXTRA_ALARM_MODE, PrayerAlarmMode.CUSTOM_URI.name)
+        putExtra(EXTRA_CUSTOM_URI, iqamaConfig.customUri)
         putExtra(EXTRA_VOLUME_PERCENT, volumePercent)
         putExtra(EXTRA_VIBRATE_ENABLED, vibrateEnabled)
       }
@@ -319,6 +400,7 @@ class AdhanPlaybackService : Service() {
         putExtra(EXTRA_ALARM_MODE, config.mode.name)
         putExtra(EXTRA_CUSTOM_URI, config.customUri)
         putExtra(EXTRA_MUEZZIN_ID, config.muezzinId)
+        putExtra(EXTRA_MUEZZIN_GROUP_ID, config.muezzinGroupId)
         putExtra(EXTRA_VOLUME_PERCENT, volumePercent)
         putExtra(EXTRA_VIBRATE_ENABLED, vibrateEnabled)
       }
@@ -333,6 +415,7 @@ class AdhanPlaybackService : Service() {
       _isTestPlaying.value = false
       _isAnyAdhanActive.value = false
       AdhanNotificationHelper.cancelAdhanAlarmNotification(context)
+      AdhanNotificationHelper.cancelIqamaAlarmNotification(context)
     }
   }
 }

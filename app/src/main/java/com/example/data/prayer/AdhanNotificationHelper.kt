@@ -23,12 +23,15 @@ object AdhanNotificationHelper {
   const val NOTIFICATION_ID_ADHAN_ALARM = 2001
   const val NOTIFICATION_ID_PRAYER_COUNTDOWN = 2002
   const val NOTIFICATION_ID_PRE_ADHAN = 2003
+  const val NOTIFICATION_ID_IQAMA_ALARM = 2004
 
   const val EXTRA_PRAYER_KEY = "extra_prayer_key"
   const val EXTRA_DATE_KEY = "extra_date_key"
   const val EXTRA_PRAYER_TIME_TEXT = "extra_prayer_time_text"
   const val EXTRA_LOCATION_NAME = "extra_location_name"
   const val EXTRA_IS_TEST = "extra_is_test"
+  const val EXTRA_IS_IQAMA = "extra_is_iqama"
+  private const val NOTIFICATION_ACCENT_COLOR = 0xFF0F6B50.toInt()
 
   fun ensureChannels(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -160,6 +163,8 @@ object AdhanNotificationHelper {
 
     val builder = NotificationCompat.Builder(context, CHANNEL_ADHAN_ALARM)
       .setSmallIcon(R.drawable.ic_adhan_notification)
+      .setColor(NOTIFICATION_ACCENT_COLOR)
+      .setSubText(context.getString(R.string.app_name))
       .setContentTitle(title)
       .setContentText(content)
       .setCategory(NotificationCompat.CATEGORY_ALARM)
@@ -235,12 +240,7 @@ object AdhanNotificationHelper {
     val formattedTime = PrayerFormatters.formatTime12hArabic(nextTarget.targetEpochMs, location.timeZoneId)
     val tomorrowSuffix = if (nextTarget.isTomorrow) " (غداً)" else ""
     val title = "${nextTarget.prayerType.arabicName} في $formattedTime$tomorrowSuffix"
-
-    val remainingMs = (nextTarget.targetEpochMs - nowMs).coerceAtLeast(0L)
-    val remainingText = formatRemainingWithoutSecondsArabic(remainingMs)
-    val currentTimeText = PrayerFormatters.formatTime12hArabic(nowMs, location.timeZoneId)
-    val cityText = location.resolvedLabel()
-    val contentText = "$remainingText • $cityText • $currentTimeText"
+    val cityOnly = location.cityOnlyOrNull()
 
     val openAppIntent = Intent(context, MainActivity::class.java).apply {
       flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -262,11 +262,12 @@ object AdhanNotificationHelper {
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
-    val notification = NotificationCompat.Builder(context, CHANNEL_PRAYER_COUNTDOWN)
+    val builder = NotificationCompat.Builder(context, CHANNEL_PRAYER_COUNTDOWN)
       .setSmallIcon(R.drawable.ic_adhan_notification)
+      .setColor(NOTIFICATION_ACCENT_COLOR)
+      .setColorized(false)
+      .setSubText(context.getString(R.string.app_name))
       .setContentTitle(title)
-      .setContentText(contentText)
-      .setStyle(NotificationCompat.BigTextStyle().bigText(contentText))
       .setWhen(nextTarget.targetEpochMs)
       .setShowWhen(true)
       .setUsesChronometer(true)
@@ -277,25 +278,13 @@ object AdhanNotificationHelper {
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
       .setContentIntent(contentPi)
       .setDeleteIntent(deletePi)
-      .build()
+
+    if (!cityOnly.isNullOrBlank()) {
+      builder.setContentText(cityOnly)
+    }
 
     runCatching {
-      nm.notify(NOTIFICATION_ID_PRAYER_COUNTDOWN, notification)
-    }
-  }
-
-  private fun formatRemainingWithoutSecondsArabic(remainingMs: Long): String {
-    val totalMinutes = ((remainingMs + 59_999L) / 60_000L).coerceAtLeast(0L)
-    if (totalMinutes <= 1L) return "متبقي أقل من دقيقة"
-    val hours = totalMinutes / 60L
-    val minutes = totalMinutes % 60L
-    return when {
-      hours > 0L && minutes > 0L ->
-        "متبقي ${PrayerFormatters.toArabicIndicDigits(hours.toInt())} س و${PrayerFormatters.toArabicIndicDigits(minutes.toInt())} د"
-      hours > 0L ->
-        "متبقي ${PrayerFormatters.toArabicIndicDigits(hours.toInt())} س"
-      else ->
-        "متبقي ${PrayerFormatters.toArabicIndicDigits(minutes.toInt())} د"
+      nm.notify(NOTIFICATION_ID_PRAYER_COUNTDOWN, builder.build())
     }
   }
 
@@ -328,8 +317,10 @@ object AdhanNotificationHelper {
     }
     val notif = NotificationCompat.Builder(context, CHANNEL_PRE_ADHAN)
       .setSmallIcon(R.drawable.ic_adhan_notification)
+      .setColor(NOTIFICATION_ACCENT_COLOR)
+      .setSubText(context.getString(R.string.app_name))
       .setContentTitle(title)
-      .setContentText(body)
+      .apply { if (body.isNotBlank()) setContentText(body) }
       .setAutoCancel(true)
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
       .setContentIntent(contentPi)
@@ -339,9 +330,75 @@ object AdhanNotificationHelper {
     }
   }
 
+  fun buildIqamaAlarmNotification(
+    context: Context,
+    prayerType: PrayerType,
+    dateKey: String,
+    timeText: String,
+    locationName: String,
+  ): Notification {
+    ensureChannels(context)
+
+    val fullScreenIntent = Intent(context, AdhanActivity::class.java).apply {
+      flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+        Intent.FLAG_ACTIVITY_CLEAR_TOP
+      putExtra(EXTRA_PRAYER_KEY, prayerType.key)
+      putExtra(EXTRA_DATE_KEY, dateKey)
+      putExtra(EXTRA_PRAYER_TIME_TEXT, timeText)
+      putExtra(EXTRA_LOCATION_NAME, locationName)
+      putExtra(EXTRA_IS_TEST, false)
+      putExtra(EXTRA_IS_IQAMA, true)
+    }
+    val fullScreenPi = PendingIntent.getActivity(
+      context,
+      9111,
+      fullScreenIntent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+    val dismissPi = actionBroadcastIntent(
+      context = context,
+      action = AdhanNotificationActionReceiver.ACTION_DISMISS,
+      requestCode = 9114,
+      prayerKey = prayerType.key,
+      dateKey = dateKey,
+    )
+
+    val title = "حان الآن وقت إقامة صلاة ${prayerType.arabicName}"
+    val content = buildString {
+      if (timeText.isNotBlank()) append(timeText)
+      if (locationName.isNotBlank()) {
+        if (isNotEmpty()) append(" • ")
+        append(locationName)
+      }
+      if (isEmpty()) append("أقم الصلاة")
+    }
+
+    return NotificationCompat.Builder(context, CHANNEL_ADHAN_ALARM)
+      .setSmallIcon(R.drawable.ic_adhan_notification)
+      .setColor(NOTIFICATION_ACCENT_COLOR)
+      .setSubText(context.getString(R.string.app_name))
+      .setContentTitle(title)
+      .setContentText(content)
+      .setCategory(NotificationCompat.CATEGORY_ALARM)
+      .setPriority(NotificationCompat.PRIORITY_MAX)
+      .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+      .setOngoing(true)
+      .setAutoCancel(true)
+      .setContentIntent(fullScreenPi)
+      .setFullScreenIntent(fullScreenPi, true)
+      .addAction(0, "إغلاق", dismissPi)
+      .build()
+  }
+
   fun cancelAdhanAlarmNotification(context: Context) {
     val nm = context.getSystemService(NotificationManager::class.java) ?: return
     nm.cancel(NOTIFICATION_ID_ADHAN_ALARM)
+  }
+
+  fun cancelIqamaAlarmNotification(context: Context) {
+    val nm = context.getSystemService(NotificationManager::class.java) ?: return
+    nm.cancel(NOTIFICATION_ID_IQAMA_ALARM)
   }
 
   private fun actionBroadcastIntent(

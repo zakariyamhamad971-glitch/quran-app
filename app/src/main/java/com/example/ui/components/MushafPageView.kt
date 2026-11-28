@@ -511,7 +511,7 @@ fun MushafPageFrame(
                       var upChange: PointerInputChange? = null
 
                       try {
-                        withTimeout(1500L) {
+                        withTimeout(500L) {
                           while (true) {
                             val event = awaitPointerEvent()
                             val ch = event.changes.firstOrNull { it.id == pointerId }

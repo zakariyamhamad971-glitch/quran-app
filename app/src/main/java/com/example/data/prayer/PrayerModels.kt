@@ -126,6 +126,18 @@ data class SavedPrayerLocation(
     if (displayName.isNotBlank()) return displayName
     return PrayerFormatters.formatCoordinatesArabic(latitude, longitude)
   }
+
+  /**
+   * Returns a human-readable city/region label ONLY when known, and strictly null
+   * if empty, placeholder, or formatted GPS coordinates.
+   */
+  fun cityOnlyOrNull(): String? {
+    val trimmed = displayName.trim()
+    if (trimmed.isEmpty()) return null
+    if (trimmed == "موقعك الحالي" || trimmed == "لم يتم تحديد الموقع") return null
+    if (trimmed.contains('°')) return null
+    return trimmed
+  }
 }
 
 @Immutable

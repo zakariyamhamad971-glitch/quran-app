@@ -10,6 +10,7 @@ import com.example.data.prayer.AdhanSettingsState
 import com.example.data.prayer.AsrMadhab
 import com.example.data.prayer.CachedPrayerSchedule
 import com.example.data.prayer.DailyPrayerTimesRecord
+import com.example.data.prayer.IqamaConfig
 import com.example.data.prayer.LocationLookupHelper
 import com.example.data.prayer.LocationLookupResult
 import com.example.data.prayer.NextPrayerTarget
@@ -136,7 +137,9 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
       append("|pre=").append(persisted.adhanSettings.preAdhanMinutes)
       append("|vol=").append(persisted.adhanSettings.adhanVolumePercent)
       append("|vib=").append(persisted.adhanSettings.vibrateOnAdhan)
+      append("|short=").append(persisted.adhanSettings.shortAlertOnly)
       append("|cfg=").append(AdhanSettingsState.encodeConfigsJson(persisted.adhanSettings.perPrayerConfig))
+      append("|iqama=").append(AdhanSettingsState.encodeIqamaConfigsJson(persisted.adhanSettings.iqamaConfigs))
     }
     if (sig == lastSyncedAlarmSignature) return
     lastSyncedAlarmSignature = sig
@@ -330,6 +333,12 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
     }
   }
 
+  fun setAdhanShortAlertOnly(shortOnly: Boolean) {
+    viewModelScope.launch {
+      preferences.setAdhanShortAlertOnly(shortOnly)
+    }
+  }
+
   fun setAdhanBackground(path: String?, label: String?) {
     viewModelScope.launch {
       preferences.setAdhanBackground(path, label)
@@ -345,6 +354,38 @@ class PrayerTimesViewModel(application: Application) : AndroidViewModel(applicat
   fun applyAlarmConfigToAllPrayers(config: PrayerAlarmConfig) {
     viewModelScope.launch {
       preferences.saveAllPrayersAlarmConfig(config = config, includeSunrise = false)
+    }
+  }
+
+  fun updateIqamaConfig(prayerType: PrayerType, config: IqamaConfig) {
+    viewModelScope.launch {
+      preferences.saveIqamaConfig(prayerType, config)
+    }
+  }
+
+  fun applyMuezzinToAllPrayersWithFajrPreference(
+    group: com.example.data.prayer.MuezzinGroup,
+    selectedRecording: com.example.data.prayer.AdhanRecordingItem,
+  ) {
+    viewModelScope.launch {
+      for (type in PrayerType.entries) {
+        if (type == PrayerType.SUNRISE) continue
+        val rec = com.example.data.prayer.KiwifuAdhanParser.selectRecordingForPrayer(
+          group = group,
+          preferredRecording = selectedRecording,
+          prayerType = type,
+        )
+        val cfg = PrayerAlarmConfig(
+          mode = com.example.data.prayer.PrayerAlarmMode.MUEZZIN,
+          muezzinId = rec.id,
+          muezzinGroupId = group.id,
+          recordingFileName = rec.fileName,
+          recordingSizeBytes = rec.sizeBytes,
+          customDisplayName = group.arabicName,
+          customUri = rec.primaryUrl,
+        )
+        preferences.savePrayerAlarmConfig(type, cfg)
+      }
     }
   }
 

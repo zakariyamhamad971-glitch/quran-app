@@ -4,8 +4,10 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,8 +31,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
@@ -38,12 +46,15 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -51,6 +62,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,23 +78,30 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.prayer.AdhanSoundRegistryEntry
+import com.example.data.prayer.AdhanRecordingItem
 import com.example.data.prayer.AdhanSoundRepository
+import com.example.data.prayer.KiwifuAdhanParser
+import com.example.data.prayer.MuezzinGroup
 import com.example.data.prayer.PrayerAlarmConfig
 import com.example.data.prayer.PrayerAlarmMode
+import com.example.data.prayer.PrayerFormatters
 import com.example.data.prayer.PrayerType
 import com.example.ui.theme.AmiriFontFamily
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MuadhinPickerSheet(
-  prayerType: PrayerType,
-  currentConfig: PrayerAlarmConfig,
-  onSelectMuezzin: (AdhanSoundRegistryEntry) -> Unit,
-  onApplyToAllPrayers: (AdhanSoundRegistryEntry) -> Unit,
+  prayerType: PrayerType? = null,
+  currentConfig: PrayerAlarmConfig = PrayerAlarmConfig(),
+  selectedMuezzinIds: Set<String> = emptySet(),
+  onSelectForPrayer: (targetPrayer: PrayerType, group: MuezzinGroup, recording: AdhanRecordingItem) -> Unit,
+  onSelectForAllPrayers: (group: MuezzinGroup, recording: AdhanRecordingItem) -> Unit,
   onDismiss: () -> Unit,
 ) {
   BackHandler(onBack = onDismiss)
@@ -90,38 +110,36 @@ fun MuadhinPickerSheet(
   val soundRepository = remember(context) { AdhanSoundRepository(context.applicationContext) }
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-  var muadhinList by remember { mutableStateOf<List<AdhanSoundRegistryEntry>>(emptyList()) }
-  var isLoadingRegistry by remember { mutableStateOf(true) }
+  var groups by remember { mutableStateOf<List<MuezzinGroup>>(emptyList()) }
+  var countries by remember { mutableStateOf<List<String>>(emptyList()) }
+  var isLoadingCatalog by remember { mutableStateOf(true) }
   var statusMessage by remember { mutableStateOf<String?>(null) }
+
   var searchQuery by remember { mutableStateOf("") }
+  var selectedCountry by remember { mutableStateOf<String?>(null) } // null = All
   var onlyDownloaded by remember { mutableStateOf(false) }
 
-  var playingMuezzinId by remember { mutableStateOf<String?>(null) }
-  var isBufferingPreview by remember { mutableStateOf(false) }
-  var playerInstance by remember { mutableStateOf<MediaPlayer?>(null) }
+  // Target scope when opened generally (prayerType == null): null = All 5 prayers, else specific PrayerType
+  var applyTargetPrayer by remember(prayerType) { mutableStateOf(prayerType) }
 
-  val downloadingMap = remember { mutableStateMapOf<String, Boolean>() }
+  // Expanded muezzin groups
+  val expandedGroups = remember { mutableStateMapOf<String, Boolean>() }
+
+  // Download tracking maps
+  val downloadProgressMap = remember { mutableStateMapOf<String, Float>() }
   val downloadedMap = remember { mutableStateMapOf<String, Boolean>() }
+  var selectingRecordingId by remember { mutableStateOf<String?>(null) }
 
-  fun loadCatalog(forceRefresh: Boolean = false) {
-    isLoadingRegistry = true
-    statusMessage = null
-    scope.launch {
-      val snapshot = soundRepository.loadRegistry(forceRefresh = forceRefresh)
-      muadhinList = snapshot.sounds
-      statusMessage = snapshot.loadError
-      isLoadingRegistry = false
-      withContext(Dispatchers.IO) {
-        snapshot.sounds.forEach { entry ->
-          downloadedMap[entry.id] = soundRepository.isMuezzinDownloaded(entry.id)
-        }
-      }
-    }
-  }
-
-  LaunchedEffect(Unit) {
-    loadCatalog(forceRefresh = false)
-  }
+  // Full-adhan preview player state
+  var activeRecording by remember { mutableStateOf<AdhanRecordingItem?>(null) }
+  var activeGroupName by remember { mutableStateOf("") }
+  var isBufferingPreview by remember { mutableStateOf(false) }
+  var isPlayingPreview by remember { mutableStateOf(false) }
+  var previewPositionMs by remember { mutableIntStateOf(0) }
+  var previewDurationMs by remember { mutableIntStateOf(0) }
+  var playerInstance by remember { mutableStateOf<MediaPlayer?>(null) }
+  var isUserSeeking by remember { mutableStateOf(false) }
+  var seekSliderMs by remember { mutableFloatStateOf(0f) }
 
   fun stopPreview() {
     playerInstance?.runCatching {
@@ -130,8 +148,12 @@ fun MuadhinPickerSheet(
       release()
     }
     playerInstance = null
-    playingMuezzinId = null
+    activeRecording = null
+    activeGroupName = ""
     isBufferingPreview = false
+    isPlayingPreview = false
+    previewPositionMs = 0
+    previewDurationMs = 0
   }
 
   DisposableEffect(Unit) {
@@ -140,30 +162,30 @@ fun MuadhinPickerSheet(
     }
   }
 
-  fun startPreview(entry: AdhanSoundRegistryEntry) {
-    if (playingMuezzinId == entry.id) {
-      stopPreview()
-      return
+  // Poll MediaPlayer position while preview is active
+  LaunchedEffect(playerInstance, isPlayingPreview) {
+    val mp = playerInstance ?: return@LaunchedEffect
+    while (isActive && playerInstance === mp) {
+      runCatching {
+        if (!isUserSeeking) {
+          val dur = mp.duration.coerceAtLeast(0)
+          val pos = mp.currentPosition.coerceAtLeast(0)
+          previewDurationMs = dur
+          previewPositionMs = pos
+          seekSliderMs = pos.toFloat()
+        }
+        isPlayingPreview = mp.isPlaying
+      }
+      delay(250L)
     }
-    stopPreview()
-    statusMessage = null
+  }
 
-    val localFile = soundRepository.getLocalMuezzinAudioFile(entry.id)
-    val hasLocal = localFile.exists() && localFile.length() > 4096L
-    val targetUri = if (hasLocal) {
-      Uri.fromFile(localFile)
-    } else {
-      entry.audioUrl?.let { Uri.parse(it) }
-    }
-    if (targetUri == null) {
-      statusMessage = "لا يوجد رابط صوتي متاح لهذا المؤذن"
-      return
-    }
-
-    playingMuezzinId = entry.id
-    isBufferingPreview = true
-
-    // MediaPlayer MUST be created on main thread (with Looper) so prepareAsync callbacks fire.
+  fun startPreviewUri(
+    recording: AdhanRecordingItem,
+    groupName: String,
+    uri: Uri,
+    fallbackRemoteUrl: String? = null,
+  ) {
     scope.launch(Dispatchers.Main.immediate) {
       runCatching {
         val mp = MediaPlayer().apply {
@@ -173,62 +195,211 @@ fun MuadhinPickerSheet(
               .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
               .build(),
           )
-          setDataSource(context, targetUri)
+          setDataSource(context, uri)
           setOnPreparedListener { player ->
             isBufferingPreview = false
-            runCatching { player.start() }
-              .onFailure {
-                statusMessage = "تعذر بدء تشغيل صوت الأذان"
-                stopPreview()
-              }
+            previewDurationMs = player.duration.coerceAtLeast(0)
+            previewPositionMs = 0
+            runCatching {
+              player.start()
+              isPlayingPreview = true
+            }.onFailure {
+              statusMessage = "تعذر بدء تشغيل صوت الأذان"
+              stopPreview()
+            }
           }
           setOnCompletionListener {
-            stopPreview()
+            isPlayingPreview = false
+            previewPositionMs = 0
+            seekSliderMs = 0f
+            runCatching { it.seekTo(0) }
           }
           setOnErrorListener { _, _, _ ->
-            statusMessage = "تعذر تحميل أو تشغيل صوت هذا المؤذن"
-            stopPreview()
+            if (!fallbackRemoteUrl.isNullOrBlank() && uri.toString() != fallbackRemoteUrl) {
+              playerInstance?.runCatching { reset(); release() }
+              playerInstance = null
+              startPreviewUri(recording, groupName, Uri.parse(fallbackRemoteUrl), null)
+            } else {
+              statusMessage = "تعذر تحميل أو تشغيل هذا التسجيل"
+              stopPreview()
+            }
             true
           }
           prepareAsync()
         }
         playerInstance = mp
       }.onFailure {
-        statusMessage = "تعذر تشغيل المعاينة لهذا المؤذن"
-        stopPreview()
+        if (!fallbackRemoteUrl.isNullOrBlank() && uri.toString() != fallbackRemoteUrl) {
+          startPreviewUri(recording, groupName, Uri.parse(fallbackRemoteUrl), null)
+        } else {
+          statusMessage = "تعذر تشغيل المعاينة"
+          stopPreview()
+        }
       }
     }
   }
 
-  fun triggerDownload(entry: AdhanSoundRegistryEntry) {
-    if (downloadingMap[entry.id] == true) return
-    downloadingMap[entry.id] = true
+  fun togglePlayRecording(group: MuezzinGroup, recording: AdhanRecordingItem) {
+    if (activeRecording?.id == recording.id && playerInstance != null) {
+      val mp = playerInstance ?: return
+      runCatching {
+        if (mp.isPlaying) {
+          mp.pause()
+          isPlayingPreview = false
+        } else if (!isBufferingPreview) {
+          mp.start()
+          isPlayingPreview = true
+        }
+      }
+      return
+    }
+    stopPreview()
+    statusMessage = null
+    activeRecording = recording
+    activeGroupName = group.arabicName
+    isBufferingPreview = true
+
+    val localFile = soundRepository.getLocalMuezzinAudioFile(recording.id)
+    if (localFile.exists() && localFile.length() > 4096L) {
+      startPreviewUri(recording, group.arabicName, Uri.fromFile(localFile), recording.primaryUrl)
+    } else {
+      startPreviewUri(
+        recording = recording,
+        groupName = group.arabicName,
+        uri = Uri.parse(recording.primaryUrl),
+        fallbackRemoteUrl = recording.fallbackUrl,
+      )
+    }
+  }
+
+  fun seekPreviewTo(targetMs: Int) {
+    val mp = playerInstance ?: return
+    val clamped = targetMs.coerceIn(0, previewDurationMs.coerceAtLeast(0))
+    runCatching {
+      mp.seekTo(clamped)
+      previewPositionMs = clamped
+      seekSliderMs = clamped.toFloat()
+    }
+  }
+
+  fun loadCatalog(forceRefresh: Boolean = false) {
+    isLoadingCatalog = true
     statusMessage = null
     scope.launch {
-      val res = soundRepository.downloadMuezzinAudio(entry)
-      downloadingMap[entry.id] = false
-      if (res.isSuccess) {
-        downloadedMap[entry.id] = true
-      } else {
-        statusMessage = res.exceptionOrNull()?.message ?: "تعذر تنزيل صوت المؤذن"
+      val snapshot = soundRepository.loadMuezzinGroups(forceRefresh = forceRefresh)
+      groups = snapshot.groups
+      countries = snapshot.countries
+      statusMessage = snapshot.loadError
+      isLoadingCatalog = false
+      withContext(Dispatchers.IO) {
+        snapshot.groups.forEach { grp ->
+          grp.recordings.forEach { rec ->
+            downloadedMap[rec.id] = soundRepository.isMuezzinDownloaded(rec.id)
+          }
+        }
       }
     }
   }
 
-  fun triggerDelete(muezzinId: String) {
-    soundRepository.deleteDownloadedMuezzin(muezzinId)
-    downloadedMap[muezzinId] = false
+  LaunchedEffect(Unit) {
+    loadCatalog(forceRefresh = false)
   }
 
-  val filteredList = remember(muadhinList, searchQuery, onlyDownloaded, downloadedMap.toMap()) {
-    val q = searchQuery.trim().lowercase()
-    muadhinList.filter { entry ->
-      val matchesQuery = q.isEmpty() ||
-        entry.muezzinAr.lowercase().contains(q) ||
-        entry.nameAr.lowercase().contains(q) ||
-        entry.attribution.lowercase().contains(q)
-      val matchesDownload = !onlyDownloaded || (downloadedMap[entry.id] == true)
-      matchesQuery && matchesDownload
+  fun triggerDownload(recording: AdhanRecordingItem) {
+    if (downloadProgressMap.containsKey(recording.id)) return
+    downloadProgressMap[recording.id] = 0f
+    statusMessage = null
+    scope.launch {
+      val res = soundRepository.downloadRecording(recording) { written, total ->
+        val frac = if (total > 0L) (written.toFloat() / total.toFloat()).coerceIn(0f, 1f) else -1f
+        downloadProgressMap[recording.id] = frac
+      }
+      downloadProgressMap.remove(recording.id)
+      if (res.isSuccess) {
+        downloadedMap[recording.id] = true
+      } else {
+        statusMessage = res.exceptionOrNull()?.message ?: "تعذر تنزيل التسجيل"
+      }
+    }
+  }
+
+  fun triggerDelete(recording: AdhanRecordingItem) {
+    if (activeRecording?.id == recording.id) {
+      stopPreview()
+    }
+    soundRepository.deleteDownloadedMuezzin(recording.id)
+    downloadedMap[recording.id] = false
+  }
+
+  fun handleSelectRecording(group: MuezzinGroup, recording: AdhanRecordingItem) {
+    if (selectingRecordingId != null) return
+    statusMessage = null
+    selectingRecordingId = recording.id
+    scope.launch {
+      val target = applyTargetPrayer
+      // Ensure primary chosen recording is downloaded first
+      if (!soundRepository.isMuezzinDownloaded(recording.id)) {
+        downloadProgressMap[recording.id] = 0f
+        val res = soundRepository.downloadRecording(recording) { written, total ->
+          val frac = if (total > 0L) (written.toFloat() / total.toFloat()).coerceIn(0f, 1f) else -1f
+          downloadProgressMap[recording.id] = frac
+        }
+        downloadProgressMap.remove(recording.id)
+        if (res.isFailure) {
+          selectingRecordingId = null
+          statusMessage = res.exceptionOrNull()?.message ?: "تعذر تنزيل التسجيل قبل التعيين"
+          return@launch
+        }
+        downloadedMap[recording.id] = true
+      }
+
+      if (target == null) {
+        // Apply to all 5 prayers — also pre-download Fajr recording if distinct and available
+        val fajrRec = KiwifuAdhanParser.selectRecordingForPrayer(group, recording, PrayerType.FAJR)
+        if (fajrRec.id != recording.id && !soundRepository.isMuezzinDownloaded(fajrRec.id)) {
+          downloadProgressMap[fajrRec.id] = 0f
+          val fajrRes = soundRepository.downloadRecording(fajrRec) { written, total ->
+            val frac = if (total > 0L) (written.toFloat() / total.toFloat()).coerceIn(0f, 1f) else -1f
+            downloadProgressMap[fajrRec.id] = frac
+          }
+          downloadProgressMap.remove(fajrRec.id)
+          if (fajrRes.isSuccess) {
+            downloadedMap[fajrRec.id] = true
+          }
+        }
+        selectingRecordingId = null
+        onSelectForAllPrayers(group, recording)
+        onDismiss()
+      } else {
+        // If single prayer is Fajr and user picked another recording, respect selected recording directly
+        selectingRecordingId = null
+        onSelectForPrayer(target, group, recording)
+        onDismiss()
+      }
+    }
+  }
+
+  val downloadedStateSnapshot = downloadedMap.toMap()
+  val filteredGroups = remember(
+    groups,
+    searchQuery,
+    selectedCountry,
+    onlyDownloaded,
+    downloadedStateSnapshot,
+  ) {
+    groups.filter { grp ->
+      val matchesCountry = selectedCountry == null || grp.countryAr == selectedCountry
+      val matchesSearch = KiwifuAdhanParser.matchesSearchQuery(grp, searchQuery)
+      val matchesDl = !onlyDownloaded || grp.recordings.any { downloadedStateSnapshot[it.id] == true }
+      matchesCountry && matchesSearch && matchesDl
+    }
+  }
+
+  val activeConfigIds = remember(currentConfig, selectedMuezzinIds) {
+    buildSet {
+      currentConfig.muezzinId?.let { add(it) }
+      currentConfig.muezzinGroupId?.let { add(it) }
+      addAll(selectedMuezzinIds)
     }
   }
 
@@ -241,25 +412,35 @@ fun MuadhinPickerSheet(
       modifier = Modifier
         .fillMaxWidth()
         .padding(horizontal = 16.dp)
-        .padding(bottom = 24.dp),
+        .padding(bottom = 20.dp),
     ) {
+      // Header
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Column(modifier = Modifier.weight(1f)) {
+          val countText = if (groups.isNotEmpty()) {
+            " (${PrayerFormatters.toArabicIndicDigits(groups.size)})"
+          } else {
+            ""
+          }
           Text(
-            text = "مكتبة المؤذنين (${muadhinList.size})",
+            text = "المؤذنون$countText",
             style = MaterialTheme.typography.titleLarge.copy(
               fontFamily = AmiriFontFamily,
               fontWeight = FontWeight.Bold,
-              fontSize = 22.sp,
+              fontSize = 24.sp,
             ),
             color = MaterialTheme.colorScheme.primary,
           )
           Text(
-            text = "استمع لمعاينة الأذان وحمّله للعمل بدون إنترنت لصلاة ${prayerType.arabicName}",
+            text = if (applyTargetPrayer != null) {
+              "استمع وحمّل واختر مؤذن صلاة ${applyTargetPrayer?.arabicName}"
+            } else {
+              "استمع للأذان كاملاً وحمّله للعمل بدون إنترنت لجميع الصلوات"
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
@@ -279,7 +460,7 @@ fun MuadhinPickerSheet(
       }
 
       if (!statusMessage.isNullOrBlank()) {
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         Surface(
           shape = RoundedCornerShape(12.dp),
           color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
@@ -306,17 +487,43 @@ fun MuadhinPickerSheet(
         }
       }
 
-      Spacer(Modifier.height(10.dp))
+      // Target prayer scope selector (visible when opened standalone or allowing scope switch)
+      Spacer(Modifier.height(8.dp))
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        FilterChip(
+          selected = applyTargetPrayer == null,
+          onClick = { applyTargetPrayer = null },
+          label = { Text("جميع الصلوات") },
+          modifier = Modifier.heightIn(min = 40.dp),
+        )
+        PrayerType.entries.filter { it != PrayerType.SUNRISE }.forEach { pt ->
+          FilterChip(
+            selected = applyTargetPrayer == pt,
+            onClick = { applyTargetPrayer = pt },
+            label = { Text(pt.arabicName) },
+            modifier = Modifier.heightIn(min = 40.dp),
+          )
+        }
+      }
 
+      Spacer(Modifier.height(8.dp))
+
+      // Arabic normalized Search Box
       OutlinedTextField(
         value = searchQuery,
         onValueChange = { searchQuery = it },
-        placeholder = { Text("ابحث باسم المؤذن أو الحرم (مثل: مكة، العفاسي، المنشاوي)") },
+        placeholder = { Text("ابحث باسم المؤذن أو البلد (مثل: مصطفى، السديس، مصر)") },
         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
         trailingIcon = {
           if (searchQuery.isNotEmpty()) {
             IconButton(onClick = { searchQuery = "" }) {
-              Icon(Icons.Filled.Close, contentDescription = "مسح")
+              Icon(Icons.Filled.Close, contentDescription = "مسح البحث")
             }
           }
         },
@@ -329,27 +536,180 @@ fun MuadhinPickerSheet(
 
       Spacer(Modifier.height(8.dp))
 
+      // Country + Offline Filter Chips
+      val totalDownloadedCount = downloadedStateSnapshot.values.count { it }
       Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+          .fillMaxWidth()
+          .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
         FilterChip(
-          selected = !onlyDownloaded,
-          onClick = { onlyDownloaded = false },
-          label = { Text("الكل (${muadhinList.size})") },
+          selected = selectedCountry == null && !onlyDownloaded,
+          onClick = {
+            selectedCountry = null
+            onlyDownloaded = false
+          },
+          label = { Text("الكل (${PrayerFormatters.toArabicIndicDigits(groups.size)})") },
         )
-        val downloadedCount = downloadedMap.values.count { it }
         FilterChip(
           selected = onlyDownloaded,
-          onClick = { onlyDownloaded = true },
-          label = { Text("المحفوظة بدون إنترنت ($downloadedCount)") },
+          onClick = { onlyDownloaded = !onlyDownloaded },
+          label = { Text("المحفوظة (${PrayerFormatters.toArabicIndicDigits(totalDownloadedCount)})") },
         )
+        countries.forEach { country ->
+          FilterChip(
+            selected = selectedCountry == country,
+            onClick = {
+              selectedCountry = if (selectedCountry == country) null else country
+            },
+            label = { Text(country) },
+          )
+        }
       }
 
-      Spacer(Modifier.height(10.dp))
+      // Live Full-Adhan Audio Controller Bar when playing/paused
+      AnimatedVisibility(visible = activeRecording != null) {
+        val currentRec = activeRecording
+        if (currentRec != null) {
+          Spacer(Modifier.height(8.dp))
+          Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("muadhin_preview_player_bar"),
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = activeGroupName,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                  Text(
+                    text = currentRec.arabicTitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
+                IconButton(
+                  onClick = { stopPreview() },
+                  modifier = Modifier.size(48.dp),
+                ) {
+                  Icon(Icons.Filled.Stop, contentDescription = "إيقاف المعاينة")
+                }
+              }
 
-      if (isLoadingRegistry) {
+              val dur = previewDurationMs.coerceAtLeast(0)
+              val sliderMax = dur.coerceAtLeast(1).toFloat()
+              val sliderVal = if (isUserSeeking) {
+                seekSliderMs.coerceIn(0f, sliderMax)
+              } else {
+                previewPositionMs.coerceIn(0, dur).toFloat()
+              }
+
+              Slider(
+                value = sliderVal,
+                onValueChange = {
+                  isUserSeeking = true
+                  seekSliderMs = it
+                },
+                onValueChangeFinished = {
+                  isUserSeeking = false
+                  seekPreviewTo(seekSliderMs.toInt())
+                },
+                valueRange = 0f..sliderMax,
+                enabled = dur > 0 && !isBufferingPreview,
+                modifier = Modifier.fillMaxWidth(),
+              )
+
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+              ) {
+                Text(
+                  text = formatMmSsArabic(previewPositionMs),
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                  IconButton(
+                    onClick = { seekPreviewTo(previewPositionMs - 10_000) },
+                    enabled = dur > 0 && !isBufferingPreview,
+                    modifier = Modifier.size(48.dp),
+                  ) {
+                    Icon(Icons.Filled.Replay10, contentDescription = "تأخير ١٠ ثوانٍ")
+                  }
+                  Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                      .size(48.dp)
+                      .clip(CircleShape)
+                      .clickable {
+                        groups.firstOrNull { g -> g.recordings.any { it.id == currentRec.id } }?.let { grp ->
+                          togglePlayRecording(grp, currentRec)
+                        }
+                      },
+                  ) {
+                    Box(contentAlignment = Alignment.Center) {
+                      if (isBufferingPreview) {
+                        CircularProgressIndicator(
+                          modifier = Modifier.size(22.dp),
+                          strokeWidth = 2.dp,
+                          color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                      } else {
+                        Icon(
+                          imageVector = if (isPlayingPreview) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                          contentDescription = if (isPlayingPreview) "إيقاف مؤقت" else "تشغيل",
+                          tint = MaterialTheme.colorScheme.onPrimary,
+                        )
+                      }
+                    }
+                  }
+                  IconButton(
+                    onClick = { seekPreviewTo(previewPositionMs + 10_000) },
+                    enabled = dur > 0 && !isBufferingPreview,
+                    modifier = Modifier.size(48.dp),
+                  ) {
+                    Icon(Icons.Filled.Forward10, contentDescription = "تقديم ١٠ ثوانٍ")
+                  }
+                }
+                Text(
+                  text = formatMmSsArabic(dur),
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+            }
+          }
+        }
+      }
+
+      Spacer(Modifier.height(8.dp))
+
+      if (isLoadingCatalog) {
         Box(
           modifier = Modifier
             .fillMaxWidth()
@@ -360,13 +720,13 @@ fun MuadhinPickerSheet(
             CircularProgressIndicator(modifier = Modifier.size(36.dp))
             Spacer(Modifier.height(10.dp))
             Text(
-              text = "جاري جلب أصوات المؤذنين...",
+              text = "جاري جلب قائمة المؤذنين...",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
           }
         }
-      } else if (filteredList.isEmpty()) {
+      } else if (filteredGroups.isEmpty()) {
         Column(
           modifier = Modifier
             .fillMaxWidth()
@@ -377,14 +737,14 @@ fun MuadhinPickerSheet(
         ) {
           Text(
             text = when {
-              onlyDownloaded -> "لا توجد أصوات أذان محمّلة بعد"
-              muadhinList.isEmpty() -> "لم تتوفر أصوات مؤذنين حالياً"
+              onlyDownloaded -> "لا توجد تسجيلات محمّلة بعد"
+              groups.isEmpty() -> "لم تتوفر قائمة المؤذنين حالياً"
               else -> "لا توجد نتائج مطابقة للبحث"
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
-          if (muadhinList.isEmpty() && !onlyDownloaded) {
+          if (groups.isEmpty() && !onlyDownloaded) {
             Spacer(Modifier.height(10.dp))
             OutlinedButton(onClick = { loadCatalog(forceRefresh = true) }) {
               Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -397,36 +757,32 @@ fun MuadhinPickerSheet(
         LazyColumn(
           modifier = Modifier
             .fillMaxWidth()
-            .heightIn(max = 480.dp),
+            .heightIn(max = 460.dp),
           verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-          items(filteredList, key = { it.id }) { entry ->
-            val isPlaying = playingMuezzinId == entry.id
-            val isBuffering = isPlaying && isBufferingPreview
-            val isDownloaded = downloadedMap[entry.id] == true
-            val isDownloading = downloadingMap[entry.id] == true
-            val isCurrentPrayerSelected = currentConfig.mode == PrayerAlarmMode.MUEZZIN &&
-              currentConfig.muezzinId == entry.id
+          items(filteredGroups, key = { it.id }) { group ->
+            val isExpanded = expandedGroups[group.id] == true
+            val isGroupSelected = activeConfigIds.contains(group.id) ||
+              group.recordings.any { activeConfigIds.contains(it.id) }
 
-            MuadhinItemCard(
-              entry = entry,
-              prayerName = prayerType.arabicName,
-              isPlaying = isPlaying,
-              isBuffering = isBuffering,
-              isDownloaded = isDownloaded,
-              isDownloading = isDownloading,
-              isSelected = isCurrentPrayerSelected,
-              onTogglePreview = { startPreview(entry) },
-              onDownload = { triggerDownload(entry) },
-              onDelete = { triggerDelete(entry.id) },
-              onSelectForPrayer = {
-                onSelectMuezzin(entry)
-                onDismiss()
+            MuezzinGroupCard(
+              group = group,
+              isExpanded = isExpanded,
+              isSelected = isGroupSelected,
+              activeRecordingId = activeRecording?.id,
+              isBufferingPreview = isBufferingPreview,
+              isPlayingPreview = isPlayingPreview,
+              selectingRecordingId = selectingRecordingId,
+              activeConfigIds = activeConfigIds,
+              downloadedMap = downloadedStateSnapshot,
+              downloadProgressMap = downloadProgressMap.toMap(),
+              onToggleExpand = {
+                expandedGroups[group.id] = !isExpanded
               },
-              onApplyToAll = {
-                onApplyToAllPrayers(entry)
-                onDismiss()
-              },
+              onPlayRecording = { rec -> togglePlayRecording(group, rec) },
+              onDownloadRecording = { rec -> triggerDownload(rec) },
+              onDeleteRecording = { rec -> triggerDelete(rec) },
+              onSelectRecording = { rec -> handleSelectRecording(group, rec) },
             )
           }
         }
@@ -436,29 +792,32 @@ fun MuadhinPickerSheet(
 }
 
 @Composable
-private fun MuadhinItemCard(
-  entry: AdhanSoundRegistryEntry,
-  prayerName: String,
-  isPlaying: Boolean,
-  isBuffering: Boolean,
-  isDownloaded: Boolean,
-  isDownloading: Boolean,
+private fun MuezzinGroupCard(
+  group: MuezzinGroup,
+  isExpanded: Boolean,
   isSelected: Boolean,
-  onTogglePreview: () -> Unit,
-  onDownload: () -> Unit,
-  onDelete: () -> Unit,
-  onSelectForPrayer: () -> Unit,
-  onApplyToAll: () -> Unit,
+  activeRecordingId: String?,
+  isBufferingPreview: Boolean,
+  isPlayingPreview: Boolean,
+  selectingRecordingId: String?,
+  activeConfigIds: Set<String>,
+  downloadedMap: Map<String, Boolean>,
+  downloadProgressMap: Map<String, Float>,
+  onToggleExpand: () -> Unit,
+  onPlayRecording: (AdhanRecordingItem) -> Unit,
+  onDownloadRecording: (AdhanRecordingItem) -> Unit,
+  onDeleteRecording: (AdhanRecordingItem) -> Unit,
+  onSelectRecording: (AdhanRecordingItem) -> Unit,
 ) {
   val cardBg = if (isSelected) {
-    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
   } else {
-    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.34f)
   }
   val border = if (isSelected) {
     BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
   } else {
-    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f))
   }
 
   Surface(
@@ -467,175 +826,310 @@ private fun MuadhinItemCard(
     border = border,
     modifier = Modifier
       .fillMaxWidth()
-      .testTag("muadhin_item_${entry.id}"),
+      .testTag("muadhin_group_${group.id}"),
+  ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 60.dp)
+          .clickable(onClick = onToggleExpand)
+          .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            Text(
+              text = group.arabicName,
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontFamily = AmiriFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+              ),
+              color = MaterialTheme.colorScheme.onSurface,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.weight(1f, fill = false),
+            )
+            if (isSelected) {
+              Icon(
+                imageVector = Icons.Filled.CheckCircle,
+                contentDescription = "مختار حالياً",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+              )
+            }
+            if (group.hasFajr) {
+              Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+              ) {
+                Text(
+                  text = "فجر",
+                  style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                  color = MaterialTheme.colorScheme.onSecondaryContainer,
+                  modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+              }
+            }
+          }
+
+          Spacer(Modifier.height(2.dp))
+
+          val count = group.recordings.size
+          val countLabel = if (count == 1) "تسجيل واحد" else "${PrayerFormatters.toArabicIndicDigits(count)} تسجيلات"
+          val placePart = buildList {
+            if (group.countryAr.isNotBlank()) add(group.countryAr)
+            group.placeDetailAr?.takeIf { it.isNotBlank() && it != group.countryAr }?.let { add(it) }
+            add(countLabel)
+          }.joinToString(" • ")
+
+          Text(
+            text = placePart,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+
+        Icon(
+          imageVector = if (isExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+          contentDescription = if (isExpanded) "طي التسجيلات" else "عرض التسجيلات",
+          tint = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(24.dp),
+        )
+      }
+
+      AnimatedVisibility(visible = isExpanded) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+          group.recordings.forEach { rec ->
+            val isPlayingThis = activeRecordingId == rec.id
+            val isDownloaded = downloadedMap[rec.id] == true
+            val progress = downloadProgressMap[rec.id]
+            val isDownloading = progress != null
+            val isSelectingThis = selectingRecordingId == rec.id
+            val isRecSelected = activeConfigIds.contains(rec.id)
+
+            RecordingRowItem(
+              recording = rec,
+              isPlayingThis = isPlayingThis,
+              isBuffering = isPlayingThis && isBufferingPreview,
+              isActivelyPlaying = isPlayingThis && isPlayingPreview,
+              isDownloaded = isDownloaded,
+              isDownloading = isDownloading,
+              downloadProgress = progress ?: 0f,
+              isSelecting = isSelectingThis,
+              isSelected = isRecSelected,
+              onPlay = { onPlayRecording(rec) },
+              onDownload = { onDownloadRecording(rec) },
+              onDelete = { onDeleteRecording(rec) },
+              onSelect = { onSelectRecording(rec) },
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun RecordingRowItem(
+  recording: AdhanRecordingItem,
+  isPlayingThis: Boolean,
+  isBuffering: Boolean,
+  isActivelyPlaying: Boolean,
+  isDownloaded: Boolean,
+  isDownloading: Boolean,
+  downloadProgress: Float,
+  isSelecting: Boolean,
+  isSelected: Boolean,
+  onPlay: () -> Unit,
+  onDownload: () -> Unit,
+  onDelete: () -> Unit,
+  onSelect: () -> Unit,
+) {
+  Surface(
+    shape = RoundedCornerShape(12.dp),
+    color = if (isSelected) {
+      MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    } else {
+      MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+    },
+    border = BorderStroke(
+      width = if (isSelected) 1.2.dp else 1.dp,
+      color = if (isSelected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+      } else {
+        MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+      },
+    ),
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("muadhin_recording_${recording.id}"),
   ) {
     Column(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(12.dp),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
+        .padding(10.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
       Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        Row(
-          modifier = Modifier.weight(1f),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
+        Surface(
+          shape = CircleShape,
+          color = if (isPlayingThis) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+          modifier = Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onPlay)
+            .testTag("muadhin_preview_${recording.id}"),
         ) {
-          Surface(
-            shape = CircleShape,
-            color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-            modifier = Modifier
-              .size(48.dp)
-              .clip(CircleShape)
-              .clickable(onClick = onTogglePreview)
-              .testTag("muadhin_preview_${entry.id}"),
-          ) {
-            Box(contentAlignment = Alignment.Center) {
-              if (isBuffering) {
-                CircularProgressIndicator(
-                  modifier = Modifier.size(22.dp),
-                  strokeWidth = 2.dp,
-                  color = if (isPlaying) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-                )
-              } else {
-                Icon(
-                  imageVector = if (isPlaying) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                  contentDescription = if (isPlaying) "إيقاف المعاينة" else "استماع تجريبي",
-                  tint = if (isPlaying) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-                  modifier = Modifier.size(24.dp),
-                )
-              }
+          Box(contentAlignment = Alignment.Center) {
+            if (isBuffering) {
+              CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onPrimary,
+              )
+            } else {
+              Icon(
+                imageVector = if (isActivelyPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                contentDescription = if (isActivelyPlaying) "إيقاف مؤقت" else "تشغيل",
+                tint = if (isPlayingThis) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+              )
             }
           }
+        }
 
-          Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Text(
-                text = entry.muezzinAr,
-                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-              )
-              if (isSelected) {
-                Spacer(Modifier.width(6.dp))
-                Icon(
-                  imageVector = Icons.Filled.CheckCircle,
-                  contentDescription = "تم التحديد",
-                  tint = MaterialTheme.colorScheme.primary,
-                  modifier = Modifier.size(18.dp),
-                )
-              }
-            }
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = recording.arabicTitle,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+          )
+          val sizeLabel = formatBytesArabic(recording.sizeBytes)
+          if (sizeLabel != null) {
             Text(
-              text = entry.nameAr,
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
+              text = if (isDownloaded) "محفوظ • $sizeLabel" else "الحجم: $sizeLabel",
+              style = MaterialTheme.typography.labelSmall,
+              color = if (isDownloaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
           }
         }
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          if (isDownloading) {
-            Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-              CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-            }
-          } else if (isDownloaded) {
-            Surface(
-              shape = RoundedCornerShape(8.dp),
-              color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-              modifier = Modifier.padding(end = 4.dp),
-            ) {
-              Row(
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                Icon(
-                  Icons.Filled.Check,
-                  contentDescription = null,
-                  tint = MaterialTheme.colorScheme.primary,
-                  modifier = Modifier.size(14.dp),
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(
-                  text = "أوفلاين",
-                  style = MaterialTheme.typography.labelSmall,
-                  color = MaterialTheme.colorScheme.primary,
-                )
-              }
-            }
-            IconButton(
-              onClick = onDelete,
-              modifier = Modifier.size(48.dp),
-            ) {
-              Icon(
-                Icons.Filled.Delete,
-                contentDescription = "حذف التنزيل",
-                tint = MaterialTheme.colorScheme.outline,
-                modifier = Modifier.size(18.dp),
-              )
-            }
-          } else {
-            IconButton(
-              onClick = onDownload,
-              modifier = Modifier
-                .size(48.dp)
-                .testTag("muadhin_download_${entry.id}"),
-            ) {
-              Icon(
-                Icons.Filled.Download,
-                contentDescription = "تحميل للعمل بدون إنترنت",
-                tint = MaterialTheme.colorScheme.primary,
-              )
-            }
+        if (isDownloaded) {
+          Icon(
+            imageVector = Icons.Filled.Check,
+            contentDescription = "تم التحميل",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(18.dp),
+          )
+          IconButton(
+            onClick = onDelete,
+            modifier = Modifier.size(48.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Delete,
+              contentDescription = "حذف الملف المحفوظ",
+              tint = MaterialTheme.colorScheme.outline,
+              modifier = Modifier.size(18.dp),
+            )
+          }
+        } else if (!isDownloading) {
+          IconButton(
+            onClick = onDownload,
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("muadhin_download_${recording.id}"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Download,
+              contentDescription = "تنزيل التسجيل",
+              tint = MaterialTheme.colorScheme.primary,
+            )
           }
         }
-      }
 
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
         Button(
-          onClick = onSelectForPrayer,
+          onClick = onSelect,
+          enabled = !isSelecting,
           shape = RoundedCornerShape(10.dp),
           colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.primary,
+            containerColor = if (isSelected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
           ),
           modifier = Modifier
-            .weight(1f)
             .heightIn(min = 48.dp)
-            .testTag("muadhin_set_${entry.id}"),
+            .testTag("muadhin_select_${recording.id}"),
         ) {
+          if (isSelecting) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(16.dp),
+              strokeWidth = 2.dp,
+              color = MaterialTheme.colorScheme.onPrimary,
+            )
+            Spacer(Modifier.width(6.dp))
+          }
           Text(
-            text = "تعيين لـ $prayerName",
+            text = if (isSelected) "مختار" else "اختيار",
             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
             maxLines = 1,
           )
         }
+      }
 
-        FilledTonalButton(
-          onClick = onApplyToAll,
-          shape = RoundedCornerShape(10.dp),
-          modifier = Modifier
-            .weight(1f)
-            .heightIn(min = 48.dp)
-            .testTag("muadhin_set_all_${entry.id}"),
-        ) {
-          Text(
-            text = "تعيين لجميع الصلوات",
-            style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
+      if (isDownloading) {
+        if (downloadProgress >= 0f) {
+          LinearProgressIndicator(
+            progress = { downloadProgress.coerceIn(0f, 1f) },
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(5.dp)
+              .clip(RoundedCornerShape(3.dp)),
+          )
+        } else {
+          LinearProgressIndicator(
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(5.dp)
+              .clip(RoundedCornerShape(3.dp)),
           )
         }
       }
     }
+  }
+}
+
+private fun formatMmSsArabic(ms: Int): String {
+  val totalSec = (ms / 1000).coerceAtLeast(0)
+  val mins = totalSec / 60
+  val secs = totalSec % 60
+  val raw = String.format(Locale.US, "%d:%02d", mins, secs)
+  return PrayerFormatters.toArabicIndicDigits(raw)
+}
+
+private fun formatBytesArabic(bytes: Long): String? {
+  if (bytes <= 0L) return null
+  return if (bytes >= 1024L * 1024L) {
+    val mb = bytes / (1024.0 * 1024.0)
+    "${PrayerFormatters.toArabicIndicDigits(String.format(Locale.US, "%.1f", mb))} م.ب"
+  } else {
+    val kb = (bytes / 1024L).coerceAtLeast(1L)
+    "${PrayerFormatters.toArabicIndicDigits(kb.toString())} ك.ب"
   }
 }

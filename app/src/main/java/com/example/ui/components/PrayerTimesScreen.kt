@@ -42,8 +42,10 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Mosque
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.NightsStay
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WbSunny
@@ -92,6 +94,7 @@ import com.example.R
 import com.example.data.prayer.AdhanSettingsState
 import com.example.data.prayer.DailyPrayerTimesRecord
 import com.example.data.prayer.NextPrayerTarget
+import com.example.data.prayer.PrayerAlarmConfig
 import com.example.data.prayer.PrayerAlarmMode
 import com.example.data.prayer.PrayerFormatters
 import com.example.data.prayer.PrayerType
@@ -124,6 +127,7 @@ fun PrayerHomeScreen(
   val lifecycleOwner = LocalLifecycleOwner.current
   var showPrayerSettings by rememberSaveable { mutableStateOf(false) }
   var showAdhanSettings by rememberSaveable { mutableStateOf(false) }
+  var showMuadhinsSheet by rememberSaveable { mutableStateOf(false) }
   var editingSoundPrayer by rememberSaveable { mutableStateOf<PrayerType?>(null) }
 
   DisposableEffect(lifecycleOwner) {
@@ -214,6 +218,8 @@ fun PrayerHomeScreen(
                 onRequestLocation = onRequestCoarseLocation,
                 onTogglePrayerCompleted = prayerViewModel::togglePrayerCompleted,
                 onOpenPrayerSound = { editingSoundPrayer = it },
+                onOpenMuadhins = { showMuadhinsSheet = true },
+                onOpenAdhanSettings = { showAdhanSettings = true },
               )
             }
 
@@ -234,6 +240,7 @@ fun PrayerHomeScreen(
                 uiState = uiState,
                 onOpenPrayerSettings = { showPrayerSettings = true },
                 onOpenAdhanSettings = { showAdhanSettings = true },
+                onOpenMuadhins = { showMuadhinsSheet = true },
                 onRefreshLocation = onRequestCoarseLocation,
               )
             }
@@ -258,6 +265,8 @@ fun PrayerHomeScreen(
               onRequestLocation = onRequestCoarseLocation,
               onTogglePrayerCompleted = prayerViewModel::togglePrayerCompleted,
               onOpenPrayerSound = { editingSoundPrayer = it },
+              onOpenMuadhins = { showMuadhinsSheet = true },
+              onOpenAdhanSettings = { showAdhanSettings = true },
             )
 
             MushafHomeTile(
@@ -298,8 +307,13 @@ fun PrayerHomeScreen(
       onSelectPreAdhanMinutes = prayerViewModel::setAdhanPreAlertMinutes,
       onChangeVolumePercent = prayerViewModel::setAdhanVolumePercent,
       onToggleVibrate = prayerViewModel::setAdhanVibrateEnabled,
+      onToggleShortAlertOnly = prayerViewModel::setAdhanShortAlertOnly,
       onSelectBackground = prayerViewModel::setAdhanBackground,
       onEditPrayerSound = { editingSoundPrayer = it },
+      onOpenMuadhinLibrary = { showMuadhinsSheet = true },
+      onSavePrayerConfig = prayerViewModel::updatePrayerAlarmConfig,
+      onApplyMuezzinToAllWithFajr = prayerViewModel::applyMuezzinToAllPrayersWithFajrPreference,
+      onUpdateIqamaConfig = prayerViewModel::updateIqamaConfig,
       onTestAdhanNow = { prayerViewModel.startTestAdhan10s() },
       onStopTestAdhan = { prayerViewModel.stopTestAdhan() },
       prayerSettings = uiState.settings,
@@ -316,6 +330,37 @@ fun PrayerHomeScreen(
     )
   }
 
+  if (showMuadhinsSheet) {
+    val selectedIds = remember(uiState.adhanSettings) {
+      PrayerType.entries.mapNotNull { t ->
+        val cfg = uiState.adhanSettings.configFor(t)
+        cfg.muezzinGroupId ?: cfg.muezzinId
+      }.toSet()
+    }
+    MuadhinPickerSheet(
+      prayerType = null,
+      selectedMuezzinIds = selectedIds,
+      onSelectForPrayer = { targetPrayer, group, rec ->
+        prayerViewModel.updatePrayerAlarmConfig(
+          targetPrayer,
+          PrayerAlarmConfig(
+            mode = PrayerAlarmMode.MUEZZIN,
+            muezzinId = rec.id,
+            muezzinGroupId = group.id,
+            recordingFileName = rec.fileName,
+            recordingSizeBytes = rec.sizeBytes,
+            customDisplayName = group.arabicName,
+            customUri = rec.primaryUrl,
+          ),
+        )
+      },
+      onSelectForAllPrayers = { group, rec ->
+        prayerViewModel.applyMuezzinToAllPrayersWithFajrPreference(group, rec)
+      },
+      onDismiss = { showMuadhinsSheet = false },
+    )
+  }
+
   editingSoundPrayer?.let { targetPrayer ->
     PrayerSoundConfigSheet(
       prayerType = targetPrayer,
@@ -323,6 +368,7 @@ fun PrayerHomeScreen(
       isTestPlaying = uiState.isTestAdhanPlaying,
       onSaveConfig = { cfg -> prayerViewModel.updatePrayerAlarmConfig(targetPrayer, cfg) },
       onApplyToAllPrayers = { cfg -> prayerViewModel.applyAlarmConfigToAllPrayers(cfg) },
+      onApplyMuezzinToAllWithFajr = prayerViewModel::applyMuezzinToAllPrayersWithFajrPreference,
       onTestAdhanNow = { cfg ->
         prayerViewModel.startTestAdhan10s(prayerType = targetPrayer, configOverride = cfg)
       },
@@ -415,6 +461,8 @@ private fun PrayerTimesMainCard(
   onRequestLocation: () -> Unit,
   onTogglePrayerCompleted: (PrayerType) -> Unit,
   onOpenPrayerSound: (PrayerType) -> Unit,
+  onOpenMuadhins: () -> Unit,
+  onOpenAdhanSettings: () -> Unit,
 ) {
   val cardContainer = if (isDarkTheme) {
     Color(0xFF0C201D).copy(alpha = 0.90f)
@@ -566,6 +614,40 @@ private fun PrayerTimesMainCard(
               modifier = Modifier.size(28.dp),
             )
           }
+        }
+      }
+
+      Spacer(Modifier.height(12.dp))
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+      Spacer(Modifier.height(10.dp))
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        FilledTonalButton(
+          onClick = onOpenMuadhins,
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp)
+            .testTag("home_open_muadhins_button"),
+        ) {
+          Icon(Icons.Filled.Mosque, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(6.dp))
+          Text("المؤذنون", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        OutlinedButton(
+          onClick = onOpenAdhanSettings,
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp)
+            .testTag("home_card_open_adhan_alarms_button"),
+        ) {
+          Icon(Icons.Filled.NotificationsActive, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(6.dp))
+          Text("الأذان والمنبهات", maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
       }
     }
@@ -987,6 +1069,15 @@ private fun PrayerScheduleList(
 
             Spacer(Modifier.width(4.dp))
 
+            val iqamaCfg = adhanSettings.iqamaFor(prayerType)
+            val iqamaText = remember(record, prayerType, timeZoneId, iqamaCfg.enabled, iqamaCfg.delayMinutes) {
+              if (prayerType != PrayerType.SUNRISE && iqamaCfg.enabled) {
+                val iqamaEpoch = record.epochFor(prayerType) + iqamaCfg.delayMinutes * 60_000L
+                "الإقامة ${PrayerFormatters.formatTime12hArabic(iqamaEpoch, timeZoneId)}"
+              } else {
+                null
+              }
+            }
             Column {
               Text(
                 text = prayerType.arabicName,
@@ -997,11 +1088,19 @@ private fun PrayerScheduleList(
                 ),
                 color = if (isNext) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
               )
-              if (offsetMin != 0) {
+              if (offsetMin != 0 || iqamaText != null) {
+                val subParts = buildList {
+                  if (iqamaText != null) add(iqamaText)
+                  if (offsetMin != 0) add("${PrayerFormatters.formatSignedMinutesArabic(offsetMin)} د")
+                }
                 Text(
-                  text = "${PrayerFormatters.formatSignedMinutesArabic(offsetMin)} د",
+                  text = subParts.joinToString(" • "),
                   style = MaterialTheme.typography.labelSmall,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  color = if (iqamaText != null) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+                  } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                  },
                 )
               }
             }
@@ -1242,6 +1341,7 @@ private fun QuickPrayerMetaCard(
   uiState: PrayerTimesUiState,
   onOpenPrayerSettings: () -> Unit,
   onOpenAdhanSettings: () -> Unit,
+  onOpenMuadhins: () -> Unit,
   onRefreshLocation: () -> Unit,
 ) {
   Surface(
@@ -1287,14 +1387,28 @@ private fun QuickPrayerMetaCard(
           Text("ضبط المواقيت", maxLines = 1)
         }
       }
-      FilledTonalButton(
-        onClick = onOpenAdhanSettings,
-        modifier = Modifier
-          .fillMaxWidth()
-          .heightIn(min = 48.dp)
-          .testTag("home_open_adhan_alarms_button"),
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        Text("تنبيهات الأذان والإشعار الدائم", maxLines = 1)
+        FilledTonalButton(
+          onClick = onOpenMuadhins,
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp)
+            .testTag("home_meta_open_muadhins_button"),
+        ) {
+          Text("المؤذنون", maxLines = 1)
+        }
+        FilledTonalButton(
+          onClick = onOpenAdhanSettings,
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp)
+            .testTag("home_open_adhan_alarms_button"),
+        ) {
+          Text("تنبيهات الأذان", maxLines = 1)
+        }
       }
     }
   }

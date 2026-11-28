@@ -778,8 +778,12 @@ private fun ReaderScreenContent(
         onSelectPreAdhanMinutes = prayerViewModel::setAdhanPreAlertMinutes,
         onChangeVolumePercent = prayerViewModel::setAdhanVolumePercent,
         onToggleVibrate = prayerViewModel::setAdhanVibrateEnabled,
+        onToggleShortAlertOnly = prayerViewModel::setAdhanShortAlertOnly,
         onSelectBackground = prayerViewModel::setAdhanBackground,
         onEditPrayerSound = { editingAdhanPrayer = it },
+        onSavePrayerConfig = prayerViewModel::updatePrayerAlarmConfig,
+        onApplyMuezzinToAllWithFajr = prayerViewModel::applyMuezzinToAllPrayersWithFajrPreference,
+        onUpdateIqamaConfig = prayerViewModel::updateIqamaConfig,
         onTestAdhanNow = { prayerViewModel.startTestAdhan10s() },
         onStopTestAdhan = { prayerViewModel.stopTestAdhan() },
         prayerSettings = prayerUiState.settings,
@@ -804,6 +808,7 @@ private fun ReaderScreenContent(
         isTestPlaying = prayerUiState.isTestAdhanPlaying,
         onSaveConfig = { cfg -> prayerViewModel.updatePrayerAlarmConfig(targetPrayer, cfg) },
         onApplyToAllPrayers = { cfg -> prayerViewModel.applyAlarmConfigToAllPrayers(cfg) },
+        onApplyMuezzinToAllWithFajr = prayerViewModel::applyMuezzinToAllPrayersWithFajrPreference,
         onTestAdhanNow = { cfg ->
           prayerViewModel.startTestAdhan10s(prayerType = targetPrayer, configOverride = cfg)
         },

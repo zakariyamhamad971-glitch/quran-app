@@ -94,6 +94,7 @@ class AdhanActivity : ComponentActivity() {
     val dateKey = intent.getStringExtra(AdhanNotificationHelper.EXTRA_DATE_KEY).orEmpty()
     val timeText = intent.getStringExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT).orEmpty()
     val locationName = intent.getStringExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME).orEmpty()
+    val isIqama = intent.getBooleanExtra(AdhanNotificationHelper.EXTRA_IS_IQAMA, false)
 
     setContent {
       val context = LocalContext.current
@@ -116,6 +117,7 @@ class AdhanActivity : ComponentActivity() {
             timeText = timeText,
             locationName = locationName,
             backgroundImagePath = bgPath,
+            isIqama = isIqama,
             onStartPrayer = { dismissAndFinish() },
             onFinishedPrayer = {
               if (dateKey.isNotBlank()) {
@@ -164,6 +166,7 @@ private fun AdhanLockScreenContent(
   timeText: String,
   locationName: String,
   backgroundImagePath: String?,
+  isIqama: Boolean = false,
   onStartPrayer: () -> Unit,
   onFinishedPrayer: () -> Unit,
   onDismiss: () -> Unit,
@@ -246,7 +249,7 @@ private fun AdhanLockScreenContent(
         }
 
         Text(
-          text = "حان الآن موعد صلاة",
+          text = if (isIqama) "حان الآن وقت إقامة صلاة" else "حان الآن موعد صلاة",
           style = MaterialTheme.typography.titleMedium,
           color = QabasatGoldSoft.copy(alpha = 0.9f),
           textAlign = TextAlign.Center,
@@ -292,40 +295,42 @@ private fun AdhanLockScreenContent(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
       ) {
-        Button(
-          onClick = onStartPrayer,
-          shape = RoundedCornerShape(16.dp),
-          colors = ButtonDefaults.buttonColors(
-            containerColor = QabasatNightGold,
-            contentColor = Color(0xFF0A1D19),
-          ),
-          modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 56.dp)
-            .testTag("adhan_start_prayer_button"),
-        ) {
-          Icon(Icons.Filled.NotificationsActive, contentDescription = null)
-          Spacer(Modifier.width(8.dp))
-          Text(
-            text = "بدء الصلاة",
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-          )
-        }
+        if (!isIqama) {
+          Button(
+            onClick = onStartPrayer,
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = QabasatNightGold,
+              contentColor = Color(0xFF0A1D19),
+            ),
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 56.dp)
+              .testTag("adhan_start_prayer_button"),
+          ) {
+            Icon(Icons.Filled.NotificationsActive, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text = "بدء الصلاة",
+              style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            )
+          }
 
-        FilledTonalButton(
-          onClick = onFinishedPrayer,
-          shape = RoundedCornerShape(16.dp),
-          modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 54.dp)
-            .testTag("adhan_finished_prayer_button"),
-        ) {
-          Icon(Icons.Filled.CheckCircle, contentDescription = null)
-          Spacer(Modifier.width(8.dp))
-          Text(
-            text = "انتهيت من الصلاة",
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-          )
+          FilledTonalButton(
+            onClick = onFinishedPrayer,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 54.dp)
+              .testTag("adhan_finished_prayer_button"),
+          ) {
+            Icon(Icons.Filled.CheckCircle, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text = "انتهيت من الصلاة",
+              style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+            )
+          }
         }
 
         OutlinedButton(
@@ -340,7 +345,7 @@ private fun AdhanLockScreenContent(
           Icon(Icons.Filled.Close, contentDescription = null, tint = Color.White)
           Spacer(Modifier.width(8.dp))
           Text(
-            text = "إيقاف الأذان",
+            text = if (isIqama) "إغلاق" else "إيقاف الأذان",
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
             color = Color.White,
           )

@@ -61,8 +61,7 @@ class LocationLookupHelper(private val context: Context) {
     val countryCode = geocoded?.countryCode?.takeIf { it.isNotBlank() }
       ?: inferCountryCodeOffline(location.latitude, location.longitude, timeZoneId)
 
-    val displayName = geocoded?.displayName?.takeIf { it.isNotBlank() }
-      ?: PrayerFormatters.formatCoordinatesArabic(location.latitude, location.longitude)
+    val displayName = geocoded?.displayName?.takeIf { it.isNotBlank() }.orEmpty()
 
     LocationLookupResult.Success(
       SavedPrayerLocation(

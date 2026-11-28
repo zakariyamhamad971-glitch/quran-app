@@ -1,24 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24"
     android:tint="#FFFFFF">
-    <!-- Qabasat 8-pointed star (Rub el Hizb outer frame) -->
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="1.4"
-        android:strokeLineJoin="round"
-        android:pathData="M5,5 H19 V19 H5 Z" />
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="1.4"
-        android:strokeLineJoin="round"
-        android:pathData="M12,2.1 L21.9,12 L12,21.9 L2.1,12 Z" />
-    <!-- Open Mushaf pages centered inside the geometric star -->
+    <!-- Monochrome crescent & open Quran silhouette matching Qabasat launcher icon (no stars) -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M11.4,9.5 C10.2,8.8 8.7,8.7 7.3,9.1 L7.3,14.8 C8.7,14.4 10.2,14.5 11.4,15.3 Z M12.6,9.5 L12.6,15.3 C13.8,14.5 15.3,14.4 16.7,14.8 L16.7,9.1 C15.3,8.7 13.8,8.8 12.6,9.5 Z" />
+        android:pathData="M 9.14,3.17 A 3.80,3.80 0 1,0 14.86,3.17 A 3.07,3.07 0 1,1 9.14,3.17 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M 11.60,11.73 C 9.67,10.33 6.50,10.13 3.87,11.07 L 3.87,17.67 C 6.50,16.87 9.67,17.13 11.60,18.60 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M 12.40,11.73 C 14.33,10.33 17.50,10.13 20.13,11.07 L 20.13,17.67 C 17.50,16.87 14.33,17.13 12.40,18.60 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M 2.73,12.00 L 2.73,18.73 C 6.07,17.93 9.67,18.40 12.00,20.17 C 14.33,18.40 17.93,17.93 21.27,18.73 L 21.27,12.00 L 20.60,12.00 L 20.60,18.03 C 17.67,17.30 14.17,17.77 12.00,19.30 C 9.83,17.77 6.33,17.30 3.40,18.03 L 3.40,12.00 Z" />
 </vector>

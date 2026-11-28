@@ -21,6 +21,7 @@ object AdhanAlarmScheduler {
   private const val COUNTDOWN_MINUTE_REFRESH_REQUEST_CODE = 7802
   private const val ALARM_REQUEST_BASE = 6000
   private const val PRE_ADHAN_REQUEST_BASE = 6500
+  private const val IQAMA_REQUEST_BASE = 7000
   private const val MAX_DAY_SLOTS = 3
   private const val FORTY_EIGHT_HOURS_MS = 48L * 60L * 60L * 1000L
 
@@ -68,6 +69,43 @@ object AdhanAlarmScheduler {
 
   fun preAdhanRequestCodeFor(daySlot: Int, prayerType: PrayerType): Int =
     PRE_ADHAN_REQUEST_BASE + (daySlot * 16) + prayerType.ordinal
+
+  fun iqamaRequestCodeFor(daySlot: Int, prayerType: PrayerType): Int =
+    IQAMA_REQUEST_BASE + (daySlot * 16) + prayerType.ordinal
+
+  /**
+   * Pure planning function computing enabled Iqama alarms in `(nowMs..nowMs+windowMs]`.
+   */
+  fun collectIqamaAlarmsForWindow(
+    nowMs: Long,
+    windowMs: Long = FORTY_EIGHT_HOURS_MS,
+    dailyRecords: List<DailyPrayerTimesRecord>,
+    adhanSettings: AdhanSettingsState,
+  ): List<ScheduledIqamaAlarm> {
+    if (dailyRecords.isEmpty()) return emptyList()
+    val horizonEnd = nowMs + windowMs
+    val out = ArrayList<ScheduledIqamaAlarm>(dailyRecords.size * 5)
+    dailyRecords.take(MAX_DAY_SLOTS).forEachIndexed { dayIndex, record ->
+      for (prayerType in PrayerType.entries) {
+        if (prayerType == PrayerType.SUNRISE) continue
+        val cfg = adhanSettings.iqamaFor(prayerType)
+        if (!cfg.enabled || cfg.delayMinutes <= 0) continue
+        val triggerMs = record.epochFor(prayerType) + (cfg.delayMinutes * 60_000L)
+        if (triggerMs > nowMs && triggerMs <= horizonEnd) {
+          out.add(
+            ScheduledIqamaAlarm(
+              requestCode = iqamaRequestCodeFor(dayIndex, prayerType),
+              dateKey = record.dateKey,
+              prayerType = prayerType,
+              triggerEpochMs = triggerMs,
+              config = cfg,
+            ),
+          )
+        }
+      }
+    }
+    return out.sortedBy { it.triggerEpochMs }
+  }
 
   fun syncFromPreferences(
     context: Context,
@@ -127,6 +165,16 @@ object AdhanAlarmScheduler {
               )
             }
           }
+        }
+
+        val iqamaAlarms = collectIqamaAlarmsForWindow(
+          nowMs = nowMs,
+          windowMs = FORTY_EIGHT_HOURS_MS,
+          dailyRecords = records,
+          adhanSettings = adhanSettings,
+        )
+        for (iqama in iqamaAlarms) {
+          scheduleSingleIqamaAlarm(appCtx, iqama, location)
         }
 
         // Schedule next boundary refresh for the persistent countdown notification
@@ -189,6 +237,21 @@ object AdhanAlarmScheduler {
           am.cancel(existingPre)
           existingPre.cancel()
         }
+
+        val iqamaRc = iqamaRequestCodeFor(slot, prayerType)
+        val iqamaIntent = Intent(context, AdhanAlarmReceiver::class.java).apply {
+          action = AdhanAlarmReceiver.ACTION_IQAMA_ALARM
+        }
+        val existingIqama = PendingIntent.getBroadcast(
+          context,
+          iqamaRc,
+          iqamaIntent,
+          PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+        )
+        if (existingIqama != null) {
+          am.cancel(existingIqama)
+          existingIqama.cancel()
+        }
       }
     }
   }
@@ -206,7 +269,7 @@ object AdhanAlarmScheduler {
       action = AdhanAlarmReceiver.ACTION_PRE_ADHAN_REMINDER
       putExtra(AdhanNotificationHelper.EXTRA_PRAYER_KEY, alarm.prayerType.key)
       putExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT, timeText)
-      putExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME, location.resolvedLabel())
+      putExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME, location.cityOnlyOrNull().orEmpty())
       putExtra(EXTRA_MINUTES_BEFORE, minutesBefore)
     }
     val preRequestCode = PRE_ADHAN_REQUEST_BASE + (alarm.requestCode - ALARM_REQUEST_BASE)
@@ -241,7 +304,7 @@ object AdhanAlarmScheduler {
       putExtra(AdhanNotificationHelper.EXTRA_PRAYER_KEY, alarm.prayerType.key)
       putExtra(AdhanNotificationHelper.EXTRA_DATE_KEY, alarm.dateKey)
       putExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT, timeText)
-      putExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME, location.resolvedLabel())
+      putExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME, location.cityOnlyOrNull().orEmpty())
     }
     val pi = PendingIntent.getBroadcast(
       context,
@@ -270,6 +333,37 @@ object AdhanAlarmScheduler {
     }
   }
 
+  private fun scheduleSingleIqamaAlarm(
+    context: Context,
+    alarm: ScheduledIqamaAlarm,
+    location: SavedPrayerLocation,
+  ) {
+    val am = context.getSystemService(AlarmManager::class.java) ?: return
+    val timeText = PrayerFormatters.formatTime12hArabic(alarm.triggerEpochMs, location.timeZoneId)
+    val broadcastIntent = Intent(context, AdhanAlarmReceiver::class.java).apply {
+      action = AdhanAlarmReceiver.ACTION_IQAMA_ALARM
+      putExtra(AdhanNotificationHelper.EXTRA_PRAYER_KEY, alarm.prayerType.key)
+      putExtra(AdhanNotificationHelper.EXTRA_DATE_KEY, alarm.dateKey)
+      putExtra(AdhanNotificationHelper.EXTRA_PRAYER_TIME_TEXT, timeText)
+      putExtra(AdhanNotificationHelper.EXTRA_LOCATION_NAME, location.cityOnlyOrNull().orEmpty())
+    }
+    val pi = PendingIntent.getBroadcast(
+      context,
+      alarm.requestCode,
+      broadcastIntent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+    if (canScheduleExactAlarmsCompat(context)) {
+      runCatching {
+        am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, alarm.triggerEpochMs, pi)
+      }.onFailure {
+        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, alarm.triggerEpochMs, pi)
+      }
+    } else {
+      am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, alarm.triggerEpochMs, pi)
+    }
+  }
+
   private fun scheduleCountdownRefreshAlarm(
     context: Context,
     triggerMs: Long?,
@@ -279,12 +373,16 @@ object AdhanAlarmScheduler {
     val intent = Intent(context, AdhanAlarmReceiver::class.java).apply {
       action = AdhanAlarmReceiver.ACTION_REFRESH_COUNTDOWN
     }
-    val minutePi = PendingIntent.getBroadcast(
+    // Cancel legacy minute-boundary alarm if present; native Android Chronometer updates live seconds.
+    PendingIntent.getBroadcast(
       context,
       COUNTDOWN_MINUTE_REFRESH_REQUEST_CODE,
       intent,
-      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-    )
+      PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+    )?.let { legacyPi ->
+      am.cancel(legacyPi)
+      legacyPi.cancel()
+    }
     if (!enabled || triggerMs == null || triggerMs <= System.currentTimeMillis()) {
       val existing = PendingIntent.getBroadcast(
         context,
@@ -296,8 +394,6 @@ object AdhanAlarmScheduler {
         am.cancel(existing)
         existing.cancel()
       }
-      am.cancel(minutePi)
-      minutePi.cancel()
       return
     }
     val pi = PendingIntent.getBroadcast(
@@ -314,12 +410,6 @@ object AdhanAlarmScheduler {
       }
     } else {
       am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMs, pi)
-    }
-    // Keep remaining minutes and current time (no seconds) updated cleanly on minute boundaries
-    val now = System.currentTimeMillis()
-    val nextMinute = ((now / 60_000L) + 1L) * 60_000L + 500L
-    runCatching {
-      am.set(AlarmManager.RTC, nextMinute, minutePi)
     }
   }
 

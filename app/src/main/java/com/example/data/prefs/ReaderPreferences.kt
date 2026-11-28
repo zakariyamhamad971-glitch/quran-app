@@ -14,6 +14,7 @@ import com.example.data.prayer.AdhanSettingsState
 import com.example.data.prayer.AsrMadhab
 import com.example.data.prayer.CachedPrayerSchedule
 import com.example.data.prayer.DailyPrayerTimesRecord
+import com.example.data.prayer.IqamaConfig
 import com.example.data.prayer.PrayerAlarmConfig
 import com.example.data.prayer.PrayerCalculationMethod
 import com.example.data.prayer.PrayerHighLatitudeRule
@@ -119,9 +120,11 @@ class ReaderPreferences(private val context: Context) {
     val ADHAN_PRE_ALERT_MINUTES = intPreferencesKey("adhan_pre_alert_minutes")
     val ADHAN_VOLUME_PERCENT = intPreferencesKey("adhan_volume_percent")
     val ADHAN_VIBRATE_ENABLED = booleanPreferencesKey("adhan_vibrate_enabled")
+    val ADHAN_SHORT_ALERT_ONLY = booleanPreferencesKey("adhan_short_alert_only")
     val ADHAN_BACKGROUND_PATH = stringPreferencesKey("adhan_background_path")
     val ADHAN_BACKGROUND_LABEL = stringPreferencesKey("adhan_background_label")
     val ADHAN_PER_PRAYER_CONFIG_JSON = stringPreferencesKey("adhan_per_prayer_config_json")
+    val ADHAN_IQAMA_CONFIG_JSON = stringPreferencesKey("adhan_iqama_config_json")
   }
 
   data class PersistedPrayerPreferences(
@@ -156,9 +159,11 @@ class ReaderPreferences(private val context: Context) {
       preAdhanMinutes = (prefs[Keys.ADHAN_PRE_ALERT_MINUTES] ?: 0).coerceIn(0, 60),
       adhanVolumePercent = (prefs[Keys.ADHAN_VOLUME_PERCENT] ?: 100).coerceIn(10, 100),
       vibrateOnAdhan = prefs[Keys.ADHAN_VIBRATE_ENABLED] ?: true,
+      shortAlertOnly = prefs[Keys.ADHAN_SHORT_ALERT_ONLY] ?: false,
       backgroundImagePath = prefs[Keys.ADHAN_BACKGROUND_PATH]?.takeIf { it.isNotBlank() },
       backgroundLabel = prefs[Keys.ADHAN_BACKGROUND_LABEL]?.takeIf { it.isNotBlank() },
       perPrayerConfig = AdhanSettingsState.decodeConfigsJson(prefs[Keys.ADHAN_PER_PRAYER_CONFIG_JSON]),
+      iqamaConfigs = AdhanSettingsState.decodeIqamaConfigsJson(prefs[Keys.ADHAN_IQAMA_CONFIG_JSON]),
     )
 
     PersistedPrayerPreferences(
@@ -596,6 +601,10 @@ class ReaderPreferences(private val context: Context) {
     context.dataStore.edit { it[Keys.ADHAN_VIBRATE_ENABLED] = enabled }
   }
 
+  suspend fun setAdhanShortAlertOnly(shortOnly: Boolean) {
+    context.dataStore.edit { it[Keys.ADHAN_SHORT_ALERT_ONLY] = shortOnly }
+  }
+
   suspend fun setAdhanBackground(path: String?, label: String?) {
     context.dataStore.edit { prefs ->
       if (path.isNullOrBlank()) {
@@ -625,6 +634,15 @@ class ReaderPreferences(private val context: Context) {
         current[type] = config
       }
       prefs[Keys.ADHAN_PER_PRAYER_CONFIG_JSON] = AdhanSettingsState.encodeConfigsJson(current)
+    }
+  }
+
+  suspend fun saveIqamaConfig(prayerType: PrayerType, config: IqamaConfig) {
+    if (prayerType == PrayerType.SUNRISE) return
+    context.dataStore.edit { prefs ->
+      val current = AdhanSettingsState.decodeIqamaConfigsJson(prefs[Keys.ADHAN_IQAMA_CONFIG_JSON]).toMutableMap()
+      current[prayerType] = config.copy(delayMinutes = config.delayMinutes.coerceIn(1, 90))
+      prefs[Keys.ADHAN_IQAMA_CONFIG_JSON] = AdhanSettingsState.encodeIqamaConfigsJson(current)
     }
   }
 

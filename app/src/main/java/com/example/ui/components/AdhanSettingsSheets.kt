@@ -28,16 +28,19 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Mosque
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.WarningAmber
@@ -47,9 +50,11 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
@@ -57,6 +62,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -79,9 +86,13 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.prayer.AdhanAlarmScheduler
 import com.example.data.prayer.AdhanNotificationHelper
+import com.example.data.prayer.AdhanRecordingItem
 import com.example.data.prayer.AdhanSettingsState
 import com.example.data.prayer.AdhanSoundRepository
 import com.example.data.prayer.AsrMadhab
+import com.example.data.prayer.IqamaConfig
+import com.example.data.prayer.KiwifuAdhanParser
+import com.example.data.prayer.MuezzinGroup
 import com.example.data.prayer.PrayerAlarmConfig
 import com.example.data.prayer.PrayerAlarmMode
 import com.example.data.prayer.PrayerCalculationMethod
@@ -89,7 +100,6 @@ import com.example.data.prayer.PrayerFormatters
 import com.example.data.prayer.PrayerHighLatitudeRule
 import com.example.data.prayer.PrayerSettingsState
 import com.example.data.prayer.PrayerType
-import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -100,12 +110,12 @@ fun PrayerSoundConfigSheet(
   isTestPlaying: Boolean,
   onSaveConfig: (PrayerAlarmConfig) -> Unit,
   onApplyToAllPrayers: (PrayerAlarmConfig) -> Unit,
+  onApplyMuezzinToAllWithFajr: ((MuezzinGroup, AdhanRecordingItem) -> Unit)? = null,
   onTestAdhanNow: (PrayerAlarmConfig) -> Unit,
   onStopTestAdhan: () -> Unit,
   onDismiss: () -> Unit,
 ) {
   val context = LocalContext.current
-  val scope = rememberCoroutineScope()
   val soundRepository = remember(context) { AdhanSoundRepository(context.applicationContext) }
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var showMuadhinPicker by remember { mutableStateOf(false) }
@@ -326,28 +336,36 @@ fun PrayerSoundConfigSheet(
     MuadhinPickerSheet(
       prayerType = prayerType,
       currentConfig = currentConfig,
-      onSelectMuezzin = { entry ->
+      onSelectForPrayer = { targetPrayer, group, rec ->
         val cfg = PrayerAlarmConfig(
           mode = PrayerAlarmMode.MUEZZIN,
-          muezzinId = entry.id,
-          customDisplayName = entry.muezzinAr,
-          customUri = entry.audioUrl,
+          muezzinId = rec.id,
+          muezzinGroupId = group.id,
+          recordingFileName = rec.fileName,
+          recordingSizeBytes = rec.sizeBytes,
+          customDisplayName = group.arabicName,
+          customUri = rec.primaryUrl,
         )
-        onSaveConfig(cfg)
-        scope.launch {
-          soundRepository.downloadMuezzinAudio(entry)
+        if (targetPrayer == prayerType) {
+          onSaveConfig(cfg)
+        } else {
+          onSaveConfig(cfg)
         }
       },
-      onApplyToAllPrayers = { entry ->
-        val cfg = PrayerAlarmConfig(
-          mode = PrayerAlarmMode.MUEZZIN,
-          muezzinId = entry.id,
-          customDisplayName = entry.muezzinAr,
-          customUri = entry.audioUrl,
-        )
-        onApplyToAllPrayers(cfg)
-        scope.launch {
-          soundRepository.downloadMuezzinAudio(entry)
+      onSelectForAllPrayers = { group, rec ->
+        if (onApplyMuezzinToAllWithFajr != null) {
+          onApplyMuezzinToAllWithFajr(group, rec)
+        } else {
+          val cfg = PrayerAlarmConfig(
+            mode = PrayerAlarmMode.MUEZZIN,
+            muezzinId = rec.id,
+            muezzinGroupId = group.id,
+            recordingFileName = rec.fileName,
+            recordingSizeBytes = rec.sizeBytes,
+            customDisplayName = group.arabicName,
+            customUri = rec.primaryUrl,
+          )
+          onApplyToAllPrayers(cfg)
         }
       },
       onDismiss = { showMuadhinPicker = false },
@@ -365,8 +383,13 @@ fun AdhanAlarmsManagementSheet(
   onSelectPreAdhanMinutes: (Int) -> Unit = {},
   onChangeVolumePercent: (Int) -> Unit = {},
   onToggleVibrate: (Boolean) -> Unit = {},
+  onToggleShortAlertOnly: (Boolean) -> Unit = {},
   onSelectBackground: (path: String?, label: String?) -> Unit = { _, _ -> },
   onEditPrayerSound: (PrayerType) -> Unit,
+  onOpenMuadhinLibrary: (() -> Unit)? = null,
+  onSavePrayerConfig: ((PrayerType, PrayerAlarmConfig) -> Unit)? = null,
+  onApplyMuezzinToAllWithFajr: ((MuezzinGroup, AdhanRecordingItem) -> Unit)? = null,
+  onUpdateIqamaConfig: (PrayerType, IqamaConfig) -> Unit = { _, _ -> },
   onTestAdhanNow: () -> Unit,
   onStopTestAdhan: () -> Unit,
   prayerSettings: PrayerSettingsState? = null,
@@ -381,6 +404,7 @@ fun AdhanAlarmsManagementSheet(
 ) {
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 1)) }
+  var showInternalMuadhinSheet by remember { mutableStateOf(false) }
 
   ModalBottomSheet(
     onDismissRequest = onDismiss,
@@ -440,13 +464,67 @@ fun AdhanAlarmsManagementSheet(
           onSelectPreAdhanMinutes = onSelectPreAdhanMinutes,
           onChangeVolumePercent = onChangeVolumePercent,
           onToggleVibrate = onToggleVibrate,
+          onToggleShortAlertOnly = onToggleShortAlertOnly,
           onSelectBackground = onSelectBackground,
           onEditPrayerSound = onEditPrayerSound,
+          onOpenMuadhinLibrary = {
+            if (onOpenMuadhinLibrary != null) onOpenMuadhinLibrary()
+            else showInternalMuadhinSheet = true
+          },
+          onUpdateIqamaConfig = onUpdateIqamaConfig,
           onTestAdhanNow = onTestAdhanNow,
           onStopTestAdhan = onStopTestAdhan,
         )
       }
     }
+  }
+
+  if (showInternalMuadhinSheet) {
+    val selectedIds = remember(adhanSettings) {
+      PrayerType.entries.mapNotNull { t ->
+        val cfg = adhanSettings.configFor(t)
+        cfg.muezzinGroupId ?: cfg.muezzinId
+      }.toSet()
+    }
+    MuadhinPickerSheet(
+      prayerType = null,
+      selectedMuezzinIds = selectedIds,
+      onSelectForPrayer = { targetPrayer, group, rec ->
+        val cfg = PrayerAlarmConfig(
+          mode = PrayerAlarmMode.MUEZZIN,
+          muezzinId = rec.id,
+          muezzinGroupId = group.id,
+          recordingFileName = rec.fileName,
+          recordingSizeBytes = rec.sizeBytes,
+          customDisplayName = group.arabicName,
+          customUri = rec.primaryUrl,
+        )
+        onSavePrayerConfig?.invoke(targetPrayer, cfg)
+      },
+      onSelectForAllPrayers = { group, rec ->
+        if (onApplyMuezzinToAllWithFajr != null) {
+          onApplyMuezzinToAllWithFajr(group, rec)
+        } else {
+          for (t in PrayerType.entries) {
+            if (t == PrayerType.SUNRISE) continue
+            val chosen = KiwifuAdhanParser.selectRecordingForPrayer(group, rec, t)
+            onSavePrayerConfig?.invoke(
+              t,
+              PrayerAlarmConfig(
+                mode = PrayerAlarmMode.MUEZZIN,
+                muezzinId = chosen.id,
+                muezzinGroupId = group.id,
+                recordingFileName = chosen.fileName,
+                recordingSizeBytes = chosen.sizeBytes,
+                customDisplayName = group.arabicName,
+                customUri = chosen.primaryUrl,
+              ),
+            )
+          }
+        }
+      },
+      onDismiss = { showInternalMuadhinSheet = false },
+    )
   }
 }
 
@@ -459,14 +537,19 @@ fun AdhanControlsSection(
   onSelectPreAdhanMinutes: (Int) -> Unit = {},
   onChangeVolumePercent: (Int) -> Unit = {},
   onToggleVibrate: (Boolean) -> Unit = {},
+  onToggleShortAlertOnly: (Boolean) -> Unit = {},
   onSelectBackground: (path: String?, label: String?) -> Unit = { _, _ -> },
   onEditPrayerSound: (PrayerType) -> Unit,
+  onOpenMuadhinLibrary: () -> Unit = {},
+  onUpdateIqamaConfig: (PrayerType, IqamaConfig) -> Unit = { _, _ -> },
   onTestAdhanNow: () -> Unit,
   onStopTestAdhan: () -> Unit,
 ) {
   val context = LocalContext.current
+  val soundRepository = remember(context) { AdhanSoundRepository(context.applicationContext) }
   var refreshTick by remember { mutableIntStateOf(0) }
   var showBgPicker by remember { mutableStateOf(false) }
+  var pendingIqamaSoundPrayer by remember { mutableStateOf<PrayerType?>(null) }
   val lifecycleOwner = LocalLifecycleOwner.current
 
   DisposableEffect(lifecycleOwner) {
@@ -485,6 +568,25 @@ fun AdhanControlsSection(
     contract = ActivityResultContracts.RequestPermission(),
   ) {
     refreshTick++
+  }
+
+  val iqamaAudioLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.OpenDocument(),
+  ) { pickedUri: Uri? ->
+    val targetPrayer = pendingIqamaSoundPrayer
+    pendingIqamaSoundPrayer = null
+    if (pickedUri != null && targetPrayer != null) {
+      val name = soundRepository.persistReadPermissionAndResolveName(pickedUri)
+      val currentIqama = adhanSettings.iqamaFor(targetPrayer)
+      onUpdateIqamaConfig(
+        targetPrayer,
+        currentIqama.copy(
+          enabled = true,
+          customUri = pickedUri.toString(),
+          customDisplayName = name,
+        ),
+      )
+    }
   }
 
   val statusSnapshot = remember(context, refreshTick) {
@@ -698,7 +800,57 @@ fun AdhanControlsSection(
             modifier = Modifier.testTag("adhan_vibrate_switch"),
           )
         }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text(
+            text = "مدة تشغيل الأذان",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onSurface,
+          )
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            FilterChip(
+              selected = !adhanSettings.shortAlertOnly,
+              onClick = { onToggleShortAlertOnly(false) },
+              label = { Text("أذان كامل") },
+              modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .testTag("adhan_length_full_chip"),
+            )
+            FilterChip(
+              selected = adhanSettings.shortAlertOnly,
+              onClick = { onToggleShortAlertOnly(true) },
+              label = { Text("تنبيه قصير فقط") },
+              modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .testTag("adhan_length_short_chip"),
+            )
+          }
+        }
       }
+    }
+
+    // Clear Muezzins button in Settings > Adhan
+    FilledTonalButton(
+      onClick = onOpenMuadhinLibrary,
+      shape = RoundedCornerShape(14.dp),
+      modifier = Modifier
+        .fillMaxWidth()
+        .heightIn(min = 52.dp)
+        .testTag("adhan_settings_open_muadhins_button"),
+    ) {
+      Icon(Icons.Filled.Mosque, contentDescription = null, modifier = Modifier.size(20.dp))
+      Spacer(Modifier.width(8.dp))
+      Text(
+        text = "المؤذنون (استماع وتحميل)",
+        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+      )
     }
 
     // Adhan screen background picker row
@@ -811,6 +963,170 @@ fun AdhanControlsSection(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
           )
+        }
+      }
+    }
+
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+    // Optional Iqama alerts per prayer (5 fard prayers, no built-in iqama audio)
+    Text(
+      text = "إقامة الصلاة (اختياري)",
+      style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+      color = MaterialTheme.colorScheme.primary,
+    )
+    Text(
+      text = "تنبيه بعد الأذان بالدقائق لكل صلاة، مع إمكانية اختيار ملف صوتي من جهازك",
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    PrayerType.entries.filter { it != PrayerType.SUNRISE }.forEach { prayerType ->
+      val iqama = adhanSettings.iqamaFor(prayerType)
+      Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.34f),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("adhan_iqama_card_${prayerType.key}"),
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+          verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "إقامة ${prayerType.arabicName}",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface,
+              )
+              Text(
+                text = if (iqama.enabled) {
+                  "بعد الأذان بـ ${PrayerFormatters.toArabicIndicDigits(iqama.delayMinutes)} دقيقة"
+                } else {
+                  "متوقفة (الافتراضي ${PrayerFormatters.toArabicIndicDigits(iqama.delayMinutes)} د)"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+            Switch(
+              checked = iqama.enabled,
+              onCheckedChange = { enabled ->
+                onUpdateIqamaConfig(prayerType, iqama.copy(enabled = enabled))
+              },
+              modifier = Modifier.testTag("adhan_iqama_switch_${prayerType.key}"),
+            )
+          }
+
+          if (iqama.enabled) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+              Text(
+                text = "المدة بعد الأذان:",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedIconButton(
+                  onClick = {
+                    val nextDelay = (iqama.delayMinutes - 1).coerceIn(1, 90)
+                    onUpdateIqamaConfig(prayerType, iqama.copy(delayMinutes = nextDelay))
+                  },
+                  enabled = iqama.delayMinutes > 1,
+                  modifier = Modifier
+                    .size(48.dp)
+                    .testTag("adhan_iqama_minus_${prayerType.key}"),
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Remove,
+                    contentDescription = "إنقاص دقيقة",
+                    modifier = Modifier.size(18.dp),
+                  )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                  text = "${PrayerFormatters.toArabicIndicDigits(iqama.delayMinutes)} د",
+                  style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                  color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(6.dp))
+                OutlinedIconButton(
+                  onClick = {
+                    val nextDelay = (iqama.delayMinutes + 1).coerceIn(1, 90)
+                    onUpdateIqamaConfig(prayerType, iqama.copy(delayMinutes = nextDelay))
+                  },
+                  enabled = iqama.delayMinutes < 90,
+                  modifier = Modifier
+                    .size(48.dp)
+                    .testTag("adhan_iqama_plus_${prayerType.key}"),
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = "زيادة دقيقة",
+                    modifier = Modifier.size(18.dp),
+                  )
+                }
+              }
+            }
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+              OutlinedButton(
+                onClick = {
+                  pendingIqamaSoundPrayer = prayerType
+                  iqamaAudioLauncher.launch(arrayOf("audio/*"))
+                },
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                  .weight(1f)
+                  .heightIn(min = 48.dp)
+                  .testTag("adhan_iqama_pick_audio_${prayerType.key}"),
+              ) {
+                Icon(Icons.Filled.AudioFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                  text = iqama.customDisplayName?.takeIf { it.isNotBlank() && !iqama.customUri.isNullOrBlank() }
+                    ?: "صوت من الجهاز (اختياري)",
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
+              }
+              if (!iqama.customUri.isNullOrBlank()) {
+                Spacer(Modifier.width(6.dp))
+                TextButton(
+                  onClick = {
+                    onUpdateIqamaConfig(
+                      prayerType,
+                      iqama.copy(customUri = null, customDisplayName = null),
+                    )
+                  },
+                  modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("adhan_iqama_clear_audio_${prayerType.key}"),
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.DeleteOutline,
+                    contentDescription = "إزالة صوت الإقامة",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp),
+                  )
+                }
+              }
+            }
+          }
         }
       }
     }
